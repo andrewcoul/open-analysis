@@ -1,0 +1,15 @@
+{
+  "analysis": "static",
+  "model": {
+    "schema_version": 1,
+    "nodes": [
+      {"position": [0, 0, 0], "restrained": [true, true, true, true, true, true]},
+      {"position": [3, 0, 0], "mass": [100, 100, 100]}
+    ],
+    "materials": [{"young": 200000000000, "poisson": 0.3, "density": 7850}],
+    "sections": [{"area": 0.01, "iy": 0.00002, "iz": 0.00004, "torsion": 0.00001}],
+    "frames": [{"nodes": [0, 1], "material": 0, "section": 0}],
+    "load_cases": [{"name": "live", "nodal": [{"node": 1, "force": [0, -1000, 0]}]}],
+    "combinations": [{"name": "service", "terms": [[0, 1]]}, {"name": "factored", "terms": [[0, 1.6]]}]
+  }
+}

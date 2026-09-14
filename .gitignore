@@ -1,0 +1,8 @@
+/target/
+/.tools/
+/.venv/
+__pycache__/
+*.pyd
+*.so
+/dist/
+/verification-output/

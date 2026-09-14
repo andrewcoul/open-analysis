@@ -1,0 +1,24 @@
+[workspace]
+members = ["crates/oa-core", "crates/oa-py", "crates/oa-wasm"]
+default-members = ["crates/oa-core"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+license = "MIT"
+
+[workspace.dependencies]
+faer = { version = "=0.24.4", default-features = false, features = ["std", "sparse-linalg"] }
+nalgebra = { version = "0.34", features = ["serde-serialize"] }
+rayon = "1.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+oa-core = { path = "crates/oa-core", default-features = false }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+

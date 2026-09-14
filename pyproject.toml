@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "open-analysis"
+version = "0.1.0"
+description = "Sparse structural analysis powered by Rust"
+requires-python = ">=3.10"
+license = "MIT"
+readme = "README.md"
+
+[tool.maturin]
+manifest-path = "crates/oa-py/Cargo.toml"
+python-source = "python"
+module-name = "open_analysis._oa"
+
