@@ -2,6 +2,9 @@
 //! No implicit conversions between dimensions or between weight and mass.
 use serde::{Deserialize, Serialize};
 
+/// Standard gravity in metres per second squared.
+pub const STANDARD_GRAVITY: f64 = 9.80665;
+
 macro_rules! quantity {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
@@ -33,6 +36,14 @@ quantity!(Mass, "Mass in kilograms.");
 quantity!(
     MassInertia,
     "Rotational mass moment in kilogram metres squared."
+);
+quantity!(
+    Stiffness,
+    "Translational spring stiffness in newtons per metre."
+);
+quantity!(
+    RotationalStiffness,
+    "Rotational spring stiffness in newton metres per radian."
 );
 quantity!(MassDensity, "Mass density in kilograms per cubic metre.");
 quantity!(WeightDensity, "Weight density in newtons per cubic metre.");

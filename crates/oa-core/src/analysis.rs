@@ -269,18 +269,14 @@ fn solve_combination(
                 internal[e.dofs[i]] += f[i];
             }
         }
-        let residual = system
-            .free
+        // Equilibrium holds in the reduced space; constraint forces cancel under Tᵀ.
+        let out_of_balance: Vec<f64> = internal
             .iter()
-            .map(|&i| (internal[i] - next_force[i]).powi(2))
-            .sum::<f64>()
-            .sqrt();
-        let force_norm = next_force
-            .iter()
-            .map(|v| v * v)
-            .sum::<f64>()
-            .sqrt()
-            .max(1.0);
+            .zip(&next_force)
+            .map(|(a, b)| a - b)
+            .collect();
+        let residual = crate::assembly::norm(&system.reduce(&out_of_balance));
+        let force_norm = crate::assembly::norm(&system.reduce(&next_force)).max(1.0);
         let du = u
             .iter()
             .zip(&previous_u)

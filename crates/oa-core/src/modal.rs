@@ -1,7 +1,7 @@
 use crate::{
     AxialBehavior, Error, Model, Result,
     analysis::node_values,
-    assembly::{Loads, Prepared, SparseSystem},
+    assembly::{Loads, Prepared, SparseSystem, norm},
 };
 use faer::{
     Col, Mat, MatMut, MatRef, Par, Side,
@@ -12,7 +12,9 @@ use faer::{
         linalg::{SupernodalThreshold, cholesky},
     },
 };
+use nalgebra::{DMatrix, DVector};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -146,37 +148,182 @@ impl EigenBackend for FaerKrylovSchur {
     }
 }
 
+/// Factor L of the reduced mass Tᵀ M T on its massive subspace, so M_r = L Lᵀ.
+/// Independent DOFs carry sqrt(m). Each diaphragm master carries a dense block
+/// that couples in-plane translation and normal rotation through slave offsets,
+/// so the master need not sit at the centre of mass.
+struct MassRoot {
+    scalar: Vec<(usize, f64)>,
+    blocks: Vec<MassBlock>,
+    dim: usize,
+}
+struct MassBlock {
+    dofs: Vec<usize>,
+    matrix: DMatrix<f64>,
+    /// dofs x rank, matrix = factor * factorᵀ.
+    factor: DMatrix<f64>,
+}
+impl MassRoot {
+    fn new(system: &SparseSystem, mass: &[f64]) -> Result<Self> {
+        let mut diag = vec![0.0; system.free.len()];
+        let mut coupled: BTreeMap<usize, BTreeMap<(usize, usize), f64>> = BTreeMap::new();
+        for (i, &m) in mass.iter().enumerate() {
+            if m <= 0.0 || system.is_restrained(i) {
+                continue;
+            }
+            match system.constraint(i) {
+                None => {
+                    if let Some(r) = system.map[i] {
+                        diag[r] += m;
+                    }
+                }
+                Some(terms) => {
+                    let block = coupled.entry(terms[0].0 / 6).or_default();
+                    for &(a, ca) in terms {
+                        for &(b, cb) in terms {
+                            if let (Some(ra), Some(rb)) = (system.map[a], system.map[b]) {
+                                *block.entry((ra, rb)).or_default() += ca * cb * m;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut blocks = vec![];
+        let mut dim = 0;
+        for entries in coupled.into_values() {
+            let mut dofs: Vec<usize> = entries.keys().flat_map(|&(a, b)| [a, b]).collect();
+            dofs.sort_unstable();
+            dofs.dedup();
+            if dofs.is_empty() {
+                continue;
+            }
+            let k = dofs.len();
+            let mut matrix = DMatrix::zeros(k, k);
+            for (&(a, b), &v) in &entries {
+                let ia = dofs.binary_search(&a).unwrap();
+                let ib = dofs.binary_search(&b).unwrap();
+                matrix[(ia, ib)] += v;
+            }
+            for (ia, &d) in dofs.iter().enumerate() {
+                matrix[(ia, ia)] += diag[d];
+                diag[d] = 0.0;
+            }
+            let eig = matrix.clone().symmetric_eigen();
+            let max: f64 = eig.eigenvalues.amax();
+            if eig.eigenvalues.iter().any(|&v| v < -1e-12 * max) {
+                return Err(Error::Solver(
+                    "reduced diaphragm mass is not positive semidefinite".into(),
+                ));
+            }
+            let kept: Vec<usize> = (0..k)
+                .filter(|&j| eig.eigenvalues[j] > 1e-12 * max)
+                .collect();
+            let factor = DMatrix::from_fn(k, kept.len(), |i, j| {
+                let root: f64 = eig.eigenvalues[kept[j]];
+                eig.eigenvectors[(i, kept[j])] * root.sqrt()
+            });
+            dim += kept.len();
+            blocks.push(MassBlock {
+                dofs,
+                matrix,
+                factor,
+            });
+        }
+        let scalar: Vec<_> = diag
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| **m > 0.0)
+            .map(|(r, m)| (r, m.sqrt()))
+            .collect();
+        dim += scalar.len();
+        Ok(Self {
+            scalar,
+            blocks,
+            dim,
+        })
+    }
+    /// out += L y, out in reduced space.
+    fn apply_l(&self, y: &[f64], out: &mut [f64]) {
+        let mut j = 0;
+        for &(r, s) in &self.scalar {
+            out[r] += s * y[j];
+            j += 1;
+        }
+        for b in &self.blocks {
+            let k = b.factor.ncols();
+            let v = &b.factor * DVector::from_column_slice(&y[j..j + k]);
+            for (i, &d) in b.dofs.iter().enumerate() {
+                out[d] += v[i];
+            }
+            j += k;
+        }
+    }
+    /// out = Lᵀ v, out of length dim.
+    fn apply_lt(&self, v: &[f64], out: &mut [f64]) {
+        let mut j = 0;
+        for &(r, s) in &self.scalar {
+            out[j] = s * v[r];
+            j += 1;
+        }
+        for b in &self.blocks {
+            let y = b.factor.transpose() * DVector::from_fn(b.dofs.len(), |i, _| v[b.dofs[i]]);
+            out[j..j + y.len()].copy_from_slice(y.as_slice());
+            j += y.len();
+        }
+    }
+    /// Reduced-space mass entries, both triangles.
+    fn entries(&self) -> Vec<Triplet<usize, usize, f64>> {
+        let mut out: Vec<_> = self
+            .scalar
+            .iter()
+            .map(|&(r, s)| Triplet::new(r, r, s * s))
+            .collect();
+        for b in &self.blocks {
+            for (i, &a) in b.dofs.iter().enumerate() {
+                for (j, &c) in b.dofs.iter().enumerate() {
+                    if b.matrix[(i, j)] != 0.0 {
+                        out.push(Triplet::new(a, c, b.matrix[(i, j)]));
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Lᵀ K_r⁻¹ L: symmetric, and its largest eigenvalues are 1/ω² of the lowest modes.
 struct MassOperator<'a> {
     system: &'a SparseSystem,
-    massive: Vec<usize>,
-    sqrt_mass: Vec<f64>,
+    root: &'a MassRoot,
 }
 impl std::fmt::Debug for MassOperator<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MassOperator")
-            .field("dimension", &self.massive.len())
+            .field("dimension", &self.root.dim)
             .finish()
     }
 }
 impl LinOp<f64> for MassOperator<'_> {
     fn nrows(&self) -> usize {
-        self.massive.len()
+        self.root.dim
     }
     fn ncols(&self) -> usize {
-        self.massive.len()
+        self.root.dim
     }
     fn apply_scratch(&self, _: usize, _: Par) -> StackReq {
         StackReq::EMPTY
     }
     fn apply(&self, mut out: MatMut<'_, f64>, rhs: MatRef<'_, f64>, _: Par, _: &mut MemStack) {
         for col in 0..rhs.ncols() {
+            let y: Vec<f64> = (0..self.root.dim).map(|i| rhs[(i, col)]).collect();
             let mut f = vec![0.0; self.system.free.len()];
-            for (i, &dof) in self.massive.iter().enumerate() {
-                f[dof] = rhs[(i, col)] * self.sqrt_mass[i];
-            }
+            self.root.apply_l(&y, &mut f);
             let x = self.system.solve_free(&f);
-            for (i, &dof) in self.massive.iter().enumerate() {
-                out[(i, col)] = x[dof] * self.sqrt_mass[i];
+            let mut result = vec![0.0; self.root.dim];
+            self.root.apply_lt(&x, &mut result);
+            for (i, v) in result.into_iter().enumerate() {
+                out[(i, col)] = v;
             }
         }
     }
@@ -210,29 +357,19 @@ pub fn analyze_modal_with_backend(
         ));
     }
     let (prep, system, mass) = modal_system(model)?;
-    let massive: Vec<_> = system
-        .free
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &d)| if mass[d] > 0.0 { Some(i) } else { None })
-        .collect();
-    if massive.is_empty() {
+    let root = MassRoot::new(&system, &mass)?;
+    if root.dim == 0 {
         return Err(Error::Request(
             "modal analysis needs positive mass on free DOFs".into(),
         ));
     }
-    let sqrt_mass = massive
-        .iter()
-        .map(|&i| mass[system.free[i]].sqrt())
-        .collect();
     let operator = MassOperator {
         system: &system,
-        massive,
-        sqrt_mass,
+        root: &root,
     };
-    let count = options.modes.min(operator.nrows());
+    let count = options.modes.min(root.dim);
     let (values, vectors) = backend.solve(&operator, count, options)?;
-    if values.len() != count || vectors.nrows() != operator.nrows() || vectors.ncols() != count {
+    if values.len() != count || vectors.nrows() != root.dim || vectors.ncols() != count {
         return Err(Error::Solver(
             "eigen backend returned invalid dimensions".into(),
         ));
@@ -240,11 +377,9 @@ pub fn analyze_modal_with_backend(
     let mut order: Vec<_> = (0..count).collect();
     order.sort_by(|&a, &b| values[b].total_cmp(&values[a]));
     let total_free_mass = std::array::from_fn(|axis| {
-        system
-            .free
-            .iter()
-            .filter(|&&d| d % 6 == axis)
-            .map(|&d| mass[d])
+        (0..prep.ndof)
+            .filter(|&d| d % 6 == axis && !system.is_restrained(d) && system.is_active(d))
+            .map(|d| mass[d])
             .sum::<f64>()
     });
     let mut modes = vec![];
@@ -257,32 +392,25 @@ pub fn analyze_modal_with_backend(
                 "eigensolver returned nonpositive inverse eigenvalue".into(),
             ));
         }
+        // Physical shape: phi = T K_r^-1 L y, so massless and slave DOFs are recovered.
+        let y: Vec<f64> = (0..root.dim).map(|i| vectors[(i, j)]).collect();
         let mut f = vec![0.0; system.free.len()];
-        for (i, &d) in operator.massive.iter().enumerate() {
-            f[d] = operator.sqrt_mass[i] * vectors[(i, j)];
-        }
-        let x = system.solve_free(&f);
-        let mut shape = vec![0.0; prep.ndof];
-        for (i, &d) in system.free.iter().enumerate() {
-            shape[d] = x[i];
-        }
-        let norm = shape
+        root.apply_l(&y, &mut f);
+        let mut shape = system.expand(&system.solve_free(&f));
+        let norm_m = shape
             .iter()
             .zip(&mass)
             .map(|(v, m)| m * v * v)
             .sum::<f64>()
             .sqrt();
-        if !norm.is_finite() || norm <= 0.0 {
+        if !norm_m.is_finite() || norm_m <= 0.0 {
             return Err(Error::Solver("invalid mode mass normalization".into()));
         }
         for v in &mut shape {
-            *v /= norm;
+            *v /= norm_m;
         }
         // Deterministic sign: largest mass-weighted component is positive.
-        let peak = system
-            .free
-            .iter()
-            .copied()
+        let peak = (0..prep.ndof)
             .max_by(|&a, &b| {
                 (shape[a].abs() * mass[a].sqrt()).total_cmp(&(shape[b].abs() * mass[b].sqrt()))
             })
@@ -294,18 +422,11 @@ pub fn analyze_modal_with_backend(
         }
         let lambda = 1.0 / mu;
         let kphi = system.apply(&shape);
-        let residual = system
-            .free
-            .iter()
-            .map(|&d| (kphi[d] - lambda * mass[d] * shape[d]).powi(2))
-            .sum::<f64>()
-            .sqrt();
-        let knorm = system
-            .free
-            .iter()
-            .map(|&d| kphi[d].powi(2))
-            .sum::<f64>()
-            .sqrt();
+        let out_of_balance: Vec<f64> = (0..prep.ndof)
+            .map(|d| kphi[d] - lambda * mass[d] * shape[d])
+            .collect();
+        let residual = norm(&system.reduce(&out_of_balance));
+        let knorm = norm(&system.reduce(&kphi));
         let relative = residual / knorm.max(f64::MIN_POSITIVE);
         if !relative.is_finite() || relative > options.tolerance.max(1e-10) * 100.0 {
             return Err(Error::Solver(format!(
@@ -323,11 +444,9 @@ pub fn analyze_modal_with_backend(
             max_orth = max_orth.max(dot.abs());
         }
         let participation: [f64; 3] = std::array::from_fn(|a| {
-            system
-                .free
-                .iter()
-                .filter(|&&d| d % 6 == a)
-                .map(|&d| mass[d] * shape[d])
+            (0..prep.ndof)
+                .filter(|&d| d % 6 == a)
+                .map(|d| mass[d] * shape[d])
                 .sum()
         });
         let effective_mass = participation.map(|v| v * v);
@@ -357,7 +476,7 @@ pub fn analyze_modal_with_backend(
         )));
     }
     let (sturm_count, sturm_cutoff) = if options.check_sturm {
-        let counter = SturmCounter::new(&system, &mass)?;
+        let counter = SturmCounter::new(&system, &root)?;
         let top = modes.last().unwrap().eigenvalue;
         // Count below the upper mode, excluding its potentially truncated repeated
         // eigenvalue cluster. This certifies that no LOWER modes were skipped.
@@ -393,7 +512,8 @@ pub fn modal_inertia_count(model: &Model, frequency_hz: f64) -> Result<usize> {
         ));
     }
     let (_, system, mass) = modal_system(model)?;
-    SturmCounter::new(&system, &mass)?.count((std::f64::consts::TAU * frequency_hz).powi(2))
+    let root = MassRoot::new(&system, &mass)?;
+    SturmCounter::new(&system, &root)?.count((std::f64::consts::TAU * frequency_hz).powi(2))
 }
 fn modal_system(model: &Model) -> Result<(Prepared, SparseSystem, Vec<f64>)> {
     let prep = Prepared::new(model)?;
@@ -429,7 +549,7 @@ fn modal_system(model: &Model) -> Result<(Prepared, SparseSystem, Vec<f64>)> {
     let system = prep.assemble(model, &states)?;
     let mass = prep.mass(model);
     for (d, &m) in mass.iter().enumerate() {
-        if m > 0.0 && !model.nodes[d / 6].restrained[d % 6] && system.map[d].is_none() {
+        if m > 0.0 && !system.is_restrained(d) && !system.is_active(d) {
             return Err(Error::Unstable(format!(
                 "mass on unstiffened node {} DOF {}",
                 d / 6,
@@ -440,65 +560,66 @@ fn modal_system(model: &Model) -> Result<(Prepared, SparseSystem, Vec<f64>)> {
     Ok((prep, system, mass))
 }
 
+/// Inertia of K_r - σ M_r via sparse LBLᵀ. Each shift needs a numeric
+/// factorization; only the symbolic analysis is reused.
 struct SturmCounter {
-    entries: Vec<Triplet<usize, usize, f64>>,
-    mass: Vec<f64>,
+    stiffness: Vec<Triplet<usize, usize, f64>>,
+    mass: Vec<Triplet<usize, usize, f64>>,
     symbolic: cholesky::SymbolicCholesky<usize>,
 }
 impl SturmCounter {
-    fn new(system: &SparseSystem, mass: &[f64]) -> Result<Self> {
+    fn new(system: &SparseSystem, root: &MassRoot) -> Result<Self> {
         let n = system.free.len();
-        let mut scale = vec![0.0; n];
-        for (j, &d) in system.free.iter().enumerate() {
-            for (i, &v) in system.full.row_idx_of_col(d).zip(system.full.val_of_col(d)) {
-                if i == d {
-                    scale[j] = 1.0 / v.sqrt();
-                }
-            }
-        }
-        let mut entries = vec![];
-        for (j, &d) in system.free.iter().enumerate() {
-            for (i, &v) in system.full.row_idx_of_col(d).zip(system.full.val_of_col(d)) {
-                if let Some(r) = system.map[i] {
-                    entries.push(Triplet::new(r, j, v * scale[r] * scale[j]));
-                }
-            }
-        }
-        let k = SparseColMat::try_new_from_triplets(n, n, &entries)
-            .map_err(|e| Error::Solver(format!("Sturm assembly: {e:?}")))?;
+        let scale = system.scale();
+        let stiffness: Vec<_> = system
+            .reduced_entries()
+            .iter()
+            .map(|t| Triplet::new(t.row, t.col, t.val * scale[t.row] * scale[t.col]))
+            .collect();
+        let mass: Vec<_> = root
+            .entries()
+            .into_iter()
+            .map(|t| Triplet::new(t.row, t.col, t.val * scale[t.row] * scale[t.col]))
+            .collect();
+        // Symbolic pattern is the union of both, so every shift shares it.
+        let pattern = Self::shifted(&stiffness, &mass, 0.0, n)?;
         let params = cholesky::CholeskySymbolicParams {
             supernodal_flop_ratio_threshold: SupernodalThreshold::FORCE_SUPERNODAL,
             ..Default::default()
         };
         let symbolic = cholesky::factorize_symbolic_cholesky(
-            k.symbolic(),
+            pattern.symbolic(),
             Side::Lower,
             Default::default(),
             params,
         )
         .map_err(|e| Error::Solver(format!("Sturm symbolic analysis: {e:?}")))?;
-        let mass = system
-            .free
-            .iter()
-            .enumerate()
-            .map(|(i, &d)| mass[d] * scale[i] * scale[i])
-            .collect();
         Ok(Self {
-            entries,
+            stiffness,
             mass,
             symbolic,
         })
     }
+    fn shifted(
+        stiffness: &[Triplet<usize, usize, f64>],
+        mass: &[Triplet<usize, usize, f64>],
+        sigma: f64,
+        n: usize,
+    ) -> Result<SparseColMat<usize, f64>> {
+        let entries: Vec<_> = stiffness
+            .iter()
+            .copied()
+            .chain(
+                mass.iter()
+                    .map(|t| Triplet::new(t.row, t.col, -sigma * t.val)),
+            )
+            .collect();
+        SparseColMat::try_new_from_triplets(n, n, &entries)
+            .map_err(|e| Error::Solver(format!("Sturm shifted matrix: {e:?}")))
+    }
     fn count(&self, sigma: f64) -> Result<usize> {
-        let n = self.mass.len();
-        let mut entries = self.entries.clone();
-        for e in &mut entries {
-            if e.row == e.col {
-                e.val -= sigma * self.mass[e.row];
-            }
-        }
-        let k = SparseColMat::try_new_from_triplets(n, n, &entries)
-            .map_err(|e| Error::Solver(format!("Sturm shifted matrix: {e:?}")))?;
+        let n = self.symbolic.nrows();
+        let k = Self::shifted(&self.stiffness, &self.mass, sigma, n)?;
         let mut values = vec![0.0; self.symbolic.len_val()];
         let mut subdiag = vec![0.0; n];
         let mut p = vec![0; n];

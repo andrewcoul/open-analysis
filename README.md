@@ -4,12 +4,16 @@ An open-source structural analysis engine, written in Rust, intended as the
 calculation core for an ETABS / SAP2000 style application.
 
 The engine takes a model as flat tables of nodes, materials, sections, frames,
-shells, load cases, and combinations. It runs linear static, nonlinear
-(tension-only / compression-only), P-Delta, modal, and response-spectrum
-analyses. All quantities are SI internally. Load combinations are solved in
-parallel and streamed through a result consumer so memory use stays bounded.
+shells, diaphragms, load cases, and combinations. Nodes can carry restraints,
+prescribed displacements, lumped mass, and grounded springs. Load cases can
+include self-weight. It runs linear static, nonlinear (tension-only /
+compression-only), P-Delta, modal, and response-spectrum analyses. All
+quantities are SI internally. Load combinations are solved in parallel and
+streamed through a result consumer so memory use stays bounded.
 
-The design and its rationale are in [docs/solver/PLAN.md](docs/solver/PLAN.md).
+The solver design and its rationale are in
+[docs/solver/PLAN.md](docs/solver/PLAN.md). The editable model layer that will
+sit above it is planned in [docs/model/PLAN.md](docs/model/PLAN.md).
 
 ## Layout
 

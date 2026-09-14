@@ -147,8 +147,10 @@ Each phase is complete only when its tests pass.
 
 ## Implementation status
 
-As of 2026-09-14, a first pass of all six phases exists in `crates/`. All 25
-tests pass, clippy is clean with warnings denied, and both bindings build.
+As of 2026-09-14, a first pass of all six phases plus the building features
+in Phase 7 exists in `crates/`. All 32 tests pass, clippy is clean with
+warnings denied, and both bindings build. The editable model layer that sits
+above the solver is planned separately in [docs/model/PLAN.md](../model/PLAN.md).
 
 | Phase | Status | Notes |
 |-------|--------|-------|
@@ -159,6 +161,42 @@ tests pass, clippy is clean with warnings denied, and both bindings build.
 | 4 Shells | Done | Rectangular Kirchhoff and DKMQ quads with membrane, surface pressure, lumped mass. |
 | 5 Dynamics | Done | Lumped mass, `faer` Krylov-Schur behind an `EigenBackend` trait, Sturm count via LBLᵀ, CQC and SRSS spectrum. |
 | 6 Bindings | Done | PyO3 and wasm-bindgen wrap one versioned JSON protocol. No release packaging yet. |
+| 7 Building features | Done | Self-weight per load case, grounded nodal springs, rigid diaphragms. See below. |
+
+### Phase 7: Building features (added 2026-09-14)
+
+Three things every building model needs that the first pass lacked.
+
+- **Self-weight.** A load case carries a per-axis multiplier, and the model
+  carries gravity. Frames get a uniform global line load from density, area
+  and gravity, so section-force diagrams include it. Shells get lumped nodal
+  forces from the same row-sum mass used for modal analysis. Verified against
+  a hand calculation, an explicit equivalent line load, and Pynite.
+- **Grounded springs.** Per-node translational and rotational stiffness added
+  to the diagonal. Spring reactions are reported in the reaction vector as
+  minus stiffness times displacement. A spring on a restrained DOF is an
+  error. Verified against a hand calculation and Pynite.
+- **Rigid diaphragms.** Implemented as a master-slave transformation, not a
+  penalty. The solver builds u = T q + u_prescribed where slaves of a
+  diaphragm share the master's two in-plane translations and its rotation
+  about the normal, offset by the lever arm n × r. Stiffness and loads are
+  reduced through Tᵀ at the triplet level, so no sparse matrix product is
+  needed. Slave in-plane DOFs cannot be restrained or sprung; the master must
+  be an explicit node, and its unstiffened DOFs are dropped rather than
+  reported unstable.
+
+  Modal analysis with diaphragms uses the reduced mass Tᵀ M T, which is
+  diagonal except for one dense block per diaphragm master coupling in-plane
+  translation and rotation. That block is factored by symmetric
+  eigendecomposition so the master need not sit at the centre of mass. The
+  Sturm count uses the same reduced entries. Verified against the exact
+  two-DOF coupled eigenproblem for offset masses, and the test confirms simple
+  lumping would be wrong by more than 5 percent on that case.
+
+Not yet done from this phase:
+
+- Automatic master node at the centre of mass. The model layer will own that.
+- Rigid-body modes remain out of scope.
 
 Deviations from the plan discovered during implementation:
 

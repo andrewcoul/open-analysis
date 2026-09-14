@@ -129,10 +129,13 @@ pub fn frame_section_forces(
         if !factor.is_finite() {
             return Err(Error::Request("nonfinite combination factor".into()));
         }
-        for load in &case.member {
-            if load.member() != member {
-                continue;
-            }
+        let self_weight = e.self_weight_load(member, model.gravity.si(), case.self_weight);
+        for load in case
+            .member
+            .iter()
+            .filter(|l| l.member() == member)
+            .chain(self_weight.iter())
+        {
             match load {
                 MemberLoad::Point {
                     position,

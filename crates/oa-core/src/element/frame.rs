@@ -1,7 +1,11 @@
 //! Euler-Bernoulli space frame. DOFs: [ux, uy, uz, rx, ry, rz] at each end.
 //! Consistent loads are integrated from displacement and rotation shape functions.
 use super::{GAUSS3, block_rotation, rotation};
-use crate::{Error, Result, model::*};
+use crate::{
+    Error, Result,
+    model::*,
+    units::{Length, LineLoad},
+};
 use nalgebra::{DMatrix, DVector, Matrix3, SMatrix, SVector, Vector3};
 
 pub(crate) type M12 = SMatrix<f64, 12, 12>;
@@ -75,6 +79,27 @@ impl FrameElement {
             geometric_unit: kg,
             releases: frame.releases,
             mass: m.density.si() * s.area.si() * length,
+        })
+    }
+    /// Uniform global-axis line load from density, area and gravity. None when zero.
+    pub fn self_weight_load(
+        &self,
+        member: FrameId,
+        gravity: f64,
+        factors: [f64; 3],
+    ) -> Option<MemberLoad> {
+        let weight_per_length = self.mass / self.length * gravity;
+        let q = factors.map(|f| LineLoad::from_si(f * weight_per_length));
+        if q.iter().all(|v| v.si() == 0.0) {
+            return None;
+        }
+        Some(MemberLoad::Distributed {
+            member,
+            start: Length::ZERO,
+            end: Length::from_si(self.length),
+            start_load: q,
+            end_load: q,
+            axes: Axes::Global,
         })
     }
     pub fn local_vector(&self, axes: Axes, v: [f64; 3]) -> Vector3<f64> {

@@ -25,7 +25,7 @@ struct Expected {
 fn pynite_differential_acceptance() {
     let reference: Reference =
         serde_json::from_str(include_str!("fixtures/pynite_reference.json")).unwrap();
-    assert!(reference.cases.len() >= 22);
+    assert!(reference.cases.len() >= 24);
     for fixture in reference.cases {
         let AnalysisResponse::Static { combinations, .. } =
             solve(&fixture.request).unwrap_or_else(|e| panic!("{}: {e}", fixture.name))

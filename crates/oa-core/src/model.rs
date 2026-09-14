@@ -1,4 +1,5 @@
 use crate::{Error, Result, units::*};
+use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};
 
 macro_rules! id {
@@ -46,6 +47,12 @@ pub struct Node {
     pub mass: [Mass; 3],
     #[serde(default)]
     pub mass_inertia: [MassInertia; 3],
+    /// Grounded springs added to the diagonal stiffness. Zero disables. A spring
+    /// on a restrained DOF is an error; restraints already fix that DOF.
+    #[serde(default)]
+    pub spring_translation: [Stiffness; 3],
+    #[serde(default)]
+    pub spring_rotation: [RotationalStiffness; 3],
 }
 impl Node {
     pub fn new(position: [Length; 3]) -> Self {
@@ -55,7 +62,19 @@ impl Node {
             prescribed: Default::default(),
             mass: [Mass::ZERO; 3],
             mass_inertia: [MassInertia::ZERO; 3],
+            spring_translation: [Stiffness::ZERO; 3],
+            spring_rotation: [RotationalStiffness::ZERO; 3],
         }
+    }
+    pub fn springs(&self) -> [f64; 6] {
+        [
+            self.spring_translation[0].si(),
+            self.spring_translation[1].si(),
+            self.spring_translation[2].si(),
+            self.spring_rotation[0].si(),
+            self.spring_rotation[1].si(),
+            self.spring_rotation[2].si(),
+        ]
     }
     pub fn fixed(position: [Length; 3]) -> Self {
         Self {
@@ -163,6 +182,35 @@ pub enum Axes {
     Local,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Axis {
+    X,
+    Y,
+    Z,
+}
+impl Axis {
+    pub fn index(self) -> usize {
+        match self {
+            Self::X => 0,
+            Self::Y => 1,
+            Self::Z => 2,
+        }
+    }
+}
+
+/// Rigid in-plane constraint. Slave nodes share the master's two in-plane
+/// translations and its rotation about the normal, offset by their lever arm.
+/// Out-of-plane translation and in-plane rotations of slaves stay independent.
+/// Master DOFs with no stiffness are dropped rather than reported unstable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Diaphragm {
+    pub master: NodeId,
+    pub nodes: Vec<NodeId>,
+    pub normal: Axis,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodalLoad {
@@ -234,6 +282,10 @@ pub struct SurfaceLoad {
 #[serde(deny_unknown_fields)]
 pub struct LoadCase {
     pub name: String,
+    /// Self-weight multiplier per global axis, e.g. [0, -1, 0] for gravity in -Y.
+    /// Frames get a uniform line load; shells get lumped nodal forces.
+    #[serde(default)]
+    pub self_weight: [f64; 3],
     #[serde(default)]
     pub nodal: Vec<NodalLoad>,
     #[serde(default)]
@@ -252,11 +304,17 @@ pub struct LoadCombination {
 fn schema_version() -> u32 {
     1
 }
+fn standard_gravity() -> Acceleration {
+    Acceleration::from_si(STANDARD_GRAVITY)
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Model {
     #[serde(default = "schema_version")]
     pub schema_version: u32,
+    /// Used to turn density into self-weight.
+    #[serde(default = "standard_gravity")]
+    pub gravity: Acceleration,
     #[serde(default)]
     pub nodes: Vec<Node>,
     #[serde(default)]
@@ -268,6 +326,8 @@ pub struct Model {
     #[serde(default)]
     pub shells: Vec<Shell>,
     #[serde(default)]
+    pub diaphragms: Vec<Diaphragm>,
+    #[serde(default)]
     pub load_cases: Vec<LoadCase>,
     #[serde(default)]
     pub combinations: Vec<LoadCombination>,
@@ -276,11 +336,13 @@ impl Default for Model {
     fn default() -> Self {
         Self {
             schema_version: 1,
+            gravity: standard_gravity(),
             nodes: vec![],
             materials: vec![],
             sections: vec![],
             frames: vec![],
             shells: vec![],
+            diaphragms: vec![],
             load_cases: vec![],
             combinations: vec![],
         }
@@ -346,7 +408,21 @@ impl Model {
         if self.frames.is_empty() && self.shells.is_empty() {
             return fail("no elements".into());
         }
+        if !self.gravity.si().is_finite() || self.gravity.si() <= 0.0 {
+            return fail("gravity must be positive and finite".into());
+        }
         for (i, n) in self.nodes.iter().enumerate() {
+            let springs = n.springs();
+            if springs.iter().any(|k| !k.is_finite() || *k < 0.0) {
+                return fail(format!(
+                    "node {i}: spring stiffness must be finite and >= 0"
+                ));
+            }
+            if springs.iter().zip(n.restrained).any(|(k, r)| *k > 0.0 && r) {
+                return fail(format!(
+                    "node {i}: spring on a restrained DOF; remove one or the other"
+                ));
+            }
             if n.xyz()
                 .iter()
                 .chain(n.prescribed.values().iter())
@@ -431,10 +507,51 @@ impl Model {
                 ));
             }
         }
+        let mut slaves = vec![false; self.nodes.len()];
+        let mut masters = vec![false; self.nodes.len()];
+        for (i, d) in self.diaphragms.iter().enumerate() {
+            if d.master.0 >= self.nodes.len()
+                || d.nodes.is_empty()
+                || d.nodes.iter().any(|n| n.0 >= self.nodes.len())
+            {
+                return fail(format!("diaphragm {i}: invalid or missing node IDs"));
+            }
+            if masters[d.master.0] || slaves[d.master.0] {
+                return fail(format!(
+                    "diaphragm {i}: master node {} already belongs to another diaphragm",
+                    d.master.0
+                ));
+            }
+            masters[d.master.0] = true;
+            let n = d.normal.index();
+            let constrained: Vec<usize> = (0..3).filter(|a| *a != n).chain([3 + n]).collect();
+            for s in &d.nodes {
+                if s.0 == d.master.0 || slaves[s.0] || masters[s.0] {
+                    return fail(format!(
+                        "diaphragm {i}: node {} is its master or already constrained",
+                        s.0
+                    ));
+                }
+                slaves[s.0] = true;
+                let node = &self.nodes[s.0];
+                if constrained
+                    .iter()
+                    .any(|&dof| node.restrained[dof] || node.springs()[dof] > 0.0)
+                {
+                    return fail(format!(
+                        "diaphragm {i}: node {} restrains or springs an in-plane DOF; apply those to the master",
+                        s.0
+                    ));
+                }
+            }
+        }
         let mut names = std::collections::HashSet::new();
         for (i, c) in self.load_cases.iter().enumerate() {
             if c.name.trim().is_empty() || !names.insert(&c.name) {
                 return fail(format!("load case {i}: empty or duplicate name"));
+            }
+            if c.self_weight.iter().any(|v| !v.is_finite()) {
+                return fail(format!("load case {i}: nonfinite self-weight factor"));
             }
             for l in &c.nodal {
                 if l.node.0 >= self.nodes.len() || l.values().iter().any(|x| !x.is_finite()) {
@@ -506,6 +623,37 @@ impl Model {
             }
         }
         Ok(())
+    }
+    /// Per DOF: None when independent, or the master DOF terms of a slave DOF.
+    /// A slave in-plane translation is u_m + theta_n * (n x r); its normal rotation is theta_n.
+    pub(crate) fn constraints(&self) -> Vec<Option<Vec<(usize, f64)>>> {
+        let mut out = vec![None; self.nodes.len() * 6];
+        for d in &self.diaphragms {
+            let n = d.normal.index();
+            let mut normal = Vector3::zeros();
+            normal[n] = 1.0;
+            let master = Vector3::from(self.nodes[d.master.0].xyz());
+            let rotation = d.master.0 * 6 + 3 + n;
+            for s in &d.nodes {
+                let arm = normal.cross(&(Vector3::from(self.nodes[s.0].xyz()) - master));
+                for a in (0..3).filter(|a| *a != n) {
+                    let mut terms = vec![(d.master.0 * 6 + a, 1.0)];
+                    if arm[a] != 0.0 {
+                        terms.push((rotation, arm[a]));
+                    }
+                    out[s.0 * 6 + a] = Some(terms);
+                }
+                out[s.0 * 6 + 3 + n] = Some(vec![(rotation, 1.0)]);
+            }
+        }
+        out
+    }
+    pub(crate) fn diaphragm_masters(&self) -> Vec<bool> {
+        let mut out = vec![false; self.nodes.len()];
+        for d in &self.diaphragms {
+            out[d.master.0] = true;
+        }
+        out
     }
     pub(crate) fn frame_length(&self, id: FrameId) -> f64 {
         let f = &self.frames[id.0];

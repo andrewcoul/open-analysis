@@ -168,8 +168,12 @@ pub fn analyze_spectrum(model: &Model, options: &SpectrumOptions) -> Result<Spec
         }
         let mut base = [0.0; 6];
         for (i, node) in model.nodes.iter().enumerate() {
+            let springs = node.springs();
             for d in 0..6 {
-                if !node.restrained[d] {
+                if springs[d] > 0.0 {
+                    // Element sums include inertia at sprung nodes; use the spring law.
+                    reaction[6 * i + d] = -springs[d] * u[6 * i + d];
+                } else if !node.restrained[d] {
                     reaction[6 * i + d] = 0.0;
                 }
                 base[d] += reaction[6 * i + d];

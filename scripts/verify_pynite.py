@@ -39,6 +39,7 @@ else:
 
 def reference_model(model):
     ref = FEModel3D()
+    gravity = model.get("gravity", 9.80665)
     for i, node in enumerate(model["nodes"]):
         ref.add_node(f"n{i}", *node["position"])
         ref.def_support(f"n{i}", *node.get("restrained", [False] * 6))
@@ -47,8 +48,13 @@ def reference_model(model):
         for dof, value in zip(["DX", "DY", "DZ", "RX", "RY", "RZ"], values):
             if value:
                 ref.def_node_disp(f"n{i}", dof, value)
+        springs = node.get("spring_translation", [0] * 3) + node.get("spring_rotation", [0] * 3)
+        for dof, value in zip(["DX", "DY", "DZ", "RX", "RY", "RZ"], springs):
+            if value:
+                ref.def_support_spring(f"n{i}", dof, value)
     for i, m in enumerate(model["materials"]):
-        ref.add_material(f"m{i}", m["young"], m["young"] / (2 * (1 + m["poisson"])), m["poisson"], 0)
+        # Pynite's rho is a weight density used only for self-weight.
+        ref.add_material(f"m{i}", m["young"], m["young"] / (2 * (1 + m["poisson"])), m["poisson"], m.get("density", 0) * gravity)
     for i, s in enumerate(model.get("sections", [])):
         ref.add_section(f"s{i}", s["area"], s["iy"], s["iz"], s["torsion"])
     for i, f in enumerate(model.get("frames", [])):
@@ -59,6 +65,9 @@ def reference_model(model):
         method(f"s{i}", *(f"n{n}" for n in s["nodes"]), s["thickness"], f"m{s['material']}")
     for case in model["load_cases"]:
         name = case["name"]
+        for axis, factor in zip(["FX", "FY", "FZ"], case.get("self_weight", [0] * 3)):
+            if factor:
+                ref.add_member_self_weight(axis, factor, name)
         for load in case.get("nodal", []):
             values = load.get("force", [0] * 3) + load.get("moment", [0] * 3)
             for dof, value in zip(["FX", "FY", "FZ", "MX", "MY", "MZ"], values):
@@ -120,6 +129,16 @@ def cases():
     m["nodes"][1]["restrained"] = [True] * 6
     m["nodes"][1]["prescribed"] = {"translation": [0.001, -0.002, 0.003], "rotation": [0.001, 0, 0]}
     yield "support_settlement", m, "linear", 1e-8
+    m = basic((2, 3, -1))
+    m["materials"][0]["density"] = 7850
+    m["load_cases"][0]["self_weight"] = [0, -1, 0]
+    m["load_cases"][0]["nodal"] = [{"node": 1, "force": [500, 0, 0]}]
+    yield "self_weight_sloped", m, "linear", 1e-8
+    m = basic()
+    m["nodes"][1]["spring_translation"] = [0, 2e6, 3e5]
+    m["nodes"][1]["spring_rotation"] = [0, 0, 4e5]
+    m["load_cases"][0]["nodal"] = [{"node": 1, "force": [0, -1000, 700], "moment": [0, 0, 300]}]
+    yield "tip_support_springs", m, "linear", 1e-8
     # Logan 5.30 geometry from Pynite's test_2D_frames.py, converted to SI.
     m = basic()
     m["nodes"] = [{"position": [x * 0.3048, y * 0.3048, 0], "restrained": [i in [0, 5]] * 6} for i, (x, y) in enumerate([(0, 0), (0, 30), (15, 40), (35, 40), (50, 30), (50, 0)])]
