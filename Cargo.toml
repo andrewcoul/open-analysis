@@ -6,6 +6,7 @@ members = [
     "crates/oa-mcp",
     "crates/oa-py",
     "crates/oa-wasm",
+    "crates/oa-gui",
 ]
 default-members = ["crates/oa-core"]
 resolver = "2"

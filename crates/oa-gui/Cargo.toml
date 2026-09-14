@@ -1,0 +1,18 @@
+[package]
+name = "oa-gui"
+description = "Desktop model viewer and editor for open-analysis, built on GPUI Kit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "oa-gui"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit = "0.6.1"
+oa-core = { workspace = true, features = ["parallel"] }
+oa-model = { workspace = true, features = ["store"] }
+serde.workspace = true
+serde_json.workspace = true
