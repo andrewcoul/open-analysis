@@ -183,7 +183,23 @@ commands serialized as JSON, so there is one code path for editing.
 ## Implementation status
 
 As of 2026-09-14, phases M0 through M5 exist in `crates/oa-model` with 11
-acceptance tests. M6, the agent interface, is not started.
+acceptance tests, and M6 exists in `crates/oa-mcp` with 2.
+
+Decisions made while building M6:
+
+- **Tools take plain ids and kind names.** The model layer's `EntityId` and
+  `EntityKind` are not given JSON schemas; the server converts at the
+  boundary. That keeps `schemars` out of the model crate.
+- **Commands are passed as JSON, documented by a tool.** `apply_commands`
+  takes an array of command objects and `command_reference` returns a
+  worked example of each. A schema for the whole command enum would be
+  large and less readable to an agent than the examples.
+- **Any edit discards results.** The session drops its compilation and
+  result store on every applied, undone, or redone command, so an agent
+  can never read results from a model that no longer matches them.
+- **Summaries are bounded.** `list_entities` and `group_envelope` take a
+  limit and report whether they truncated; `query_results` caps rows at
+  1,000.
 
 | Phase | Status | Notes |
 |---|---|---|
@@ -193,7 +209,7 @@ acceptance tests. M6, the agent interface, is not started.
 | M3 Libraries | Partial | Loader, provenance on copy, and a starter file with five sections and four materials. Full AISC and Eurocode tables are not bundled; they need a data import step and a decision about source and licence. |
 | M4 Groups | Done | Groups hold any entity kind; removal strips membership and the inverse restores it; `Compiled::group_indices` maps a group to solver indices. |
 | M5 Bindings | Done | `apply_commands_json`, `compile_json`, `solve_json` exposed through wasm-bindgen. PyO3 not extended, by decision. |
-| M6 Agent interface | Not started | |
+| M6 Agent interface | Done | `crates/oa-mcp`: stdio MCP server over a transport-independent `Session`. 22 tools covering describe, list, get, find, ids, command reference, atomic apply, undo, redo, new, load, save, library, compile, analyze, envelope, group envelope, drift, read-only SQL, and index translation. The acceptance scenario, a two-storey frame built from commands through to governing drift, runs as a test against the session. |
 
 Decisions made during implementation:
 

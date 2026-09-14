@@ -22,6 +22,7 @@ crates/oa-core/     analysis engine, CLI binary `oa`, and tests
 crates/oa-results/  SQLite result store: consumer, envelopes, read-only SQL
 crates/oa-model/    editable model: stable ids, names, groups, commands with
                     undo, versioned file format, libraries, command journal
+crates/oa-mcp/      MCP server exposing the model layer and results to AI agents
 crates/oa-py/       PyO3 extension module (verification harness)
 crates/oa-wasm/     wasm-bindgen module: solver plus model-layer entry points
 python/open_analysis/   Python package wrapping the extension
@@ -51,7 +52,9 @@ winget install --id BrechtSanders.WinLibs.POSIX.MSVCRT -e
 ```
 
 Pick the MSVCRT variant, since that is the C runtime the `windows-gnu` Rust
-target links against.
+target links against. The wrapper also links with that toolchain rather than
+rustup's bundled one, because the bundled `dlltool` has no assembler and
+cannot build the import libraries that `tokio` and friends need.
 
 ```bash
 cargo build -p oa-core
@@ -73,6 +76,25 @@ JSON results to stdout:
 ```bash
 cargo run -p oa-core --bin oa -- examples/cantilever.json
 ```
+
+### MCP server for agents
+
+`oa-mcp` speaks the Model Context Protocol over stdio. Build it and point
+an MCP client at the binary:
+
+```bash
+cargo build --release -p oa-mcp
+```
+
+```json
+{ "mcpServers": { "open-analysis": { "command": "target/release/oa-mcp" } } }
+```
+
+An agent then calls `describe_model`, reads `command_reference`, builds a
+model with `apply_commands`, runs `compile` and `analyze`, and asks for
+`envelope`, `group_envelope`, `drift`, or `query_results`. Every edit
+returns its inverse, so `undo` and `redo` work, and any edit discards
+results so stale numbers can never be read back.
 
 ### Python
 

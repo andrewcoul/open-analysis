@@ -1,0 +1,22 @@
+[package]
+name = "oa-mcp"
+description = "MCP server exposing the open-analysis model layer and result store to AI agents"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "oa-mcp"
+path = "src/main.rs"
+
+[dependencies]
+oa-core = { workspace = true, features = ["parallel"] }
+oa-model = { workspace = true, features = ["store"] }
+oa-results.workspace = true
+rmcp = { version = "3", features = ["server", "transport-io", "macros"] }
+schemars = "1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }

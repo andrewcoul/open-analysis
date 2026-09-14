@@ -3,6 +3,7 @@ members = [
     "crates/oa-core",
     "crates/oa-results",
     "crates/oa-model",
+    "crates/oa-mcp",
     "crates/oa-py",
     "crates/oa-wasm",
 ]

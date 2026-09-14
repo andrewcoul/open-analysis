@@ -4,7 +4,7 @@ use oa_core::{units::*, *};
 use oa_results::{ResultStore, model_hash};
 
 /// Same regular moment frame as scripts/benchmark_pynite.py: Y up, 6 m bays, 4 m storeys.
-fn frame_model(bx: usize, by: usize, stories: usize, combos: usize) -> Model {
+pub fn frame_model(bx: usize, by: usize, stories: usize, combos: usize) -> Model {
     let (nx, ny, nz) = (bx + 1, by + 1, stories + 1);
     let index = |i: usize, j: usize, k: usize| k * ny * nx + j * nx + i;
     let mut m = Model::default();

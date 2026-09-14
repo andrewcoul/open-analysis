@@ -215,6 +215,8 @@ pub(crate) struct SparseSystem {
     constraints: Vec<Option<Vec<(usize, f64)>>>,
     /// Unscaled reduced stiffness entries, both triangles present.
     reduced: Vec<Triplet<usize, usize, f64>>,
+    /// Row-sum norm of the reduced stiffness, for backward-error scaling.
+    norm_inf: f64,
     scale: Vec<f64>,
     factor: Option<Llt<usize, f64>>,
     /// Full-space displacement implied by prescribed values, slaves included.
@@ -326,12 +328,18 @@ impl SparseSystem {
             }
             Some(factor)
         };
+        let mut row_sums = vec![0.0; free.len()];
+        for t in &reduced {
+            row_sums[t.row] += t.val.abs();
+        }
+        let norm_inf = row_sums.iter().copied().fold(0.0, f64::max);
         let mut system = Self {
             full,
             free,
             map,
             constraints,
             reduced,
+            norm_inf,
             scale,
             factor,
             prescribed: vec![],
@@ -431,26 +439,42 @@ impl SparseSystem {
         let known = self.apply(&self.prescribed);
         let rhs: Vec<f64> = f.iter().zip(&known).map(|(a, b)| a - b).collect();
         let mut x = self.solve_free(&self.reduce(&rhs));
-        // One iterative-refinement step also improves reaction recovery on stiff frames.
-        let ku = self.apply(&self.expand(&x));
-        let rhs: Vec<f64> = f.iter().zip(&ku).map(|(a, b)| a - b).collect();
-        for (xi, c) in x.iter_mut().zip(self.solve_free(&self.reduce(&rhs))) {
-            *xi += c;
+        let load_scale = norm(&self.reduce(f)).hypot(norm(&self.reduce(&known)));
+        // Iterative refinement recovers digits lost in the factorization of
+        // badly conditioned systems. Each step gains roughly a factor of
+        // kappa * epsilon, so a few steps suffice whenever the factor is usable.
+        let mut u = self.expand(&x);
+        let mut ku = self.apply(&u);
+        let mut rel = f64::INFINITY;
+        for _ in 0..=MAX_REFINEMENT_STEPS {
+            let out_of_balance: Vec<f64> = ku.iter().zip(f).map(|(a, b)| a - b).collect();
+            let reduced = self.reduce(&out_of_balance);
+            // Backward error: the residual relative to the size of the terms
+            // that produced it, ||K|| ||x|| + ||f||. A residual near that floor
+            // means the solution is as accurate as the conditioning allows, and
+            // no refinement can lower it further. Relative to ||f|| alone, a
+            // badly conditioned but perfectly well solved system would be
+            // rejected for large displacements it genuinely has.
+            let x_norm = x.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+            let scale = (self.norm_inf * x_norm + load_scale).max(1.0);
+            let next = norm(&reduced) / scale;
+            if !next.is_finite() {
+                return Err(Error::Solver("nonfinite displacements".into()));
+            }
+            let stalled = next > rel * 0.5;
+            rel = next.min(rel);
+            if next <= RESIDUAL_TOLERANCE || stalled {
+                break;
+            }
+            for (xi, c) in x.iter_mut().zip(self.solve_free(&reduced)) {
+                *xi -= c;
+            }
+            u = self.expand(&x);
+            ku = self.apply(&u);
         }
-        let u = self.expand(&x);
-        if u.iter().any(|x| !x.is_finite()) {
-            return Err(Error::Solver("nonfinite displacements".into()));
-        }
-        let ku = self.apply(&u);
-        let out_of_balance: Vec<f64> = ku.iter().zip(f).map(|(a, b)| a - b).collect();
-        let residual = norm(&self.reduce(&out_of_balance));
-        let norm = norm(&self.reduce(f))
-            .hypot(norm(&self.reduce(&known)))
-            .max(1.0);
-        let rel = residual / norm;
-        if rel > 1e-7 {
+        if rel > RESIDUAL_TOLERANCE {
             return Err(Error::Solver(format!(
-                "equilibrium residual {rel:e} exceeds 1e-7"
+                "equilibrium residual {rel:e} exceeds {RESIDUAL_TOLERANCE:e} after refinement; the stiffness matrix is too badly conditioned"
             )));
         }
         let reactions = (0..u.len())
@@ -467,6 +491,10 @@ impl SparseSystem {
         Ok((u, reactions, rel))
     }
 }
+/// Relative equilibrium residual accepted from a linear solve.
+pub const RESIDUAL_TOLERANCE: f64 = 1e-7;
+/// Refinement steps after the first solve before giving up.
+pub const MAX_REFINEMENT_STEPS: usize = 8;
 pub(crate) fn norm(v: &[f64]) -> f64 {
     v.iter().map(|x| x * x).sum::<f64>().sqrt()
 }

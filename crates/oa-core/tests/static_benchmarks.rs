@@ -192,10 +192,16 @@ fn load_combinations_parallel_order_and_output_selection() {
     .unwrap();
     for i in 0..17 {
         assert_eq!(b.combinations[i].combination, format!("c{i}"));
-        assert_eq!(
-            a.combinations[i].displacements,
-            b.combinations[i].displacements
+        // Multithreaded factorization changes summation order, so agreement
+        // is to roundoff rather than bit-for-bit.
+        let (ua, ub) = (
+            a.combinations[i].displacements.as_ref().unwrap(),
+            b.combinations[i].displacements.as_ref().unwrap(),
         );
+        let scale = ua.iter().flatten().fold(0.0_f64, |m, v| m.max(v.abs()));
+        for (x, y) in ua.iter().flatten().zip(ub.iter().flatten()) {
+            assert!((x - y).abs() <= 1e-12 * scale, "{x:e} vs {y:e}");
+        }
     }
     let c = analyze_static(
         &m,

@@ -20,9 +20,14 @@ if (Test-Path -LiteralPath $solverLocalCargo) {
     if ($solverMingw) {
         $solverMingwBin = Join-Path $solverMingw.FullName 'mingw64\bin'
         if (Test-Path -LiteralPath (Join-Path $solverMingwBin 'gcc.exe')) {
-            $env:PATH = $env:PATH + ';' + $solverMingwBin
+            # Link with the full toolchain too: rustup's bundled dlltool has no
+            # assembler, so raw-dylib imports (getrandom, tokio) fail to link.
+            $env:PATH = $solverMingwBin + ';' + $env:PATH
             $env:CC = Join-Path $solverMingwBin 'gcc.exe'
             $env:AR = Join-Path $solverMingwBin 'ar.exe'
+            $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = Join-Path $solverMingwBin 'gcc.exe'
+            $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS = '-C link-self-contained=no'
+            $env:PYO3_MINGW_DLLTOOL = Join-Path $solverMingwBin 'dlltool.exe'
         }
     }
     & $solverLocalCargo @args

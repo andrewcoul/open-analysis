@@ -196,8 +196,37 @@ Three things every building model needs that the first pass lacked.
 
 Not yet done from this phase:
 
-- Automatic master node at the centre of mass. The model layer will own that.
+- Automatic master node at the centre of mass. The model layer owns that now.
 - Rigid-body modes remain out of scope.
+
+### Equilibrium check and iterative refinement (revised 2026-09-14)
+
+The linear solve originally did one step of iterative refinement and then
+rejected any solution whose residual exceeded 1e-7 relative to the load. A
+27,716-node, 40-storey frame failed that check at 1e-4, and so did a small
+chain of members with a 1e6 stiffness contrast. Neither was a solver
+failure. On both, the products in K·u are up to 1e12 times larger than the
+loads they sum to, so the residual cannot be computed below the rounding
+floor no matter how many refinement steps run. The check was measuring
+conditioning, not accuracy.
+
+Two changes:
+
+- **Backward error is the criterion.** The residual is now scaled by
+  ‖K‖·‖u‖ + ‖f‖, with ‖K‖ the row-sum norm of the reduced stiffness. A
+  residual at that floor means the solution is as accurate as double
+  precision allows for that matrix, which is the standard definition of a
+  well-solved system. The tolerance stays at 1e-7. Forward accuracy is
+  still bounded by condition number times machine epsilon, and callers
+  who need better must improve the model, not the solver.
+- **Refinement iterates.** Up to eight steps, stopping when the residual
+  is under tolerance or stops halving. This helps where factorization
+  error dominates and costs nothing where it does not.
+
+The mechanism guard is unchanged: an equilibrated inverse probe above 1e12
+still rejects the system outright, which is what catches a 1e8 stiffness
+contrast. The `relative_residual` reported per combination is now the
+backward error. Tests: `crates/oa-core/tests/conditioning.rs`.
 
 Deviations from the plan discovered during implementation:
 
@@ -376,8 +405,22 @@ crate does not change.
   | Write results to SQLite | 1.18 s | 53 MB |
   | Envelope query from SQLite | 0.7 ms | |
 
+  Scaling, measured later the same day with 32 combinations except the
+  last row, which has 8:
+
+  | Nodes | DOFs | Solve | JSON | SQLite write | Envelope query |
+  |---|---|---|---|---|---|
+  | 6,400 | 38k | 3.97 s | 0.47 s (347 MB) | 4.17 s (172 MB) | 0.9 ms |
+  | 14,553 | 87k | 11.4 s | 1.03 s (805 MB) | 9.64 s (404 MB) | 0.8 ms |
+  | 27,716 | 166k | 27.2 s | 0.52 s (388 MB) | 2.88 s (198 MB) | 0.3 ms |
+
+  Both writers are linear in row count, SQLite at a steady 230,000 rows per
+  second and JSON at 780 MB per second, so the 8x ratio is constant. The
+  write tracks the solve time and falls well below it as models grow,
+  because the solve grows faster than linearly. Queries stay flat.
+
   Writing indexed rows is more work than streaming text, and the store
-  costs about 1.8 solves on this model. What it buys is a sub-millisecond
+  costs about 1.8 solves on the smallest model above. What it buys is a sub-millisecond
   envelope query against a 53 MB file that never has to be loaded into
   memory, which is the point. The JSON path cannot answer that query
   without parsing 108 MB first. The revised criterion is that the write
