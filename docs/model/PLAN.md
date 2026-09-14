@@ -97,6 +97,24 @@ The model layer does not convert.
 Compilation is pure and cheap enough to run on every edit. Results from the
 solver are re-attached to entities through the mapping.
 
+### The command API is the primary interface
+
+The model layer is designed to be driven by AI agents as a first-class
+client, alongside a GUI. That decision, made 2026-09-14, shapes several
+things that would otherwise be conveniences:
+
+- **Names are the addressing scheme.** An agent says "the Level 4 beams",
+  not "frames 380 to 421". Every entity has a name, names are required
+  rather than optional for anything an agent can create, and groups are how
+  selections are expressed.
+- **Errors name entities.** Validation problems carry entity names and ids,
+  never solver indices, so an agent can act on them.
+- **Commands are the tool surface.** Each command has a JSON schema and a
+  one-line description. That is what an agent sees, so the command set is
+  designed to read well as a list of tools, not just to be complete.
+- **The GUI is one client.** It issues the same commands an agent does. No
+  edit path bypasses the command interface.
+
 ### Edit operations
 
 All changes go through a command interface:
@@ -130,12 +148,70 @@ entries are copied in, not referenced.
 Results are not stored in the model file. They are a separate artifact keyed by
 model content hash, so a stale result cannot be mistaken for a current one.
 
+### Storage: why not a database for the model
+
+SQLite and similar stores were considered for the model and rejected. An
+editable model is small by database standards, loads into memory in well under
+a second even at a few hundred thousand entities, and every operation the model
+layer performs wants typed structs with direct references. A database under
+that would mean either round-tripping every edit or maintaining two copies of
+the truth, and it would make the file diff badly in version control. ETABS
+makes the same choice: its `.EDB` is a document loaded whole into memory, with
+a text mirror for recovery.
+
+So the model is in-memory structs while editing and versioned JSON on disk.
+
+Results are the opposite case and get a real store: SQLite through
+`rusqlite`, designed in the solver plan's Phase 8. The model layer's
+obligations toward it are:
+
+- Write the model content hash into every result store it triggers.
+- Refuse to attach results whose hash does not match the current model.
+- Map result rows back to entity ids through the compilation mapping.
+
+The command log is journalled to a small SQLite file for autosave and crash
+recovery in Phase M1. Same crate as the result store, so one dependency
+serves both.
+
 ### Python and WebAssembly
 
 The model layer is exposed through the same JSON approach as the solver. A
 `compile_json` entry point takes a model document and returns the solver
 request plus the mapping. Python and browser clients build models using
 commands serialized as JSON, so there is one code path for editing.
+
+## Implementation status
+
+As of 2026-09-14, phases M0 through M5 exist in `crates/oa-model` with 11
+acceptance tests. M6, the agent interface, is not started.
+
+| Phase | Status | Notes |
+|---|---|---|
+| M0 Entities and compilation | Done | `EntityId`, nine entity tables as `BTreeMap`, `compile` with two-way `Mapping` and entity-addressed `Problem`s. Every solver fixture round-trips through `Model::from_solver` to an identical solver model. Diaphragms with `master: None` get a synthetic master at the mass-weighted centroid; verified to give the same modal eigenvalues as an explicit master. |
+| M1 Commands and history | Done | 29 command variants, each returning its inverse; `Batch` rolls back on first failure; `Editor` with undo and redo; SQLite command `Journal` with replay. Property test: 300 random commands, undo to start, redo to end. |
+| M2 File format | Done | `format_version`, migration hook, `tests/fixtures/format_v1.json`. |
+| M3 Libraries | Partial | Loader, provenance on copy, and a starter file with five sections and four materials. Full AISC and Eurocode tables are not bundled; they need a data import step and a decision about source and licence. |
+| M4 Groups | Done | Groups hold any entity kind; removal strips membership and the inverse restores it; `Compiled::group_indices` maps a group to solver indices. |
+| M5 Bindings | Done | `apply_commands_json`, `compile_json`, `solve_json` exposed through wasm-bindgen. PyO3 not extended, by decision. |
+| M6 Agent interface | Not started | |
+
+Decisions made during implementation:
+
+- **`next_id` is monotonic and undo does not rewind it.** Ids are never
+  reused even after undo, which keeps journals and external references safe.
+  The property test masks this one field when comparing to the start state.
+- **Removal is refused while referenced.** No cascade command yet. A caller
+  removes dependents first, in a `Batch` if it wants atomicity.
+- **Group membership is part of removal's inverse.** Removing an entity
+  strips it from groups; the inverse is a `Batch` that re-adds the entity
+  and restores each affected group.
+- **Solver validation errors arrive without entity ids.** Reference and
+  naming problems are caught by the model layer with ids. Errors from the
+  solver's own validation, such as a zero-length frame, are passed through
+  as a single problem with no entity. Structured errors from the solver
+  would fix that and are a possible later change to `oa-core`.
+- **Rigid end offsets and cardinal points** were deferred, as the open
+  question allowed.
 
 ## Phases
 
@@ -174,18 +250,35 @@ commands serialized as JSON, so there is one code path for editing.
 
 ### Phase M5: Bindings
 
-- `compile_json` and command application through PyO3 and wasm-bindgen.
-- Example script that builds a model through commands and analyses it.
+- `compile_json` and command application through wasm-bindgen for the
+  browser, and through PyO3 for the verification harness only.
+- Example that builds a model through JSON commands and analyses it.
+
+### Phase M6: Agent interface
+
+- An MCP server crate on top of the model layer, using the official Rust
+  SDK. It exposes the commands, compile and analyse, and result queries as
+  tools with schemas. No Python in the path.
+- **Atomic batches.** A tool that applies a list of commands and rolls back
+  on the first failure, so an agent's multi-step change lands whole or not
+  at all.
+- **Summarisation tools.** An agent cannot read a 100,000 node model.
+  Tools like describe-model, list-groups, and summarise-results-for-group
+  return sizes that fit a context window.
+- **Result queries.** The Phase 8 envelope and drift functions as tools, and
+  a raw SQL tool over the result store with a row limit.
+- Acceptance: an agent session that builds a two-storey frame from a
+  description, runs it, and reports the governing drift, driven end to end
+  through the MCP tools with no hand-written code.
 
 ## Open questions
 
-- **Automatic diaphragm masters.** The solver requires an explicit master node.
-  ETABS places one at the centre of mass automatically. The model layer should
-  probably create and manage that node, updating its position as masses change.
-  Decide in M0.
-- **Section orientation and offsets.** The solver has roll and local-y hints
-  but no cardinal points or rigid end offsets. These are model-layer concepts
-  that compile to node positions and releases, but end offsets may need solver
-  support. Decide in M0.
-- **Result storage.** Keep results in memory keyed by model hash for now. A
-  disk-backed result store is deferred, matching the solver plan.
+- **Automatic diaphragm masters.** Resolved in M0: a diaphragm may omit its
+  master, and compilation creates one at the mass-weighted centroid of the
+  slaves. It is recorded in `Mapping::synthetic_masters` and has no entity id.
+- **Section orientation and offsets.** Deferred. The solver has roll and
+  local-y hints but no cardinal points or rigid end offsets. End offsets
+  likely need solver support and should be designed there first.
+- **Result storage.** Resolved: Parquet files queried through DuckDB, owned by
+  the solver crate as Phase 8. The model layer keys them by content hash and
+  maps rows back to entity ids.

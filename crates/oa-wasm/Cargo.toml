@@ -9,5 +9,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 oa-core.workspace = true
+oa-model.workspace = true
 wasm-bindgen = "0.2"
 

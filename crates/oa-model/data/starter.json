@@ -1,0 +1,18 @@
+{
+  "name": "oa-starter",
+  "version": "2026-09-14",
+  "note": "Sample entries for development and examples. Values are common published figures for these shapes but have not been checked against the current AISC or Eurocode tables. Verify before design use. Full library tables are a separate import.",
+  "sections": [
+    { "designation": "W14x90", "area": 0.017096736, "iy": 0.000150681, "iz": 0.000415801, "torsion": 0.00000169 },
+    { "designation": "W12x26", "area": 0.004935472, "iy": 0.0000072, "iz": 0.0000849, "torsion": 0.000000125 },
+    { "designation": "W8x31", "area": 0.005890318, "iy": 0.0000154, "iz": 0.0000458, "torsion": 0.000000223 },
+    { "designation": "IPE200", "area": 0.002848, "iy": 0.000001424, "iz": 0.00001943, "torsion": 0.0000000698 },
+    { "designation": "HEB200", "area": 0.00781, "iy": 0.00002003, "iz": 0.00005696, "torsion": 0.000000593 }
+  ],
+  "materials": [
+    { "designation": "A992", "young": 200000000000, "poisson": 0.3, "density": 7850 },
+    { "designation": "A36", "young": 200000000000, "poisson": 0.3, "density": 7850 },
+    { "designation": "S355", "young": 210000000000, "poisson": 0.3, "density": 7850 },
+    { "designation": "C30/37", "young": 33000000000, "poisson": 0.2, "density": 2500 }
+  ]
+}

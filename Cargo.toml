@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/oa-core", "crates/oa-py", "crates/oa-wasm"]
+members = [
+    "crates/oa-core",
+    "crates/oa-results",
+    "crates/oa-model",
+    "crates/oa-py",
+    "crates/oa-wasm",
+]
 default-members = ["crates/oa-core"]
 resolver = "2"
 
@@ -16,7 +22,10 @@ rayon = "1.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+rusqlite = { version = "0.40", features = ["bundled"] }
 oa-core = { path = "crates/oa-core", default-features = false }
+oa-results = { path = "crates/oa-results" }
+oa-model = { path = "crates/oa-model", default-features = false }
 
 [profile.release]
 lto = "thin"

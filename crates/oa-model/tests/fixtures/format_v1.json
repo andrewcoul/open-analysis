@@ -1,0 +1,16 @@
+{
+  "format_version": 1,
+  "metadata": { "name": "cantilever", "display_units": "si", "created_unix": 0, "modified_unix": 0 },
+  "gravity": 9.80665,
+  "next_id": 9,
+  "nodes": {
+    "1": { "name": "base", "position": [0, 0, 0], "restrained": [true, true, true, true, true, true] },
+    "2": { "name": "tip", "position": [3, 0, 0], "mass": [100, 100, 100] }
+  },
+  "materials": { "3": { "name": "steel", "young": 200000000000, "poisson": 0.3, "density": 7850 } },
+  "sections": { "4": { "name": "beam", "area": 0.01, "iy": 0.00002, "iz": 0.00004, "torsion": 0.00001 } },
+  "frames": { "5": { "name": "B1", "nodes": [1, 2], "material": 3, "section": 4 } },
+  "load_cases": { "6": { "name": "live", "nodal": [{ "node": 2, "force": [0, -1000, 0] }] } },
+  "combinations": { "7": { "name": "service", "terms": [[6, 1.0]] } },
+  "groups": { "8": { "name": "all beams", "members": [5] } }
+}

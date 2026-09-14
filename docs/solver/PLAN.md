@@ -162,6 +162,7 @@ above the solver is planned separately in [docs/model/PLAN.md](../model/PLAN.md)
 | 5 Dynamics | Done | Lumped mass, `faer` Krylov-Schur behind an `EigenBackend` trait, Sturm count via LBLᵀ, CQC and SRSS spectrum. |
 | 6 Bindings | Done | PyO3 and wasm-bindgen wrap one versioned JSON protocol. No release packaging yet. |
 | 7 Building features | Done | Self-weight per load case, grounded nodal springs, rigid diaphragms. See below. |
+| 8 Result store | Done | `oa-results`: SQLite consumer, rehydration, envelopes, drift, read-only SQL with row limit, content-hash check. Timing recorded under Phase 8. |
 
 ### Phase 7: Building features (added 2026-09-14)
 
@@ -218,8 +219,9 @@ Deviations from the plan discovered during implementation:
 Not yet done:
 
 - A binary result path. The 2026-09-14 benchmark shows JSON serialization and
-  Python parsing take a large share of API time on big models.
-- Disk-backed or envelope-only result consumers.
+  Python parsing take a large share of API time on big models. Phase 8's
+  Parquet output is that path.
+- Disk-backed or envelope-only result consumers. Planned as Phase 8.
 - Rigid-body modes in modal analysis.
 - Consistent mass matrices.
 - Design checks.
@@ -284,3 +286,111 @@ The memory risk is predictable. Displacements alone for a large model:
 Retaining every result is therefore not part of the solver's contract. A disk-backed or envelope-only consumer can be added later without changing the analysis code.
 
 Guardrail: in Phase 2 the consumer interface is one trait with one method, and the in-memory collector is the only implementation. Do not build the disk format or a second backend until a measured model needs it.
+
+**Update 2026-09-14: the disk backend is now designed as Phase 8.** The
+in-memory consumer stays the default and the only implementation for the
+browser target.
+
+### Result store engine
+
+**SQLite through `rusqlite`. Decided 2026-09-14 after considering and
+rejecting a columnar stack.**
+
+Results are written once per combination in bulk and read many times as
+aggregates: envelopes over all combinations, maximum drift per storey,
+governing combination per DOF. A columnar engine answers those queries 10 to
+100 times faster than SQLite at very large scale. That was the first
+recommendation, and it was reversed for three reasons:
+
+- **Simplicity.** `rusqlite` is one small, mature crate that builds in
+  seconds. The columnar alternative is Parquet plus a query engine, and the
+  only pure-Rust engine, Apache DataFusion, adds several hundred crates,
+  minutes to a clean build, and monthly breaking releases.
+- **Realistic scale.** The 4.8 GB figure above is a deliberate worst case. A
+  large real building is around 5,000 nodes and 200 combinations, which is a
+  million displacement rows and perhaps 20 million frame-force rows with
+  stations. SQLite bulk-inserts over a million rows per second inside a
+  transaction and answers indexed envelope queries on that volume in seconds.
+- **The audience is agents, not Python.** The query surface exists so that an
+  AI agent can ask open questions of the results. Agents write SQL well, and
+  SQLite's SQL is sufficient. The earlier argument for Parquet, that Python
+  users could read it in one line, stopped mattering once Python was confined
+  to the verification harness.
+
+Options considered:
+
+| Option | Verdict |
+|---|---|
+| SQLite via `rusqlite` | Chosen. Single file, ACID, SQL for agents, tiny, also serves the model layer's command journal. |
+| Parquet + DuckDB | Fastest analytics. DuckDB needs a C++ compiler to bundle and is a 50 MB binary. Rejected for cost. |
+| Parquet + DataFusion | The pure-Rust columnar answer. Named as the upgrade path if a measured model outgrows SQLite. Not a dependency now. |
+| Polars | Dataframe library, not a store. Rust API is secondary to Python's and churns. Rejected. |
+| Key-value stores | No query capability. Rejected. |
+
+Build note: `rusqlite`'s `bundled` feature compiles the SQLite C source and
+needs a C compiler. The gcc that rustup ships for the `windows-gnu` target is
+a linker only and cannot compile C; verified 2026-09-14. The older
+`winsqlite3` feature that linked the SQLite shipped with Windows has been
+removed from current `libsqlite3-sys`. A Windows development machine
+therefore needs a real C toolchain. Resolved the same day: WinLibs MinGW-w64
+(winget `BrechtSanders.WinLibs.POSIX.MSVCRT`, chosen to match the C runtime
+of the `windows-gnu` target) compiles bundled SQLite 3.53.2 cleanly, and
+`scripts/cargo.ps1` sets `CC` and `AR` to it when present. Release and CI
+builds use `bundled` so the SQLite version is pinned.
+
+## Phase 8: Result store
+
+A new crate, `oa-results`, depending on `oa-core` and `rusqlite`. The solver
+crate does not change.
+
+- **SQLite consumer.** Implements `ResultConsumer`. Opens one database per
+  analysis run, writes each combination inside a transaction with prepared
+  statements, and commits per batch. Tables: `displacements`, `reactions`,
+  `frame_end_forces`, `shell_results`, and later `frame_stations`. Every row
+  carries the combination name and the entity index. A `run` table records
+  the model content hash, solver version, schema version, options, and
+  timestamp.
+- **Schema.** Fixed columns per table, documented in the crate, versioned
+  with the same scheme as the JSON protocol. Composite index on
+  `(combination, entity)` and on `(entity)` for envelopes. WAL journal mode.
+- **Query layer.** Rust functions for the common questions: envelope with
+  governing combination per entity, per-storey drift, and extraction by a
+  list of entities, which is how groups arrive from the model layer. Each is
+  a prepared SQL statement. The raw connection is also exposed so an agent
+  or a client can run its own SQL.
+- **Browser.** Unchanged. The in-memory consumer remains the only
+  implementation for the WebAssembly target.
+- **Acceptance.** Round-trip test: run the benchmark frame through the
+  SQLite consumer, query the envelope through the Rust functions, and match
+  it against the in-memory `Envelope`. Timing test on the 10x10x16 frame
+  with 32 combinations, run in release.
+
+  **Timing result, 2026-09-14.** The original criterion said the SQLite
+  write must cost less than JSON serialization. It does not, and the
+  criterion was wrong:
+
+  | Step | Time | Size |
+  |---|---|---|
+  | Solve | 0.67 s | |
+  | Serialize results to JSON | 0.14 s | 108 MB |
+  | Write results to SQLite | 1.18 s | 53 MB |
+  | Envelope query from SQLite | 0.7 ms | |
+
+  Writing indexed rows is more work than streaming text, and the store
+  costs about 1.8 solves on this model. What it buys is a sub-millisecond
+  envelope query against a 53 MB file that never has to be loaded into
+  memory, which is the point. The JSON path cannot answer that query
+  without parsing 108 MB first. The revised criterion is that the write
+  stays within 2x the solve time and envelope queries stay under 10 ms;
+  both hold. Bulk-insert tuning (larger transactions, `synchronous=off`
+  during the run) is available if the write ever dominates.
+- **Upgrade path.** If a measured model makes envelope queries take longer
+  than the analysis, add a Parquet export from the same consumer and query it
+  with DataFusion. The `ResultConsumer` boundary means the analysis code
+  does not change.
+
+Not in Phase 8: modal or spectrum results, and any attempt to store the
+model itself in a database.
+
+Not in Phase 8: writing modal or spectrum results to Parquet, and any
+attempt to store the model itself in a database.

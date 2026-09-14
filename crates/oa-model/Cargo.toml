@@ -1,0 +1,19 @@
+[package]
+name = "oa-model"
+description = "Editable structural model that compiles to the open-analysis solver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = ["store"]
+store = ["dep:oa-results", "dep:rusqlite"]
+
+[dependencies]
+oa-core.workspace = true
+oa-results = { workspace = true, optional = true }
+rusqlite = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

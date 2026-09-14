@@ -19,19 +19,39 @@ sit above it is planned in [docs/model/PLAN.md](docs/model/PLAN.md).
 
 ```
 crates/oa-core/     analysis engine, CLI binary `oa`, and tests
-crates/oa-py/       PyO3 extension module
-crates/oa-wasm/     wasm-bindgen module
+crates/oa-results/  SQLite result store: consumer, envelopes, read-only SQL
+crates/oa-model/    editable model: stable ids, names, groups, commands with
+                    undo, versioned file format, libraries, command journal
+crates/oa-py/       PyO3 extension module (verification harness)
+crates/oa-wasm/     wasm-bindgen module: solver plus model-layer entry points
 python/open_analysis/   Python package wrapping the extension
-scripts/            build wrapper and Pynite differential verification
+scripts/            build wrapper, Pynite verification, benchmark
 examples/           sample JSON request and Python usage
-docs/solver/        design plan
+docs/solver/        solver design plan and benchmarks
+docs/model/         model layer design plan
 ```
+
+The model layer is the intended surface for both a GUI and AI agents: every
+edit is a JSON command that returns its inverse, validation problems name
+entities rather than indices, and results are keyed by a content hash of the
+compiled model so stale results are refused.
 
 ## Building
 
 A Rust toolchain of 1.87 or later is required. If none is installed, the
 wrapper script `scripts/cargo.ps1` will use a repository-local toolchain in
 `.tools/` when one exists.
+
+The result store crate bundles SQLite, which needs a C compiler. The gcc that
+rustup ships for the `windows-gnu` target is a linker only. On Windows,
+install MinGW-w64 and the wrapper script will find it:
+
+```powershell
+winget install --id BrechtSanders.WinLibs.POSIX.MSVCRT -e
+```
+
+Pick the MSVCRT variant, since that is the C runtime the `windows-gnu` Rust
+target links against.
 
 ```bash
 cargo build -p oa-core

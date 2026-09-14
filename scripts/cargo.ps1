@@ -14,6 +14,17 @@ if (Test-Path -LiteralPath $solverLocalCargo) {
         $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = Join-Path $solverLinkerDir 'x86_64-w64-mingw32-gcc.exe'
         $env:PYO3_MINGW_DLLTOOL = Join-Path $solverLinkerDir 'dlltool.exe'
     }
+    # rustup's gcc is a linker only. C dependencies such as bundled SQLite need a
+    # real compiler; use WinLibs MinGW-w64 (winget: BrechtSanders.WinLibs.POSIX.MSVCRT) if present.
+    $solverMingw = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages') -Directory -Filter 'BrechtSanders.WinLibs.POSIX.MSVCRT*' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($solverMingw) {
+        $solverMingwBin = Join-Path $solverMingw.FullName 'mingw64\bin'
+        if (Test-Path -LiteralPath (Join-Path $solverMingwBin 'gcc.exe')) {
+            $env:PATH = $env:PATH + ';' + $solverMingwBin
+            $env:CC = Join-Path $solverMingwBin 'gcc.exe'
+            $env:AR = Join-Path $solverMingwBin 'ar.exe'
+        }
+    }
     & $solverLocalCargo @args
 } else {
     & cargo @args

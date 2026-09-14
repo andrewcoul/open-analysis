@@ -16,7 +16,7 @@ id!(FrameId);
 id!(ShellId);
 id!(LoadCaseId);
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PrescribedDisplacement {
     pub translation: [Length; 3],
@@ -379,6 +379,17 @@ impl Model {
         let id = LoadCaseId(self.load_cases.len());
         self.load_cases.push(v);
         id
+    }
+    /// Stable content hash: FNV-1a over the canonical JSON. Detects stale
+    /// results; not for security.
+    pub fn content_hash(&self) -> String {
+        let bytes = serde_json::to_vec(self).expect("model serializes");
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("{h:016x}")
     }
     pub fn effective_combinations(&self) -> Vec<LoadCombination> {
         if self.combinations.is_empty() {
