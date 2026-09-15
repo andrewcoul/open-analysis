@@ -1,14 +1,13 @@
 //! Thread budget for one analysis. A request with `threads > 0` runs every
 //! stage, from element preparation through factorization and combination
 //! solves, inside a pool of that size; faer's kernels read the current pool's
-//! size, so the budget covers them too. Pools are cached by size, so repeated
-//! calls do not pay thread creation. Zero uses whatever pool the caller is in.
+//! size, so the budget covers them too. The most recently used pool is kept so
+//! repeated calls with the same budget do not pay thread creation; a different
+//! budget replaces it, and a replaced pool's workers exit once the analyses
+//! holding it finish. Zero uses whatever pool the caller is in.
 
 #[cfg(feature = "parallel")]
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "parallel")]
 use crate::Error;
@@ -33,12 +32,13 @@ impl Exec {
         if threads == 0 {
             return Ok(Self(None));
         }
-        static POOLS: OnceLock<Mutex<HashMap<usize, Arc<rayon::ThreadPool>>>> = OnceLock::new();
-        let mut pools = POOLS
-            .get_or_init(Default::default)
+        // One cached pool bounds the idle workers a long-lived process retains
+        // to the last requested budget, rather than every budget ever tried.
+        static LAST: Mutex<Option<Arc<rayon::ThreadPool>>> = Mutex::new(None);
+        let mut last = LAST
             .lock()
             .map_err(|_| Error::Request("thread pool cache poisoned".into()))?;
-        if let Some(pool) = pools.get(&threads) {
+        if let Some(pool) = last.as_ref().filter(|p| p.current_num_threads() == threads) {
             return Ok(Self(Some(pool.clone())));
         }
         let pool = Arc::new(
@@ -48,7 +48,7 @@ impl Exec {
                 .build()
                 .map_err(|e| Error::Request(e.to_string()))?,
         );
-        pools.insert(threads, pool.clone());
+        *last = Some(pool.clone());
         Ok(Self(Some(pool)))
     }
     /// Runs `f` on a worker of the selected pool, so nested parallel iterators

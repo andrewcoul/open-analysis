@@ -28,8 +28,11 @@ pub(crate) struct Prepared {
     pub springs: Vec<f64>,
     pub constraints: Vec<Option<Vec<(usize, f64)>>>,
     masters: Vec<bool>,
-    /// Equivalent loads of each load case, combined by factor per combination.
-    case_loads: Vec<Loads>,
+    /// Equivalent loads of the cases that several requested combinations
+    /// share, so their member and self-weight loads are expanded once. Cases
+    /// used by one combination, and every case in modal analysis and
+    /// validation, stay in the model's sparse form.
+    case_loads: Vec<Option<Loads>>,
 }
 impl Prepared {
     pub fn new(model: &Model) -> Result<Self> {
@@ -60,7 +63,7 @@ impl Prepared {
         let shell_k = shells.par_iter().map(ShellElement::global_k).collect();
         #[cfg(not(feature = "parallel"))]
         let shell_k = shells.iter().map(ShellElement::global_k).collect();
-        let mut prep = Self {
+        Ok(Self {
             frames,
             shells,
             elastic,
@@ -69,44 +72,54 @@ impl Prepared {
             springs: model.nodes.iter().flat_map(Node::springs).collect(),
             constraints: model.constraints(),
             masters: model.diaphragm_masters(),
-            case_loads: vec![],
-        };
-        prep.case_loads = model
-            .load_cases
-            .iter()
-            .map(|case| prep.case_loads(model, case))
-            .collect();
-        Ok(prep)
+            case_loads: model.load_cases.iter().map(|_| None).collect(),
+        })
     }
-    fn case_loads(&self, model: &Model, case: &LoadCase) -> Loads {
-        let mut out = self.zero_loads();
+    /// Expands the cases that at least two of `combos` use. A dense case
+    /// costs `8 * (6 * nodes + 12 * frames + shells)` bytes, so cases used
+    /// once are accumulated straight from the model instead.
+    pub fn cache_case_loads(&mut self, model: &Model, combos: &[LoadCombination]) {
+        let mut uses = vec![0usize; model.load_cases.len()];
+        for combo in combos {
+            for &(id, _) in &combo.terms {
+                uses[id.0] += 1;
+            }
+        }
+        for (i, case) in model.load_cases.iter().enumerate() {
+            if uses[i] >= 2 {
+                let mut out = self.zero_loads();
+                self.accumulate(model, case, 1.0, &mut out);
+                self.case_loads[i] = Some(out);
+            }
+        }
+    }
+    fn accumulate(&self, model: &Model, case: &LoadCase, factor: f64, out: &mut Loads) {
         for l in &case.nodal {
             for (i, v) in l.values().into_iter().enumerate() {
-                out.nodal[l.node.0 * 6 + i] += v;
+                out.nodal[l.node.0 * 6 + i] += factor * v;
             }
         }
         for l in &case.member {
-            out.member[l.member().0] += self.frames[l.member().0].equivalent_load(l);
+            out.member[l.member().0] += self.frames[l.member().0].equivalent_load(l) * factor;
         }
         for l in &case.surface {
-            out.pressure[l.shell.0] += l.pressure.si();
+            out.pressure[l.shell.0] += factor * l.pressure.si();
         }
         if case.self_weight != [0.0; 3] {
             let g = model.gravity.si();
             for (i, e) in self.frames.iter().enumerate() {
                 if let Some(load) = e.self_weight_load(FrameId(i), g, case.self_weight) {
-                    out.member[i] += e.equivalent_load(&load);
+                    out.member[i] += e.equivalent_load(&load) * factor;
                 }
             }
             for e in &self.shells {
                 for (corner, &m) in e.nodal_mass.iter().enumerate() {
                     for (axis, &w) in case.self_weight.iter().enumerate() {
-                        out.nodal[e.dofs[6 * corner + axis]] += m * g * w;
+                        out.nodal[e.dofs[6 * corner + axis]] += factor * m * g * w;
                     }
                 }
             }
         }
-        out
     }
     pub fn zero_loads(&self) -> Loads {
         Loads {
@@ -115,10 +128,13 @@ impl Prepared {
             pressure: vec![0.0; self.shells.len()],
         }
     }
-    pub fn loads(&self, combo: &LoadCombination) -> Loads {
+    pub fn loads(&self, model: &Model, combo: &LoadCombination) -> Loads {
         let mut out = self.zero_loads();
         for &(id, factor) in &combo.terms {
-            let case = &self.case_loads[id.0];
+            let Some(case) = &self.case_loads[id.0] else {
+                self.accumulate(model, &model.load_cases[id.0], factor, &mut out);
+                continue;
+            };
             for (o, v) in out.nodal.iter_mut().zip(&case.nodal) {
                 *o += factor * v;
             }

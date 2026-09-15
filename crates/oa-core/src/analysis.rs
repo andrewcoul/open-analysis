@@ -99,7 +99,7 @@ pub fn analyze_static_into(
     // so parallel element loops and faer's kernels honour the thread budget.
     let (prep, combos, shared) =
         exec.install(|| -> Result<_> {
-            let prep = Prepared::new(model)?;
+            let mut prep = Prepared::new(model)?;
             if options.method == StaticMethod::Linear
                 && model
                     .frames
@@ -134,6 +134,7 @@ pub fn analyze_static_into(
                     "static analysis needs at least one load case".into(),
                 ));
             }
+            prep.cache_case_loads(model, &combos);
             let shared = if options.method == StaticMethod::Linear {
                 Some(prep.assemble(model, &prep.elastic_states()?)?)
             } else {
@@ -187,11 +188,25 @@ pub fn analyze_static_into(
                     let (work, stop) = (&work, &stop);
                     scope.spawn(move |_| {
                         let result = if stop.load(Ordering::Relaxed) {
-                            Err(Error::Request("analysis stopped".into()))
+                            Ok(Err(Error::Request("analysis stopped".into())))
                         } else {
-                            work(i)
+                            // A worker that unwinds must still report, or the
+                            // receiver below waits forever: the scope cannot
+                            // re-raise the panic until this closure returns.
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(i)))
                         };
-                        let _ = tx.send((i, result));
+                        match result {
+                            Ok(result) => {
+                                let _ = tx.send((i, result));
+                            }
+                            Err(payload) => {
+                                let _ = tx.send((
+                                    i,
+                                    Err(Error::Solver("combination worker panicked".into())),
+                                ));
+                                std::panic::resume_unwind(payload);
+                            }
+                        }
                     });
                     next += 1;
                 }
@@ -227,7 +242,7 @@ fn solve_combination(
     options: &StaticOptions,
     shared: Option<&SparseSystem>,
 ) -> Result<CombinationResult> {
-    let loads = prep.loads(combo);
+    let loads = prep.loads(model, combo);
     let mut active = vec![true; prep.frames.len()];
     let mut axial = vec![0.0; prep.frames.len()];
     let mut previous_u = vec![0.0; prep.ndof];

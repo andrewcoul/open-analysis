@@ -390,9 +390,9 @@ the originals in [results.json](results.json) are untouched.
 
 | # | Outcome |
 |---|---|
-| 1 | Done. `StaticOptions.threads` now scopes the whole run: element preparation and the shared assembly and factorization run inside the selected pool, so faer's kernels honour the budget. Pools are cached by size and reused across calls. `ModalOptions.threads` gives modal and spectrum analysis the same control. `scripts/benchmark_pynite.py` labels its columns by the real worker count, and the README notes that the historical "1 thread" column was mixed execution. |
+| 1 | Done. `StaticOptions.threads` now scopes the whole run: element preparation and the shared assembly and factorization run inside the selected pool, so faer's kernels honour the budget. The most recently used pool is kept for reuse across calls. `ModalOptions.threads` gives modal and spectrum analysis the same control. `scripts/benchmark_pynite.py` labels its columns by the real worker count, and the README notes that the historical "1 thread" column was mixed execution. |
 | 2 | Done for the scheduling half. Combinations run through a rolling window: `max_in_flight` bounds running solves plus finished results waiting for their turn, replacements are admitted as ordered consumption frees slots, and the first error in order stops admission. The consumer runs on the calling thread while the pool keeps solving. A caller that is already a pool worker falls back to ordered batches it helps compute, because a worker blocked on a channel starves Rayon's wake-up logic. Not done: a memory-aware automatic limit; the default stays at four with an explicit override. |
-| 3 | Done. Frame stiffness, release condensation and the release recovery operator are split from the load-dependent state and computed once per member at zero axial force in `Prepared::new`; a per-combination state borrows it through a pointer-sized handle and only a nonzero axial force condenses afresh. Shell global stiffness and centre recovery operators are cached once. Equivalent loads are cached per load case and combined by factor. Frame recovery is skipped for linear runs with frame output off. |
+| 3 | Done. Frame stiffness, release condensation and the release recovery operator are split from the load-dependent state and computed once per member at zero axial force in `Prepared::new`; a per-combination state borrows it through a pointer-sized handle and only a nonzero axial force condenses afresh. Shell global stiffness and centre recovery operators are cached once. Equivalent loads of cases shared by at least two requested combinations are cached and combined by factor; other cases are accumulated from the model. Frame recovery is skipped for linear runs with frame output off. |
 | 4 | Done for assembly: element triplets are generated in chunk-local buffers in parallel and concatenated in element order, so the summation order is scheduling-independent. Not done: reuse of the symbolic factorization across nonlinear iterations, since the reduced pattern changes with the active set. |
 | 5 | Not done. Modal kernels still receive `Par::Seq` and the measured 12-mode case showed no gain from more workers; this needs a larger modal benchmark first. Modal analysis does gain the thread budget and the shared preparation. |
 | 6 | Done. Spectrum analysis shares one preparation with the modal solve, recovers mode responses in parallel in mode order, tiles the quadratic combination across output components, and specialises SRSS to the diagonal sum. |
@@ -437,4 +437,14 @@ preparation instead. Regression tests cover ordered consumption under the
 window, consumer and combination errors stopping after an ordered prefix,
 frame output off under nonlinear activation, the thread budget for modal and
 spectrum analysis, and SRSS against the generic combiner.
+
+Three regressions found in review of the pull request, all fixed before
+merge: a combination worker that panicked never reported to the ordered
+receiver, which then waited forever, so workers now report a failure while
+unwinding and the scope re-raises the panic; every load case was expanded to
+dense arrays during preparation, including for modal analysis and
+validation, so only cases shared by at least two requested combinations are
+expanded now; and the pool cache retained a pool for every thread budget ever
+requested, so it keeps only the most recent one. The review and its probes
+are in `docs/audits/2026-09-15-parallelism-pr-review`.
 
