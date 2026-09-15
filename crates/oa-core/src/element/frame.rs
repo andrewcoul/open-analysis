@@ -7,6 +7,7 @@ use crate::{
     units::{Length, LineLoad},
 };
 use nalgebra::{DMatrix, DVector, Matrix3, SMatrix, SVector, Vector3};
+use std::ops::Deref;
 
 pub(crate) type M12 = SMatrix<f64, 12, 12>;
 pub(crate) type V12 = SVector<f64, 12>;
@@ -170,7 +171,9 @@ impl FrameElement {
         }
         p
     }
-    pub fn state(&self, axial: f64, p: V12) -> Result<FrameState> {
+    /// Stiffness at the given axial force, with released DOFs condensed out.
+    /// Independent of loading, so linear analysis computes it once per member.
+    pub fn stiffness(&self, axial: f64) -> FrameStiffness {
         let k = self.elastic + self.geometric_unit * axial;
         let released: Vec<_> = (0..12).filter(|i| self.releases[*i]).collect();
         let mut inv = DMatrix::<f64>::zeros(released.len(), released.len());
@@ -187,18 +190,8 @@ impl FrameElement {
                         (eig.eigenvectors.column(a) * eig.eigenvectors.column(a).transpose()) / val;
                 }
             }
-            let pr = DVector::from_fn(released.len(), |i, _| p[released[i]]);
-            let rr = DMatrix::from_fn(released.len(), released.len(), |i, j| {
-                k[(released[i], released[j])]
-            });
-            if (&rr * &inv * &pr - &pr).norm() > 1e-8 * pr.norm().max(1.0) {
-                return Err(Error::Model(
-                    "member load acts on an unsupported released member mode".into(),
-                ));
-            }
         }
         let mut kc = k;
-        let mut pc = p;
         for i in 0..12 {
             for j in 0..12 {
                 if self.releases[i] || self.releases[j] {
@@ -212,6 +205,31 @@ impl FrameElement {
                 }
             }
         }
+        FrameStiffness {
+            k,
+            global_k: self.t.transpose() * kc * self.t,
+            released,
+            inv,
+        }
+    }
+    /// Condenses the local fixed-end load through the release operators of
+    /// `stiffness`, which must have been built for this member.
+    pub fn state<'a>(&self, stiffness: Stiffness<'a>, p: V12) -> Result<FrameState<'a>> {
+        let released = &stiffness.released;
+        let k = &stiffness.k;
+        let inv = &stiffness.inv;
+        if !released.is_empty() {
+            let pr = DVector::from_fn(released.len(), |i, _| p[released[i]]);
+            let rr = DMatrix::from_fn(released.len(), released.len(), |i, j| {
+                k[(released[i], released[j])]
+            });
+            if (&rr * inv * &pr - &pr).norm() > 1e-8 * pr.norm().max(1.0) {
+                return Err(Error::Model(
+                    "member load acts on an unsupported released member mode".into(),
+                ));
+            }
+        }
+        let mut pc = p;
         for i in 0..12 {
             if self.releases[i] {
                 pc[i] = 0.0;
@@ -224,43 +242,69 @@ impl FrameElement {
             }
         }
         Ok(FrameState {
-            k,
-            p,
-            global_k: self.t.transpose() * kc * self.t,
             global_p: self.t.transpose() * pc,
-            released,
-            inv,
+            stiffness,
+            p,
         })
     }
 }
 
-pub(crate) struct FrameState {
+/// Load-independent member stiffness: local and condensed global matrices plus
+/// the release recovery operator.
+pub(crate) struct FrameStiffness {
     pub k: M12,
-    pub p: V12,
     pub global_k: M12,
-    pub global_p: V12,
     released: Vec<usize>,
     inv: DMatrix<f64>,
 }
-impl FrameState {
+
+/// Shared cached stiffness, or an owned one for a nonzero axial force. Kept
+/// pointer-sized so a per-combination state vector stays small.
+pub(crate) enum Stiffness<'a> {
+    Shared(&'a FrameStiffness),
+    Owned(Box<FrameStiffness>),
+}
+impl Deref for Stiffness<'_> {
+    type Target = FrameStiffness;
+    fn deref(&self) -> &FrameStiffness {
+        match self {
+            Self::Shared(s) => s,
+            Self::Owned(s) => s,
+        }
+    }
+}
+
+/// Member stiffness together with the condensed load for one combination.
+pub(crate) struct FrameState<'a> {
+    pub stiffness: Stiffness<'a>,
+    pub p: V12,
+    pub global_p: V12,
+}
+impl FrameState<'_> {
+    pub fn global_k(&self) -> &M12 {
+        &self.stiffness.global_k
+    }
     pub fn recover(&self, element: &FrameElement, global_d: &[f64]) -> (V12, V12) {
+        let FrameStiffness {
+            k, released, inv, ..
+        } = &*self.stiffness;
         let mut d = element.t * V12::from_fn(|i, _| global_d[element.dofs[i]]);
-        if !self.released.is_empty() {
-            let rhs = DVector::from_fn(self.released.len(), |a, _| {
-                let ra = self.released[a];
+        if !released.is_empty() {
+            let rhs = DVector::from_fn(released.len(), |a, _| {
+                let ra = released[a];
                 self.p[ra]
                     - (0..12)
                         .filter(|j| !element.releases[*j])
-                        .map(|j| self.k[(ra, j)] * d[j])
+                        .map(|j| k[(ra, j)] * d[j])
                         .sum::<f64>()
             });
-            let dr = &self.inv * rhs;
-            for (i, &r) in self.released.iter().enumerate() {
+            let dr = inv * rhs;
+            for (i, &r) in released.iter().enumerate() {
                 d[r] = dr[i];
             }
         }
-        let mut f = self.k * d - self.p;
-        for &r in &self.released {
+        let mut f = k * d - self.p;
+        for &r in released {
             f[r] = 0.0;
         }
         (d, f)

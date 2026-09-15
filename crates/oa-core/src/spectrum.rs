@@ -2,10 +2,14 @@
 //! Results are statistical component peaks, not a simultaneous signed state.
 use crate::{
     analysis::{node_values, recover_frames},
-    assembly::{Loads, Prepared},
+    assembly::Prepared,
+    exec::Exec,
+    modal::{FaerKrylovSchur, analyze_modal_prepared},
     units::Acceleration,
     *,
 };
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -62,6 +66,9 @@ pub struct SpectrumResult {
 }
 
 pub fn analyze_spectrum(model: &Model, options: &SpectrumOptions) -> Result<SpectrumResult> {
+    Exec::new(options.modal.threads)?.install(|| spectrum_in_pool(model, options))
+}
+fn spectrum_in_pool(model: &Model, options: &SpectrumOptions) -> Result<SpectrumResult> {
     if options.spectrum.len() < 2
         || !options.damping.is_finite()
         || options.damping < 0.0
@@ -95,7 +102,9 @@ pub fn analyze_spectrum(model: &Model, options: &SpectrumOptions) -> Result<Spec
             return Err(Error::Request("spectrum periods must increase strictly; periods and accelerations must be nonnegative and finite".into()));
         }
     }
-    let modal = analyze_modal(model, &options.modal)?;
+    // One preparation serves the modal solve and the response recovery.
+    let prep = Prepared::new(model)?;
+    let modal = analyze_modal_prepared(model, &prep, &options.modal, &FaerKrylovSchur)?;
     let total = (0..3)
         .map(|a| direction[a] * direction[a] * modal.total_free_mass[a])
         .sum::<f64>();
@@ -122,22 +131,14 @@ pub fn analyze_spectrum(model: &Model, options: &SpectrumOptions) -> Result<Spec
             "captured mass ratio {captured:.6} is below the requested minimum; calculate more modes"
         )));
     }
-    let prep = Prepared::new(model)?;
-    let loads = Loads {
-        nodal: vec![0.0; prep.ndof],
-        member: vec![Default::default(); prep.frames.len()],
-        pressure: vec![0.0; prep.shells.len()],
-    };
-    let states = prep.states(
-        &loads,
-        &vec![0.0; prep.frames.len()],
-        &vec![true; prep.frames.len()],
-    )?;
+    let states = prep.elastic_states()?;
     // No second factorization: element force recovery suffices for support reactions.
     let mass = prep.mass(model);
     let restrained: Vec<bool> = model.nodes.iter().flat_map(|n| n.restrained).collect();
-    let mut responses = vec![];
-    for (j, mode) in modal.modes.iter().enumerate() {
+    // Each mode's response is independent; modes are recovered in parallel
+    // and kept in mode order for the combination.
+    let respond = |j: usize| -> Result<Vec<f64>> {
+        let mode = &modal.modes[j];
         let sa = interpolate(&options.spectrum, mode.period_seconds)?;
         let amplitude = gamma[j] * sa / mode.eigenvalue;
         let u: Vec<_> = mode
@@ -225,30 +226,39 @@ pub fn analyze_spectrum(model: &Model, options: &SpectrumOptions) -> Result<Spec
                 fields.extend_from_slice(&s.transverse_shear);
             }
         }
-        responses.push(fields);
-    }
+        Ok(fields)
+    };
     let count = modal.modes.len();
-    let correlation: Vec<Vec<f64>> = (0..count)
-        .map(|i| {
+    #[cfg(feature = "parallel")]
+    let responses = (0..count)
+        .into_par_iter()
+        .map(respond)
+        .collect::<Result<Vec<_>>>()?;
+    #[cfg(not(feature = "parallel"))]
+    let responses = (0..count).map(respond).collect::<Result<Vec<_>>>()?;
+    let correlation = match options.combination {
+        ModalCombination::Srss => None,
+        ModalCombination::Cqc => Some(
             (0..count)
-                .map(|j| {
-                    if i == j {
-                        1.0
-                    } else {
-                        match options.combination {
-                            ModalCombination::Srss => 0.0,
-                            ModalCombination::Cqc => cqc_correlation(
-                                modal.modes[i].frequency_hz,
-                                modal.modes[j].frequency_hz,
-                                options.damping,
-                            ),
-                        }
-                    }
+                .map(|i| {
+                    (0..count)
+                        .map(|j| {
+                            if i == j {
+                                1.0
+                            } else {
+                                cqc_correlation(
+                                    modal.modes[i].frequency_hz,
+                                    modal.modes[j].frequency_hz,
+                                    options.damping,
+                                )
+                            }
+                        })
+                        .collect()
                 })
-                .collect()
-        })
-        .collect();
-    let combined = combine(&responses, &correlation)?;
+                .collect::<Vec<Vec<f64>>>(),
+        ),
+    };
+    let combined = combine(&responses, correlation.as_deref())?;
     let mut offset = 6;
     let base_reaction = std::array::from_fn(|i| combined[i]);
     let displacements = if options.outputs.displacements {
@@ -335,26 +345,39 @@ fn cqc_correlation(a: f64, b: f64, z: f64) -> f64 {
     let numerator = 8.0 * z * z * (1.0 + r) * r.powf(1.5);
     numerator / ((1.0 - r * r).powi(2) + 4.0 * z * z * r * (1.0 + r).powi(2))
 }
-fn combine(responses: &[Vec<f64>], correlation: &[Vec<f64>]) -> Result<Vec<f64>> {
-    (0..responses[0].len())
-        .map(|k| {
-            let mut sum = 0.0;
-            let mut scale = 0.0;
-            for i in 0..responses.len() {
-                scale += responses[i][k].powi(2);
-                for j in 0..responses.len() {
-                    sum += correlation[i][j] * responses[i][k] * responses[j][k];
+/// Quadratic modal combination per output component. `None` correlation is
+/// SRSS, whose cross terms vanish, so it needs only the diagonal sum.
+/// Components are independent, so they are tiled across workers; within a
+/// component the summation order is fixed.
+fn combine(responses: &[Vec<f64>], correlation: Option<&[Vec<f64>]>) -> Result<Vec<f64>> {
+    let one = |k: usize| -> Result<f64> {
+        let scale = responses.iter().map(|r| r[k].powi(2)).sum::<f64>();
+        let sum = match correlation {
+            None => scale,
+            Some(rho) => {
+                let mut sum = 0.0;
+                for i in 0..responses.len() {
+                    for j in 0..responses.len() {
+                        sum += rho[i][j] * responses[i][k] * responses[j][k];
+                    }
                 }
+                sum
             }
-            if !sum.is_finite() || sum < -1e-10 * scale {
-                Err(Error::Solver(
-                    "invalid response-spectrum quadratic combination".into(),
-                ))
-            } else {
-                Ok(sum.max(0.0).sqrt())
-            }
-        })
-        .collect()
+        };
+        if !sum.is_finite() || sum < -1e-10 * scale {
+            Err(Error::Solver(
+                "invalid response-spectrum quadratic combination".into(),
+            ))
+        } else {
+            Ok(sum.max(0.0).sqrt())
+        }
+    };
+    let n = responses[0].len();
+    #[cfg(feature = "parallel")]
+    if n >= crate::exec::PARALLEL_THRESHOLD {
+        return (0..n).into_par_iter().map(one).collect();
+    }
+    (0..n).map(one).collect()
 }
 #[cfg(test)]
 mod tests {
@@ -364,7 +387,28 @@ mod tests {
         let rho = cqc_correlation(5.0, 5.0, 0.05);
         assert!((rho - 1.0).abs() < 1e-14);
         assert!(cqc_correlation(1.0, 100.0, 0.05) < 0.001);
-        let v = combine(&[vec![3.0], vec![-2.0]], &[vec![1.0, 1.0], vec![1.0, 1.0]]).unwrap();
+        let v = combine(
+            &[vec![3.0], vec![-2.0]],
+            Some(&[vec![1.0, 1.0], vec![1.0, 1.0]]),
+        )
+        .unwrap();
         assert!((v[0] - 1.0).abs() < 1e-14);
+    }
+    #[test]
+    fn srss_matches_identity_correlation() {
+        let responses = vec![
+            vec![3.0, -1.0, 0.5],
+            vec![-2.0, 4.0, 0.0],
+            vec![1.0, 1.0, -2.0],
+        ];
+        let identity: Vec<Vec<f64>> = (0..3)
+            .map(|i| (0..3).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
+            .collect();
+        let srss = combine(&responses, None).unwrap();
+        let generic = combine(&responses, Some(&identity)).unwrap();
+        for (a, b) in srss.iter().zip(&generic) {
+            assert!((a - b).abs() <= 1e-14 * a.abs());
+        }
+        assert!((srss[0] - 14.0_f64.sqrt()).abs() < 1e-14);
     }
 }

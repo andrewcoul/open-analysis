@@ -195,6 +195,12 @@ Measured 2026-09-14 on an Intel Core Ultra 9 386H (16 cores, 32 GB), Windows
   about 0.3 s of the 1.0 s is Python's `json.loads` of a 27 MB result string,
   and the Rust side spends a further fraction formatting it. The engine itself
   is faster than the table shows. A binary result path would close that gap.
+- **The "1 thread" column predates the thread-budget fix of 2026-09-15.**
+  At the time, `threads: 1` confined only the combination solves to one
+  worker; element preparation and the shared factorization still ran on the
+  default pool. Treat that column as "one-thread combinations" rather than a
+  whole-engine serial baseline. The script now runs the whole engine on the
+  requested worker count and labels the parallel column by CPU count.
 - **Parallelism helps less than you might expect for linear static.** The
   stiffness matrix is factored once and shared. Each combination is only a
   back-substitution and force recovery, so 8 combinations do not give 16 cores

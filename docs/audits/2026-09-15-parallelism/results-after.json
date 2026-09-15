@@ -1,0 +1,2076 @@
+[
+  {
+    "faer": "Rayon(16)",
+    "global_pool": 16,
+    "kind": "environment",
+    "logical_cpus": 16
+  },
+  {
+    "combos": 1,
+    "kind": "static",
+    "max_in_flight": 1,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 1,
+    "timing": {
+      "median_ms": 12.4876,
+      "samples_ms": [
+        11.9475,
+        12.4505,
+        12.4876,
+        12.7595,
+        15.0056
+      ]
+    }
+  },
+  {
+    "combos": 1,
+    "kind": "static",
+    "max_in_flight": 4,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 4,
+    "timing": {
+      "median_ms": 10.4799,
+      "samples_ms": [
+        9.9167,
+        10.461500000000001,
+        10.4799,
+        10.6511,
+        11.0668
+      ]
+    }
+  },
+  {
+    "combos": 1,
+    "kind": "static",
+    "max_in_flight": 4,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 8,
+    "timing": {
+      "median_ms": 11.1664,
+      "samples_ms": [
+        10.943299999999999,
+        11.019400000000001,
+        11.1664,
+        11.4052,
+        11.4585
+      ]
+    }
+  },
+  {
+    "combos": 1,
+    "kind": "static",
+    "max_in_flight": 8,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 8,
+    "timing": {
+      "median_ms": 11.2217,
+      "samples_ms": [
+        10.7099,
+        10.7689,
+        11.2217,
+        11.370800000000001,
+        11.9488
+      ]
+    }
+  },
+  {
+    "combos": 1,
+    "kind": "static",
+    "max_in_flight": 4,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 16,
+    "timing": {
+      "median_ms": 13.407499999999999,
+      "samples_ms": [
+        12.9575,
+        13.0493,
+        13.407499999999999,
+        13.6574,
+        14.9613
+      ]
+    }
+  },
+  {
+    "combos": 1,
+    "kind": "static",
+    "max_in_flight": 16,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 16,
+    "timing": {
+      "median_ms": 13.2996,
+      "samples_ms": [
+        13.0728,
+        13.2456,
+        13.2996,
+        13.3454,
+        14.792
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "kind": "static",
+    "max_in_flight": 1,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 1,
+    "timing": {
+      "median_ms": 14.7408,
+      "samples_ms": [
+        14.658600000000002,
+        14.708,
+        14.7408,
+        15.2964,
+        15.5705
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "kind": "static",
+    "max_in_flight": 4,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 4,
+    "timing": {
+      "median_ms": 11.140600000000001,
+      "samples_ms": [
+        10.9652,
+        11.091099999999999,
+        11.140600000000001,
+        11.3703,
+        11.4047
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "kind": "static",
+    "max_in_flight": 4,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 8,
+    "timing": {
+      "median_ms": 11.3872,
+      "samples_ms": [
+        10.696000000000002,
+        11.249699999999999,
+        11.3872,
+        11.591000000000001,
+        12.1748
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "kind": "static",
+    "max_in_flight": 8,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 8,
+    "timing": {
+      "median_ms": 10.993400000000001,
+      "samples_ms": [
+        10.485899999999999,
+        10.505600000000001,
+        10.993400000000001,
+        11.2153,
+        11.758799999999999
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "kind": "static",
+    "max_in_flight": 4,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 16,
+    "timing": {
+      "median_ms": 34.3385,
+      "samples_ms": [
+        32.4492,
+        33.1216,
+        34.3385,
+        45.8406,
+        50.1855
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "kind": "static",
+    "max_in_flight": 16,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 16,
+    "timing": {
+      "median_ms": 12.316799999999999,
+      "samples_ms": [
+        11.2376,
+        11.5678,
+        12.316799999999999,
+        12.5232,
+        12.7391
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "kind": "current_threads_option",
+    "model": "6x6x8",
+    "threads": 1,
+    "timing": {
+      "median_ms": 14.0886,
+      "samples_ms": [
+        13.184700000000001,
+        13.344999999999999,
+        14.0886,
+        14.1026,
+        15.168
+      ]
+    }
+  },
+  {
+    "bytes": 5349876,
+    "combos": 8,
+    "kind": "serialization",
+    "model": "6x6x8",
+    "timing": {
+      "median_ms": 5.8554,
+      "samples_ms": [
+        5.8185,
+        5.8346,
+        5.8554,
+        5.8712,
+        5.8737
+      ]
+    }
+  },
+  {
+    "combos": 32,
+    "kind": "static",
+    "max_in_flight": 1,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 1,
+    "timing": {
+      "median_ms": 25.9303,
+      "samples_ms": [
+        24.7175,
+        24.871000000000002,
+        25.9303,
+        25.9589,
+        25.9649
+      ]
+    }
+  },
+  {
+    "combos": 32,
+    "kind": "static",
+    "max_in_flight": 4,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 4,
+    "timing": {
+      "median_ms": 13.0826,
+      "samples_ms": [
+        12.8531,
+        12.939400000000001,
+        13.0826,
+        13.6463,
+        14.3071
+      ]
+    }
+  },
+  {
+    "combos": 32,
+    "kind": "static",
+    "max_in_flight": 4,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 8,
+    "timing": {
+      "median_ms": 13.782,
+      "samples_ms": [
+        12.722199999999999,
+        13.773499999999999,
+        13.782,
+        14.2383,
+        14.7059
+      ]
+    }
+  },
+  {
+    "combos": 32,
+    "kind": "static",
+    "max_in_flight": 8,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 8,
+    "timing": {
+      "median_ms": 12.7391,
+      "samples_ms": [
+        12.0152,
+        12.548200000000001,
+        12.7391,
+        12.8858,
+        13.1825
+      ]
+    }
+  },
+  {
+    "combos": 32,
+    "kind": "static",
+    "max_in_flight": 4,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 16,
+    "timing": {
+      "median_ms": 15.479,
+      "samples_ms": [
+        15.3479,
+        15.3508,
+        15.479,
+        15.679499999999999,
+        17.0445
+      ]
+    }
+  },
+  {
+    "combos": 32,
+    "kind": "static",
+    "max_in_flight": 16,
+    "max_relative_displacement_diff": 0.0,
+    "model": "6x6x8",
+    "pool_threads": 16,
+    "timing": {
+      "median_ms": 13.3705,
+      "samples_ms": [
+        13.084800000000001,
+        13.2351,
+        13.3705,
+        13.7211,
+        14.017999999999999
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "kind": "static",
+    "max_in_flight": 1,
+    "max_relative_displacement_diff": 0.0,
+    "model": "10x10x16",
+    "pool_threads": 1,
+    "timing": {
+      "median_ms": 155.4022,
+      "samples_ms": [
+        154.0235,
+        155.1805,
+        155.4022,
+        156.7164,
+        157.8527
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "kind": "static",
+    "max_in_flight": 4,
+    "max_relative_displacement_diff": 8.691343777148873e-16,
+    "model": "10x10x16",
+    "pool_threads": 4,
+    "timing": {
+      "median_ms": 84.2246,
+      "samples_ms": [
+        83.0543,
+        83.6811,
+        84.2246,
+        84.6747,
+        84.89670000000001
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "kind": "static",
+    "max_in_flight": 4,
+    "max_relative_displacement_diff": 1.2641954584943816e-15,
+    "model": "10x10x16",
+    "pool_threads": 8,
+    "timing": {
+      "median_ms": 75.4856,
+      "samples_ms": [
+        74.9033,
+        75.2007,
+        75.4856,
+        76.0188,
+        76.55499999999999
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "kind": "static",
+    "max_in_flight": 8,
+    "max_relative_displacement_diff": 1.2641954584943816e-15,
+    "model": "10x10x16",
+    "pool_threads": 8,
+    "timing": {
+      "median_ms": 75.2109,
+      "samples_ms": [
+        73.0932,
+        74.1329,
+        75.2109,
+        75.5856,
+        77.2906
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "kind": "static",
+    "max_in_flight": 4,
+    "max_relative_displacement_diff": 1.2641954584943816e-15,
+    "model": "10x10x16",
+    "pool_threads": 16,
+    "timing": {
+      "median_ms": 93.5247,
+      "samples_ms": [
+        92.0276,
+        92.3789,
+        93.5247,
+        94.7628,
+        101.0407
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "kind": "static",
+    "max_in_flight": 16,
+    "max_relative_displacement_diff": 1.2641954584943816e-15,
+    "model": "10x10x16",
+    "pool_threads": 16,
+    "timing": {
+      "median_ms": 88.8724,
+      "samples_ms": [
+        88.1433,
+        88.66029999999999,
+        88.8724,
+        89.3244,
+        89.86619999999999
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "kind": "current_threads_option",
+    "model": "10x10x16",
+    "threads": 1,
+    "timing": {
+      "median_ms": 150.3494,
+      "samples_ms": [
+        149.3983,
+        149.7446,
+        150.3494,
+        150.7039,
+        151.86769999999999
+      ]
+    }
+  },
+  {
+    "bytes": 27088752,
+    "combos": 8,
+    "kind": "serialization",
+    "model": "10x10x16",
+    "timing": {
+      "median_ms": 28.7471,
+      "samples_ms": [
+        28.5925,
+        28.6723,
+        28.7471,
+        28.7922,
+        29.1555
+      ]
+    }
+  },
+  {
+    "assembly_and_factor": {
+      "median_ms": 7.0593,
+      "samples_ms": [
+        7.0442,
+        7.0543000000000005,
+        7.0593,
+        7.1425,
+        7.1425
+      ]
+    },
+    "force": {
+      "median_ms": 0.0053,
+      "samples_ms": [
+        0.0052,
+        0.0052,
+        0.0053,
+        0.0053,
+        0.0056
+      ]
+    },
+    "frame_recovery_parallel_trial": {
+      "median_ms": 0.059,
+      "samples_ms": [
+        0.058699999999999995,
+        0.0588,
+        0.059,
+        0.0591,
+        0.0631
+      ]
+    },
+    "frame_recovery_serial": {
+      "median_ms": 0.0601,
+      "samples_ms": [
+        0.0597,
+        0.0599,
+        0.0601,
+        0.0648,
+        0.06499999999999999
+      ]
+    },
+    "frames": 1064,
+    "kind": "stages",
+    "loads": {
+      "median_ms": 0.0056,
+      "samples_ms": [
+        0.0056,
+        0.0056,
+        0.0056,
+        0.0056,
+        0.005699999999999999
+      ]
+    },
+    "model": "frame_6x6x8",
+    "nodes": 441,
+    "numeric_factor": {
+      "median_ms": 3.5316,
+      "samples_ms": [
+        3.4916,
+        3.5199,
+        3.5316,
+        3.5798,
+        3.6046
+      ]
+    },
+    "prepare": {
+      "median_ms": 2.5402,
+      "samples_ms": [
+        2.5290999999999997,
+        2.5401,
+        2.5402,
+        2.5467,
+        2.5554
+      ]
+    },
+    "reduced_csc_build": {
+      "median_ms": 0.34259999999999996,
+      "samples_ms": [
+        0.3422,
+        0.34249999999999997,
+        0.34259999999999996,
+        0.3429,
+        0.35340000000000005
+      ]
+    },
+    "shell_recovery_parallel_trial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999,
+        0.00009999999999999999
+      ]
+    },
+    "shell_recovery_serial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999
+      ]
+    },
+    "shells": 0,
+    "solve_and_residual": {
+      "median_ms": 0.2374,
+      "samples_ms": [
+        0.2334,
+        0.23470000000000002,
+        0.2374,
+        0.2379,
+        0.2947
+      ]
+    },
+    "sparse_apply": {
+      "median_ms": 0.0134,
+      "samples_ms": [
+        0.0132,
+        0.0133,
+        0.0134,
+        0.0134,
+        0.0135
+      ]
+    },
+    "states_parallel_trial": {
+      "median_ms": 0.5959,
+      "samples_ms": [
+        0.593,
+        0.5942999999999999,
+        0.5959,
+        0.6024999999999999,
+        0.6274
+      ]
+    },
+    "states_serial": {
+      "median_ms": 0.0859,
+      "samples_ms": [
+        0.0858,
+        0.0859,
+        0.0859,
+        0.0862,
+        0.0863
+      ]
+    },
+    "symbolic_analysis": {
+      "median_ms": 1.981,
+      "samples_ms": [
+        1.9716999999999998,
+        1.9757,
+        1.981,
+        2.009,
+        2.0174
+      ]
+    },
+    "threads": 1
+  },
+  {
+    "assembly_and_factor": {
+      "median_ms": 7.4815000000000005,
+      "samples_ms": [
+        7.3457,
+        7.4478,
+        7.4815000000000005,
+        7.492999999999999,
+        7.766900000000001
+      ]
+    },
+    "force": {
+      "median_ms": 0.0053,
+      "samples_ms": [
+        0.0053,
+        0.0053,
+        0.0053,
+        0.006,
+        0.017900000000000003
+      ]
+    },
+    "frame_recovery_parallel_trial": {
+      "median_ms": 0.025400000000000002,
+      "samples_ms": [
+        0.0224,
+        0.0249,
+        0.025400000000000002,
+        0.026,
+        0.0266
+      ]
+    },
+    "frame_recovery_serial": {
+      "median_ms": 0.060399999999999995,
+      "samples_ms": [
+        0.0593,
+        0.0598,
+        0.060399999999999995,
+        0.0605,
+        0.0669
+      ]
+    },
+    "frames": 1064,
+    "kind": "stages",
+    "loads": {
+      "median_ms": 0.005699999999999999,
+      "samples_ms": [
+        0.0056,
+        0.0056,
+        0.005699999999999999,
+        0.0058000000000000005,
+        0.0079
+      ]
+    },
+    "model": "frame_6x6x8",
+    "nodes": 441,
+    "numeric_factor": {
+      "median_ms": 3.7149,
+      "samples_ms": [
+        3.3531,
+        3.6705,
+        3.7149,
+        3.7425,
+        3.8722000000000003
+      ]
+    },
+    "prepare": {
+      "median_ms": 0.9744,
+      "samples_ms": [
+        0.893,
+        0.9424,
+        0.9744,
+        1.0306,
+        1.1341999999999999
+      ]
+    },
+    "reduced_csc_build": {
+      "median_ms": 0.383,
+      "samples_ms": [
+        0.3449,
+        0.36029999999999995,
+        0.383,
+        0.4304,
+        0.43370000000000003
+      ]
+    },
+    "shell_recovery_parallel_trial": {
+      "median_ms": 0.00009999999999999999,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.00009999999999999999,
+        0.00009999999999999999,
+        0.00009999999999999999
+      ]
+    },
+    "shell_recovery_serial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999
+      ]
+    },
+    "shells": 0,
+    "solve_and_residual": {
+      "median_ms": 0.2369,
+      "samples_ms": [
+        0.23299999999999998,
+        0.23470000000000002,
+        0.2369,
+        0.24350000000000002,
+        0.24449999999999997
+      ]
+    },
+    "sparse_apply": {
+      "median_ms": 0.014,
+      "samples_ms": [
+        0.0138,
+        0.013900000000000001,
+        0.014,
+        0.014,
+        0.014
+      ]
+    },
+    "states_parallel_trial": {
+      "median_ms": 0.17029999999999998,
+      "samples_ms": [
+        0.1628,
+        0.1659,
+        0.17029999999999998,
+        0.187,
+        0.1893
+      ]
+    },
+    "states_serial": {
+      "median_ms": 0.0851,
+      "samples_ms": [
+        0.0844,
+        0.0848,
+        0.0851,
+        0.0851,
+        0.0892
+      ]
+    },
+    "symbolic_analysis": {
+      "median_ms": 1.9826000000000001,
+      "samples_ms": [
+        1.9657,
+        1.9806,
+        1.9826000000000001,
+        1.9873999999999998,
+        2.004
+      ]
+    },
+    "threads": 8
+  },
+  {
+    "assembly_and_factor": {
+      "median_ms": 9.332999999999998,
+      "samples_ms": [
+        9.3045,
+        9.3227,
+        9.332999999999998,
+        9.417399999999999,
+        9.4813
+      ]
+    },
+    "force": {
+      "median_ms": 0.0053,
+      "samples_ms": [
+        0.0051,
+        0.0051,
+        0.0053,
+        0.0055,
+        0.0061
+      ]
+    },
+    "frame_recovery_parallel_trial": {
+      "median_ms": 0.0229,
+      "samples_ms": [
+        0.022099999999999998,
+        0.022699999999999998,
+        0.0229,
+        0.0234,
+        0.0249
+      ]
+    },
+    "frame_recovery_serial": {
+      "median_ms": 0.0592,
+      "samples_ms": [
+        0.0589,
+        0.059,
+        0.0592,
+        0.059500000000000004,
+        0.0639
+      ]
+    },
+    "frames": 1064,
+    "kind": "stages",
+    "loads": {
+      "median_ms": 0.005699999999999999,
+      "samples_ms": [
+        0.005699999999999999,
+        0.005699999999999999,
+        0.005699999999999999,
+        0.0058000000000000005,
+        0.0058000000000000005
+      ]
+    },
+    "model": "frame_6x6x8",
+    "nodes": 441,
+    "numeric_factor": {
+      "median_ms": 5.4812,
+      "samples_ms": [
+        5.0748,
+        5.1213,
+        5.4812,
+        5.5614,
+        5.6077
+      ]
+    },
+    "prepare": {
+      "median_ms": 1.0939999999999999,
+      "samples_ms": [
+        1.0476999999999999,
+        1.0671000000000002,
+        1.0939999999999999,
+        1.1324,
+        1.1705
+      ]
+    },
+    "reduced_csc_build": {
+      "median_ms": 0.34680000000000005,
+      "samples_ms": [
+        0.3411,
+        0.34469999999999995,
+        0.34680000000000005,
+        0.3476,
+        0.3479
+      ]
+    },
+    "shell_recovery_parallel_trial": {
+      "median_ms": 0.00009999999999999999,
+      "samples_ms": [
+        0.0,
+        0.00009999999999999999,
+        0.00009999999999999999,
+        0.00009999999999999999,
+        0.00009999999999999999
+      ]
+    },
+    "shell_recovery_serial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999,
+        0.00009999999999999999
+      ]
+    },
+    "shells": 0,
+    "solve_and_residual": {
+      "median_ms": 0.2391,
+      "samples_ms": [
+        0.2344,
+        0.2364,
+        0.2391,
+        0.2432,
+        0.2622
+      ]
+    },
+    "sparse_apply": {
+      "median_ms": 0.0132,
+      "samples_ms": [
+        0.0131,
+        0.0131,
+        0.0132,
+        0.0132,
+        0.0133
+      ]
+    },
+    "states_parallel_trial": {
+      "median_ms": 0.2359,
+      "samples_ms": [
+        0.2283,
+        0.23120000000000002,
+        0.2359,
+        0.2437,
+        0.2474
+      ]
+    },
+    "states_serial": {
+      "median_ms": 0.0854,
+      "samples_ms": [
+        0.0842,
+        0.0846,
+        0.0854,
+        0.0858,
+        0.0886
+      ]
+    },
+    "symbolic_analysis": {
+      "median_ms": 1.98,
+      "samples_ms": [
+        1.9751,
+        1.9765999999999997,
+        1.98,
+        1.9848999999999999,
+        1.9907000000000001
+      ]
+    },
+    "threads": 16
+  },
+  {
+    "assembly_and_factor": {
+      "median_ms": 108.2802,
+      "samples_ms": [
+        107.2602,
+        108.1769,
+        108.2802,
+        108.81739999999999,
+        113.5531
+      ]
+    },
+    "force": {
+      "median_ms": 0.0429,
+      "samples_ms": [
+        0.0422,
+        0.0427,
+        0.0429,
+        0.0431,
+        0.0431
+      ]
+    },
+    "frame_recovery_parallel_trial": {
+      "median_ms": 0.3883,
+      "samples_ms": [
+        0.3791,
+        0.3844,
+        0.3883,
+        0.3903,
+        0.3942
+      ]
+    },
+    "frame_recovery_serial": {
+      "median_ms": 0.42769999999999997,
+      "samples_ms": [
+        0.42000000000000004,
+        0.42319999999999997,
+        0.42769999999999997,
+        0.45130000000000003,
+        0.782
+      ]
+    },
+    "frames": 5456,
+    "kind": "stages",
+    "loads": {
+      "median_ms": 0.0322,
+      "samples_ms": [
+        0.032,
+        0.032,
+        0.0322,
+        0.0323,
+        0.032499999999999994
+      ]
+    },
+    "model": "frame_10x10x16",
+    "nodes": 2057,
+    "numeric_factor": {
+      "median_ms": 82.7846,
+      "samples_ms": [
+        81.4059,
+        81.72409999999999,
+        82.7846,
+        85.0631,
+        85.9632
+      ]
+    },
+    "prepare": {
+      "median_ms": 13.0258,
+      "samples_ms": [
+        12.7861,
+        12.961,
+        13.0258,
+        13.0704,
+        13.293
+      ]
+    },
+    "reduced_csc_build": {
+      "median_ms": 2.2626,
+      "samples_ms": [
+        2.2409,
+        2.2449000000000003,
+        2.2626,
+        2.2736,
+        2.2845
+      ]
+    },
+    "shell_recovery_parallel_trial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999,
+        0.00009999999999999999
+      ]
+    },
+    "shell_recovery_serial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999
+      ]
+    },
+    "shells": 0,
+    "solve_and_residual": {
+      "median_ms": 1.9032,
+      "samples_ms": [
+        1.8691,
+        1.8819,
+        1.9032,
+        1.9647000000000001,
+        2.1654999999999998
+      ]
+    },
+    "sparse_apply": {
+      "median_ms": 0.06830000000000001,
+      "samples_ms": [
+        0.06810000000000001,
+        0.06830000000000001,
+        0.06830000000000001,
+        0.0684,
+        0.0684
+      ]
+    },
+    "states_parallel_trial": {
+      "median_ms": 4.6921,
+      "samples_ms": [
+        3.9656,
+        4.208,
+        4.6921,
+        5.3083,
+        5.462
+      ]
+    },
+    "states_serial": {
+      "median_ms": 0.5397000000000001,
+      "samples_ms": [
+        0.53,
+        0.5342,
+        0.5397000000000001,
+        0.5408000000000001,
+        0.5530999999999999
+      ]
+    },
+    "symbolic_analysis": {
+      "median_ms": 13.6142,
+      "samples_ms": [
+        13.1628,
+        13.264,
+        13.6142,
+        13.7073,
+        13.853900000000001
+      ]
+    },
+    "threads": 1
+  },
+  {
+    "assembly_and_factor": {
+      "median_ms": 66.66900000000001,
+      "samples_ms": [
+        65.6552,
+        65.7424,
+        66.66900000000001,
+        67.1865,
+        67.6408
+      ]
+    },
+    "force": {
+      "median_ms": 0.0506,
+      "samples_ms": [
+        0.0496,
+        0.050300000000000004,
+        0.0506,
+        0.052500000000000005,
+        0.0562
+      ]
+    },
+    "frame_recovery_parallel_trial": {
+      "median_ms": 0.1908,
+      "samples_ms": [
+        0.1692,
+        0.1898,
+        0.1908,
+        0.1933,
+        0.1986
+      ]
+    },
+    "frame_recovery_serial": {
+      "median_ms": 0.5302,
+      "samples_ms": [
+        0.414,
+        0.4149,
+        0.5302,
+        0.9401999999999999,
+        1.1360000000000001
+      ]
+    },
+    "frames": 5456,
+    "kind": "stages",
+    "loads": {
+      "median_ms": 0.0399,
+      "samples_ms": [
+        0.037700000000000004,
+        0.039400000000000004,
+        0.0399,
+        0.045599999999999995,
+        0.0552
+      ]
+    },
+    "model": "frame_10x10x16",
+    "nodes": 2057,
+    "numeric_factor": {
+      "median_ms": 44.597199999999994,
+      "samples_ms": [
+        43.592800000000004,
+        43.9628,
+        44.597199999999994,
+        44.9087,
+        45.9405
+      ]
+    },
+    "prepare": {
+      "median_ms": 4.8399,
+      "samples_ms": [
+        4.560899999999999,
+        4.6791,
+        4.8399,
+        5.120699999999999,
+        5.7534
+      ]
+    },
+    "reduced_csc_build": {
+      "median_ms": 2.2859,
+      "samples_ms": [
+        2.2695,
+        2.2771,
+        2.2859,
+        2.3292,
+        2.3852
+      ]
+    },
+    "shell_recovery_parallel_trial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999,
+        0.00009999999999999999
+      ]
+    },
+    "shell_recovery_serial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999,
+        0.00009999999999999999
+      ]
+    },
+    "shells": 0,
+    "solve_and_residual": {
+      "median_ms": 2.1721000000000004,
+      "samples_ms": [
+        1.8808,
+        2.0877,
+        2.1721000000000004,
+        2.3373,
+        2.3639
+      ]
+    },
+    "sparse_apply": {
+      "median_ms": 0.0691,
+      "samples_ms": [
+        0.06899999999999999,
+        0.06899999999999999,
+        0.0691,
+        0.0694,
+        0.0718
+      ]
+    },
+    "states_parallel_trial": {
+      "median_ms": 0.8442999999999999,
+      "samples_ms": [
+        0.7623000000000001,
+        0.7965,
+        0.8442999999999999,
+        1.0768,
+        1.0909
+      ]
+    },
+    "states_serial": {
+      "median_ms": 0.5503,
+      "samples_ms": [
+        0.5454,
+        0.5463,
+        0.5503,
+        0.5656,
+        0.6127
+      ]
+    },
+    "symbolic_analysis": {
+      "median_ms": 13.2095,
+      "samples_ms": [
+        13.1768,
+        13.1828,
+        13.2095,
+        13.2152,
+        13.697799999999999
+      ]
+    },
+    "threads": 8
+  },
+  {
+    "assembly_and_factor": {
+      "median_ms": 81.4636,
+      "samples_ms": [
+        77.4132,
+        80.4783,
+        81.4636,
+        82.9464,
+        119.1507
+      ]
+    },
+    "force": {
+      "median_ms": 0.0416,
+      "samples_ms": [
+        0.041100000000000005,
+        0.0416,
+        0.0416,
+        0.0422,
+        0.0435
+      ]
+    },
+    "frame_recovery_parallel_trial": {
+      "median_ms": 0.2964,
+      "samples_ms": [
+        0.25520000000000004,
+        0.28219999999999995,
+        0.2964,
+        0.36210000000000003,
+        0.43770000000000003
+      ]
+    },
+    "frame_recovery_serial": {
+      "median_ms": 0.5831000000000001,
+      "samples_ms": [
+        0.4208,
+        0.5609999999999999,
+        0.5831000000000001,
+        0.9018999999999999,
+        1.0784
+      ]
+    },
+    "frames": 5456,
+    "kind": "stages",
+    "loads": {
+      "median_ms": 0.036000000000000004,
+      "samples_ms": [
+        0.035800000000000005,
+        0.036000000000000004,
+        0.036000000000000004,
+        0.0361,
+        0.036699999999999997
+      ]
+    },
+    "model": "frame_10x10x16",
+    "nodes": 2057,
+    "numeric_factor": {
+      "median_ms": 53.9788,
+      "samples_ms": [
+        50.080600000000004,
+        52.2529,
+        53.9788,
+        59.2404,
+        62.4445
+      ]
+    },
+    "prepare": {
+      "median_ms": 4.9543,
+      "samples_ms": [
+        4.8857,
+        4.8928,
+        4.9543,
+        5.0781,
+        6.519299999999999
+      ]
+    },
+    "reduced_csc_build": {
+      "median_ms": 2.4443,
+      "samples_ms": [
+        2.2094,
+        2.3878,
+        2.4443,
+        2.4516,
+        2.5196
+      ]
+    },
+    "shell_recovery_parallel_trial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999,
+        0.00009999999999999999
+      ]
+    },
+    "shell_recovery_serial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999
+      ]
+    },
+    "shells": 0,
+    "solve_and_residual": {
+      "median_ms": 2.8337000000000003,
+      "samples_ms": [
+        2.6849,
+        2.7273,
+        2.8337000000000003,
+        2.9739,
+        3.0707999999999998
+      ]
+    },
+    "sparse_apply": {
+      "median_ms": 0.06899999999999999,
+      "samples_ms": [
+        0.06889999999999999,
+        0.06889999999999999,
+        0.06899999999999999,
+        0.0692,
+        0.0692
+      ]
+    },
+    "states_parallel_trial": {
+      "median_ms": 1.1016000000000001,
+      "samples_ms": [
+        1.0693,
+        1.0784,
+        1.1016000000000001,
+        1.1331,
+        1.2182
+      ]
+    },
+    "states_serial": {
+      "median_ms": 0.6622,
+      "samples_ms": [
+        0.5761,
+        0.5898,
+        0.6622,
+        0.6643,
+        0.789
+      ]
+    },
+    "symbolic_analysis": {
+      "median_ms": 14.4341,
+      "samples_ms": [
+        14.164,
+        14.250300000000001,
+        14.4341,
+        14.5598,
+        14.6246
+      ]
+    },
+    "threads": 16
+  },
+  {
+    "assembly_and_factor": {
+      "median_ms": 10.5631,
+      "samples_ms": [
+        10.4808,
+        10.5127,
+        10.5631,
+        11.2404,
+        11.3168
+      ]
+    },
+    "force": {
+      "median_ms": 0.2264,
+      "samples_ms": [
+        0.22619999999999998,
+        0.2264,
+        0.2264,
+        0.23399999999999999,
+        0.23650000000000002
+      ]
+    },
+    "frame_recovery_parallel_trial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999
+      ]
+    },
+    "frame_recovery_serial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999,
+        0.00009999999999999999
+      ]
+    },
+    "frames": 0,
+    "kind": "stages",
+    "loads": {
+      "median_ms": 0.0023,
+      "samples_ms": [
+        0.0023,
+        0.0023,
+        0.0023,
+        0.0023,
+        0.0023
+      ]
+    },
+    "model": "plate_32x32",
+    "nodes": 1089,
+    "numeric_factor": {
+      "median_ms": 1.6039999999999999,
+      "samples_ms": [
+        1.5689,
+        1.5942,
+        1.6039999999999999,
+        1.6317,
+        1.6737
+      ]
+    },
+    "prepare": {
+      "median_ms": 12.834200000000001,
+      "samples_ms": [
+        12.6337,
+        12.663300000000001,
+        12.834200000000001,
+        13.6071,
+        13.674199999999999
+      ]
+    },
+    "reduced_csc_build": {
+      "median_ms": 1.6764,
+      "samples_ms": [
+        1.6661,
+        1.6756,
+        1.6764,
+        1.6801,
+        1.7013
+      ]
+    },
+    "shell_recovery_parallel_trial": {
+      "median_ms": 0.2018,
+      "samples_ms": [
+        0.20129999999999998,
+        0.2017,
+        0.2018,
+        0.2019,
+        0.2023
+      ]
+    },
+    "shell_recovery_serial": {
+      "median_ms": 0.1905,
+      "samples_ms": [
+        0.1889,
+        0.18919999999999998,
+        0.1905,
+        0.1941,
+        0.19770000000000001
+      ]
+    },
+    "shells": 1024,
+    "solve_and_residual": {
+      "median_ms": 0.30410000000000004,
+      "samples_ms": [
+        0.3034,
+        0.3037,
+        0.30410000000000004,
+        0.30469999999999997,
+        0.3091
+      ]
+    },
+    "sparse_apply": {
+      "median_ms": 0.057,
+      "samples_ms": [
+        0.0554,
+        0.0559,
+        0.057,
+        0.0571,
+        0.0571
+      ]
+    },
+    "states_parallel_trial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999,
+        0.00009999999999999999
+      ]
+    },
+    "states_serial": {
+      "median_ms": 0.00009999999999999999,
+      "samples_ms": [
+        0.0,
+        0.00009999999999999999,
+        0.00009999999999999999,
+        0.00009999999999999999,
+        0.00009999999999999999
+      ]
+    },
+    "symbolic_analysis": {
+      "median_ms": 1.1974,
+      "samples_ms": [
+        1.1866999999999999,
+        1.1941,
+        1.1974,
+        1.2034,
+        1.2123
+      ]
+    },
+    "threads": 1
+  },
+  {
+    "assembly_and_factor": {
+      "median_ms": 11.1126,
+      "samples_ms": [
+        10.9275,
+        11.0663,
+        11.1126,
+        11.4507,
+        11.5213
+      ]
+    },
+    "force": {
+      "median_ms": 0.2394,
+      "samples_ms": [
+        0.2274,
+        0.2285,
+        0.2394,
+        0.2412,
+        0.299
+      ]
+    },
+    "frame_recovery_parallel_trial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999
+      ]
+    },
+    "frame_recovery_serial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999
+      ]
+    },
+    "frames": 0,
+    "kind": "stages",
+    "loads": {
+      "median_ms": 0.0023,
+      "samples_ms": [
+        0.0022,
+        0.0023,
+        0.0023,
+        0.0023,
+        0.0024
+      ]
+    },
+    "model": "plate_32x32",
+    "nodes": 1089,
+    "numeric_factor": {
+      "median_ms": 2.3098,
+      "samples_ms": [
+        2.2678,
+        2.2815000000000003,
+        2.3098,
+        2.3914,
+        3.7366
+      ]
+    },
+    "prepare": {
+      "median_ms": 3.2623,
+      "samples_ms": [
+        3.2253999999999996,
+        3.2319,
+        3.2623,
+        3.3628,
+        3.4072999999999998
+      ]
+    },
+    "reduced_csc_build": {
+      "median_ms": 1.6593,
+      "samples_ms": [
+        1.6557,
+        1.6589,
+        1.6593,
+        1.6739000000000002,
+        1.7088999999999999
+      ]
+    },
+    "shell_recovery_parallel_trial": {
+      "median_ms": 0.0875,
+      "samples_ms": [
+        0.0809,
+        0.085,
+        0.0875,
+        0.0949,
+        0.1822
+      ]
+    },
+    "shell_recovery_serial": {
+      "median_ms": 0.19369999999999998,
+      "samples_ms": [
+        0.1931,
+        0.1932,
+        0.19369999999999998,
+        0.1938,
+        0.20350000000000001
+      ]
+    },
+    "shells": 1024,
+    "solve_and_residual": {
+      "median_ms": 0.31,
+      "samples_ms": [
+        0.3057,
+        0.3083,
+        0.31,
+        0.3115,
+        0.3178
+      ]
+    },
+    "sparse_apply": {
+      "median_ms": 0.0579,
+      "samples_ms": [
+        0.057800000000000004,
+        0.057800000000000004,
+        0.0579,
+        0.0582,
+        0.061
+      ]
+    },
+    "states_parallel_trial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999
+      ]
+    },
+    "states_serial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999
+      ]
+    },
+    "symbolic_analysis": {
+      "median_ms": 1.1876,
+      "samples_ms": [
+        1.1652,
+        1.173,
+        1.1876,
+        1.1885000000000001,
+        1.212
+      ]
+    },
+    "threads": 8
+  },
+  {
+    "assembly_and_factor": {
+      "median_ms": 12.7149,
+      "samples_ms": [
+        11.9727,
+        12.3864,
+        12.7149,
+        12.959399999999999,
+        13.3212
+      ]
+    },
+    "force": {
+      "median_ms": 0.2362,
+      "samples_ms": [
+        0.22699999999999998,
+        0.2286,
+        0.2362,
+        0.2519,
+        0.25730000000000003
+      ]
+    },
+    "frame_recovery_parallel_trial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999,
+        0.00009999999999999999
+      ]
+    },
+    "frame_recovery_serial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999
+      ]
+    },
+    "frames": 0,
+    "kind": "stages",
+    "loads": {
+      "median_ms": 0.0022,
+      "samples_ms": [
+        0.0022,
+        0.0022,
+        0.0022,
+        0.0022,
+        0.0027
+      ]
+    },
+    "model": "plate_32x32",
+    "nodes": 1089,
+    "numeric_factor": {
+      "median_ms": 3.783,
+      "samples_ms": [
+        2.9695,
+        3.1015,
+        3.783,
+        3.9801,
+        4.1723
+      ]
+    },
+    "prepare": {
+      "median_ms": 3.1946000000000003,
+      "samples_ms": [
+        3.0317,
+        3.0559,
+        3.1946000000000003,
+        3.2032,
+        3.5088
+      ]
+    },
+    "reduced_csc_build": {
+      "median_ms": 1.7033,
+      "samples_ms": [
+        1.6644999999999999,
+        1.692,
+        1.7033,
+        1.7231,
+        1.9178000000000002
+      ]
+    },
+    "shell_recovery_parallel_trial": {
+      "median_ms": 0.19340000000000002,
+      "samples_ms": [
+        0.1711,
+        0.1803,
+        0.19340000000000002,
+        0.2163,
+        0.27530000000000004
+      ]
+    },
+    "shell_recovery_serial": {
+      "median_ms": 0.19210000000000002,
+      "samples_ms": [
+        0.1903,
+        0.1917,
+        0.19210000000000002,
+        0.1943,
+        0.2079
+      ]
+    },
+    "shells": 1024,
+    "solve_and_residual": {
+      "median_ms": 0.3195,
+      "samples_ms": [
+        0.3155,
+        0.3171,
+        0.3195,
+        0.32739999999999997,
+        0.3853
+      ]
+    },
+    "sparse_apply": {
+      "median_ms": 0.057,
+      "samples_ms": [
+        0.056799999999999996,
+        0.057,
+        0.057,
+        0.0571,
+        0.0571
+      ]
+    },
+    "states_parallel_trial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999
+      ]
+    },
+    "states_serial": {
+      "median_ms": 0.0,
+      "samples_ms": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.00009999999999999999
+      ]
+    },
+    "symbolic_analysis": {
+      "median_ms": 1.2054,
+      "samples_ms": [
+        1.194,
+        1.1945000000000001,
+        1.2054,
+        1.2168999999999999,
+        1.2207
+      ]
+    },
+    "threads": 16
+  },
+  {
+    "combos": 8,
+    "iterations": [
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3
+    ],
+    "kind": "p_delta",
+    "max_in_flight": 1,
+    "model": "4x4x4",
+    "pool_threads": 1,
+    "timing": {
+      "median_ms": 35.3912,
+      "samples_ms": [
+        35.3583,
+        35.3668,
+        35.3912,
+        36.427099999999996,
+        37.9795
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "iterations": [
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3
+    ],
+    "kind": "p_delta",
+    "max_in_flight": 4,
+    "model": "4x4x4",
+    "pool_threads": 4,
+    "timing": {
+      "median_ms": 9.7593,
+      "samples_ms": [
+        9.6697,
+        9.7486,
+        9.7593,
+        9.8545,
+        10.4101
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "iterations": [
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3
+    ],
+    "kind": "p_delta",
+    "max_in_flight": 8,
+    "model": "4x4x4",
+    "pool_threads": 8,
+    "timing": {
+      "median_ms": 5.182499999999999,
+      "samples_ms": [
+        5.1066,
+        5.1689,
+        5.182499999999999,
+        5.2787,
+        5.3312
+      ]
+    }
+  },
+  {
+    "combos": 8,
+    "iterations": [
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3
+    ],
+    "kind": "p_delta",
+    "max_in_flight": 16,
+    "model": "4x4x4",
+    "pool_threads": 16,
+    "timing": {
+      "median_ms": 7.418,
+      "samples_ms": [
+        7.0638000000000005,
+        7.1033,
+        7.418,
+        7.5032,
+        7.5047999999999995
+      ]
+    }
+  },
+  {
+    "kind": "modal",
+    "model": "4x4x4",
+    "modes": 12,
+    "pool_threads": 1,
+    "timing": {
+      "median_ms": 6.1068,
+      "samples_ms": [
+        6.1027,
+        6.1068,
+        6.1345
+      ]
+    }
+  },
+  {
+    "kind": "modal",
+    "model": "4x4x4",
+    "modes": 12,
+    "pool_threads": 8,
+    "timing": {
+      "median_ms": 6.7096,
+      "samples_ms": [
+        6.4808,
+        6.7096,
+        7.1525
+      ]
+    }
+  },
+  {
+    "kind": "modal",
+    "model": "4x4x4",
+    "modes": 12,
+    "pool_threads": 16,
+    "timing": {
+      "median_ms": 7.4445,
+      "samples_ms": [
+        6.721699999999999,
+        7.4445,
+        8.3494
+      ]
+    }
+  }
+]

@@ -17,12 +17,13 @@ pub(crate) struct ShellElement {
     pub k: M24,
     pub pressure_load: V24,
     pub nodal_mass: [f64; 4],
+    /// Center stress, moment and shear recovery operators applied to local displacements.
+    stress_op: B3,
+    moment_op: B3,
+    shear_op: B2,
     xy: [Vector2<f64>; 4],
     thickness: f64,
     poisson: f64,
-    pub dm: Matrix3<f64>,
-    db: Matrix3<f64>,
-    ds: Matrix2<f64>,
     rectangle_inverse: Option<SMatrix<f64, 12, 12>>,
 }
 
@@ -84,12 +85,12 @@ impl ShellElement {
             k: M24::zeros(),
             pressure_load: V24::zeros(),
             nodal_mass: [0.0; 4],
+            stress_op: B3::zeros(),
+            moment_op: B3::zeros(),
+            shear_op: B2::zeros(),
             xy,
             thickness: h,
             poisson: nu,
-            dm,
-            db,
-            ds,
             rectangle_inverse: None,
         };
         if shell.formulation == ShellFormulation::Rectangular {
@@ -151,6 +152,10 @@ impl ShellElement {
         for i in 0..4 {
             out.k[(6 * i + 5, 6 * i + 5)] = kd;
         }
+        let (bb, bs) = out.bending(0.0, 0.0)?;
+        out.stress_op = dm * out.membrane(0.0, 0.0)?;
+        out.moment_op = db * bb;
+        out.shear_op = ds * bs;
         Ok(out)
     }
     fn geometry(&self, xi: f64, eta: f64) -> Result<([f64; 4], [Vector2<f64>; 4], f64)> {
@@ -339,16 +344,18 @@ impl ShellElement {
         }
         n
     }
+    /// Tᵀ k T. Constant per element; `Prepared` caches it for assembly and
+    /// equilibrium checks rather than the element, which keeps the element
+    /// small while parallel construction moves it by value.
     pub fn global_k(&self) -> M24 {
         self.t.transpose() * self.k * self.t
     }
     pub fn recover(&self, global_d: &[f64], pressure: f64) -> Result<crate::results::ShellResult> {
         let d = self.t * V24::from_fn(|i, _| global_d[self.dofs[i]]);
         let f = self.k * d - self.pressure_load * pressure;
-        let (bb, bs) = self.bending(0.0, 0.0)?;
-        let stress = self.dm * self.membrane(0.0, 0.0)? * d;
-        let moment = self.db * bb * d;
-        let shear = self.ds * bs * d;
+        let stress = self.stress_op * d;
+        let moment = self.moment_op * d;
+        let shear = self.shear_op * d;
         Ok(crate::results::ShellResult {
             local_end_forces: std::array::from_fn(|i| f[i]),
             membrane_stress: stress.into(),

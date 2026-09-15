@@ -1,8 +1,10 @@
+#[cfg(feature = "parallel")]
+use crate::exec::{ASSEMBLY_CHUNK, PARALLEL_THRESHOLD};
 use crate::{
     Error, Result,
     element::{
-        frame::{FrameElement, FrameState, V12},
-        shell::ShellElement,
+        frame::{FrameElement, FrameState, FrameStiffness, Stiffness, V12},
+        shell::{M24, ShellElement},
     },
     model::*,
 };
@@ -17,10 +19,17 @@ use rayon::prelude::*;
 pub(crate) struct Prepared {
     pub frames: Vec<FrameElement>,
     pub shells: Vec<ShellElement>,
+    /// Zero-axial-force stiffness of every frame, shared by every linear
+    /// combination and by nonlinear members whose axial force is zero.
+    pub elastic: Vec<FrameStiffness>,
+    /// Global stiffness of every shell, cached once per preparation.
+    pub shell_k: Vec<M24>,
     pub ndof: usize,
     pub springs: Vec<f64>,
     pub constraints: Vec<Option<Vec<(usize, f64)>>>,
     masters: Vec<bool>,
+    /// Equivalent loads of each load case, combined by factor per combination.
+    case_loads: Vec<Loads>,
 }
 impl Prepared {
     pub fn new(model: &Model) -> Result<Self> {
@@ -43,79 +52,161 @@ impl Prepared {
         let shells = (0..model.shells.len())
             .map(|i| ShellElement::new(model, i))
             .collect::<Result<Vec<_>>>()?;
-        Ok(Self {
+        #[cfg(feature = "parallel")]
+        let elastic = frames.par_iter().map(|e| e.stiffness(0.0)).collect();
+        #[cfg(not(feature = "parallel"))]
+        let elastic = frames.iter().map(|e| e.stiffness(0.0)).collect();
+        #[cfg(feature = "parallel")]
+        let shell_k = shells.par_iter().map(ShellElement::global_k).collect();
+        #[cfg(not(feature = "parallel"))]
+        let shell_k = shells.iter().map(ShellElement::global_k).collect();
+        let mut prep = Self {
             frames,
             shells,
+            elastic,
+            shell_k,
             ndof: model.nodes.len() * 6,
             springs: model.nodes.iter().flat_map(Node::springs).collect(),
             constraints: model.constraints(),
             masters: model.diaphragm_masters(),
-        })
-    }
-    pub fn loads(&self, model: &Model, combo: &LoadCombination) -> Loads {
-        let mut out = Loads {
-            nodal: vec![0.0; self.ndof],
-            member: vec![V12::zeros(); self.frames.len()],
-            pressure: vec![0.0; self.shells.len()],
+            case_loads: vec![],
         };
-        for &(id, factor) in &combo.terms {
-            let case = &model.load_cases[id.0];
-            for l in &case.nodal {
-                for (i, v) in l.values().into_iter().enumerate() {
-                    out.nodal[l.node.0 * 6 + i] += factor * v;
+        prep.case_loads = model
+            .load_cases
+            .iter()
+            .map(|case| prep.case_loads(model, case))
+            .collect();
+        Ok(prep)
+    }
+    fn case_loads(&self, model: &Model, case: &LoadCase) -> Loads {
+        let mut out = self.zero_loads();
+        for l in &case.nodal {
+            for (i, v) in l.values().into_iter().enumerate() {
+                out.nodal[l.node.0 * 6 + i] += v;
+            }
+        }
+        for l in &case.member {
+            out.member[l.member().0] += self.frames[l.member().0].equivalent_load(l);
+        }
+        for l in &case.surface {
+            out.pressure[l.shell.0] += l.pressure.si();
+        }
+        if case.self_weight != [0.0; 3] {
+            let g = model.gravity.si();
+            for (i, e) in self.frames.iter().enumerate() {
+                if let Some(load) = e.self_weight_load(FrameId(i), g, case.self_weight) {
+                    out.member[i] += e.equivalent_load(&load);
                 }
             }
-            for l in &case.member {
-                out.member[l.member().0] += self.frames[l.member().0].equivalent_load(l) * factor;
-            }
-            for l in &case.surface {
-                out.pressure[l.shell.0] += factor * l.pressure.si();
-            }
-            if case.self_weight != [0.0; 3] {
-                let g = model.gravity.si();
-                for (i, e) in self.frames.iter().enumerate() {
-                    if let Some(load) = e.self_weight_load(FrameId(i), g, case.self_weight) {
-                        out.member[i] += e.equivalent_load(&load) * factor;
-                    }
-                }
-                for e in &self.shells {
-                    for (corner, &m) in e.nodal_mass.iter().enumerate() {
-                        for (axis, &w) in case.self_weight.iter().enumerate() {
-                            out.nodal[e.dofs[6 * corner + axis]] += factor * m * g * w;
-                        }
+            for e in &self.shells {
+                for (corner, &m) in e.nodal_mass.iter().enumerate() {
+                    for (axis, &w) in case.self_weight.iter().enumerate() {
+                        out.nodal[e.dofs[6 * corner + axis]] += m * g * w;
                     }
                 }
             }
         }
         out
     }
+    pub fn zero_loads(&self) -> Loads {
+        Loads {
+            nodal: vec![0.0; self.ndof],
+            member: vec![V12::zeros(); self.frames.len()],
+            pressure: vec![0.0; self.shells.len()],
+        }
+    }
+    pub fn loads(&self, combo: &LoadCombination) -> Loads {
+        let mut out = self.zero_loads();
+        for &(id, factor) in &combo.terms {
+            let case = &self.case_loads[id.0];
+            for (o, v) in out.nodal.iter_mut().zip(&case.nodal) {
+                *o += factor * v;
+            }
+            for (o, v) in out.member.iter_mut().zip(&case.member) {
+                *o += v * factor;
+            }
+            for (o, v) in out.pressure.iter_mut().zip(&case.pressure) {
+                *o += factor * v;
+            }
+        }
+        out
+    }
+    /// Frame states for the given axial forces and active set. Members at zero
+    /// axial force borrow the cached elastic stiffness; others condense afresh.
     pub fn states(
         &self,
         loads: &Loads,
         axial: &[f64],
         active: &[bool],
-    ) -> Result<Vec<Option<FrameState>>> {
-        self.frames
-            .iter()
-            .enumerate()
-            .map(|(i, e)| {
-                if active[i] {
-                    e.state(axial[i], loads.member[i]).map(Some)
-                } else {
-                    Ok(None)
-                }
-            })
-            .collect()
-    }
-    pub fn assemble(&self, model: &Model, states: &[Option<FrameState>]) -> Result<SparseSystem> {
-        let mut entries = Vec::with_capacity(self.frames.len() * 144 + self.shells.len() * 576);
-        for (e, state) in self.frames.iter().zip(states) {
-            if let Some(s) = state {
-                push_matrix(&mut entries, &e.dofs, &s.global_k);
+    ) -> Result<Vec<Option<FrameState<'_>>>> {
+        let one = |i: usize| -> Result<Option<FrameState<'_>>> {
+            if !active[i] {
+                return Ok(None);
             }
+            let e = &self.frames[i];
+            let stiffness = if axial[i] == 0.0 {
+                Stiffness::Shared(&self.elastic[i])
+            } else {
+                Stiffness::Owned(Box::new(e.stiffness(axial[i])))
+            };
+            e.state(stiffness, loads.member[i]).map(Some)
+        };
+        // Only a nonzero axial force condenses a fresh stiffness; borrowing the
+        // cached one is too cheap to justify nested parallelism inside a batch
+        // of concurrent combinations.
+        #[cfg(feature = "parallel")]
+        if self.frames.len() >= PARALLEL_THRESHOLD && axial.iter().any(|&n| n != 0.0) {
+            return (0..self.frames.len()).into_par_iter().map(one).collect();
         }
-        for e in &self.shells {
-            push_matrix(&mut entries, &e.dofs, &e.global_k());
+        (0..self.frames.len()).map(one).collect()
+    }
+    /// Unloaded, fully active, zero-axial states: the shared linear stiffness.
+    pub fn elastic_states(&self) -> Result<Vec<Option<FrameState<'_>>>> {
+        self.states(
+            &self.zero_loads(),
+            &vec![0.0; self.frames.len()],
+            &vec![true; self.frames.len()],
+        )
+    }
+    /// Element triplets in fixed element order. Chunks of elements fill
+    /// private buffers in parallel and are concatenated in order, so the
+    /// summation order inside the sparse matrix does not depend on scheduling.
+    pub fn assemble(&self, model: &Model, states: &[Option<FrameState>]) -> Result<SparseSystem> {
+        let frame_chunk = |pairs: &[(&FrameElement, &Option<FrameState>)]| {
+            let mut out = Vec::with_capacity(pairs.len() * 144);
+            for (e, state) in pairs {
+                if let Some(s) = state {
+                    push_matrix(&mut out, &e.dofs, s.global_k());
+                }
+            }
+            out
+        };
+        let shell_chunk = |pairs: &[(&ShellElement, &M24)]| {
+            let mut out = Vec::with_capacity(pairs.len() * 576);
+            for (e, k) in pairs {
+                push_matrix(&mut out, &e.dofs, k);
+            }
+            out
+        };
+        let pairs: Vec<_> = self.frames.iter().zip(states).collect();
+        let shells: Vec<_> = self.shells.iter().zip(&self.shell_k).collect();
+        #[cfg(feature = "parallel")]
+        let buffers: Vec<Vec<Triplet<usize, usize, f64>>> =
+            if self.frames.len() + self.shells.len() >= PARALLEL_THRESHOLD {
+                pairs
+                    .par_chunks(ASSEMBLY_CHUNK)
+                    .map(frame_chunk)
+                    .chain(shells.par_chunks(ASSEMBLY_CHUNK).map(shell_chunk))
+                    .collect()
+            } else {
+                vec![frame_chunk(&pairs), shell_chunk(&shells)]
+            };
+        #[cfg(not(feature = "parallel"))]
+        let buffers = vec![frame_chunk(&pairs), shell_chunk(&shells)];
+        let mut entries =
+            Vec::with_capacity(buffers.iter().map(Vec::len).sum::<usize>() + self.ndof);
+        for buffer in buffers {
+            entries.extend(buffer);
         }
         SparseSystem::new(model, entries, self)
     }

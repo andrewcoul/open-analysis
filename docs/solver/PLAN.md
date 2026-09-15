@@ -301,10 +301,10 @@ The eigensolver backend sits behind a trait so it can be replaced. `faer`'s `mat
 
 **Start in memory. Establish an incremental output interface in Phase 2. Defer the disk backend.**
 
-- Analysis emits results per combination, or per bounded batch, through a small result-consumer trait. The default implementation collects everything in memory.
+- Analysis emits results per combination, in requested order, through a small result-consumer trait. The default implementation collects everything in memory. The consumer runs on the calling thread while the pool solves the next combinations, so a serial writer such as SQLite overlaps with computation.
 - Callers select which combinations and which output fields they want. Detailed force-diagram samples along members are generated on demand, not stored.
 - Envelopes retain the governing combination for each value. This is required for design, not optional.
-- Bounded concurrency: parallel combo solves must not hold an unbounded number of results in flight.
+- Bounded concurrency: `max_in_flight` caps combinations started but not yet consumed, counting both running solves and finished results waiting for their turn. `threads` sets the worker count for the whole run, element preparation and factorization included; zero uses the caller's pool, and pools are cached by size.
 
 The memory risk is predictable. Displacements alone for a large model:
 

@@ -1,7 +1,8 @@
 use crate::{
     AxialBehavior, Error, Model, Result,
     analysis::node_values,
-    assembly::{Loads, Prepared, SparseSystem, norm},
+    assembly::{Prepared, SparseSystem, norm},
+    exec::Exec,
 };
 use faer::{
     Col, Mat, MatMut, MatRef, Par, Side,
@@ -26,6 +27,9 @@ pub struct ModalOptions {
     /// Bound for the small-operator dense eigensolve (never the global K).
     pub dense_limit: usize,
     pub check_sturm: bool,
+    /// Worker count for the whole run. Zero uses the current Rayon pool.
+    /// Ignored in a serial/WASM build.
+    pub threads: usize,
 }
 impl Default for ModalOptions {
     fn default() -> Self {
@@ -36,6 +40,7 @@ impl Default for ModalOptions {
             subspace_dimension: 0,
             dense_limit: 256,
             check_sturm: true,
+            threads: 0,
         }
     }
 }
@@ -64,7 +69,7 @@ pub struct ModalResult {
 
 /// Backend contract: return largest eigenpairs of a real symmetric operator.
 /// Eigenvectors are columns. Implementations must report nonconvergence.
-pub trait EigenBackend {
+pub trait EigenBackend: Sync {
     fn name(&self) -> &str;
     fn solve(
         &self,
@@ -346,6 +351,14 @@ pub fn analyze_modal_with_backend(
     options: &ModalOptions,
     backend: &dyn EigenBackend,
 ) -> Result<ModalResult> {
+    validate_options(options)?;
+    let exec = Exec::new(options.threads)?;
+    exec.install(|| {
+        let prep = Prepared::new(model)?;
+        analyze_modal_prepared(model, &prep, options, backend)
+    })
+}
+fn validate_options(options: &ModalOptions) -> Result<()> {
     if options.modes == 0
         || options.max_restarts == 0
         || !options.tolerance.is_finite()
@@ -356,7 +369,18 @@ pub fn analyze_modal_with_backend(
             "invalid modal mode count or convergence settings".into(),
         ));
     }
-    let (prep, system, mass) = modal_system(model)?;
+    Ok(())
+}
+/// Modal analysis on an existing preparation, so spectrum analysis shares it.
+/// Runs in the caller's pool.
+pub(crate) fn analyze_modal_prepared(
+    model: &Model,
+    prep: &Prepared,
+    options: &ModalOptions,
+    backend: &dyn EigenBackend,
+) -> Result<ModalResult> {
+    validate_options(options)?;
+    let (system, mass) = modal_system(model, prep)?;
     let root = MassRoot::new(&system, &mass)?;
     if root.dim == 0 {
         return Err(Error::Request(
@@ -511,12 +535,12 @@ pub fn modal_inertia_count(model: &Model, frequency_hz: f64) -> Result<usize> {
             "trial frequency must be finite and nonnegative".into(),
         ));
     }
-    let (_, system, mass) = modal_system(model)?;
+    let prep = Prepared::new(model)?;
+    let (system, mass) = modal_system(model, &prep)?;
     let root = MassRoot::new(&system, &mass)?;
     SturmCounter::new(&system, &root)?.count((std::f64::consts::TAU * frequency_hz).powi(2))
 }
-fn modal_system(model: &Model) -> Result<(Prepared, SparseSystem, Vec<f64>)> {
-    let prep = Prepared::new(model)?;
+fn modal_system(model: &Model, prep: &Prepared) -> Result<(SparseSystem, Vec<f64>)> {
     if model
         .frames
         .iter()
@@ -536,17 +560,7 @@ fn modal_system(model: &Model) -> Result<(Prepared, SparseSystem, Vec<f64>)> {
             "modal analysis uses an unstressed model with zero prescribed displacements".into(),
         ));
     }
-    let loads = Loads {
-        nodal: vec![0.0; prep.ndof],
-        member: vec![Default::default(); prep.frames.len()],
-        pressure: vec![0.0; prep.shells.len()],
-    };
-    let states = prep.states(
-        &loads,
-        &vec![0.0; prep.frames.len()],
-        &vec![true; prep.frames.len()],
-    )?;
-    let system = prep.assemble(model, &states)?;
+    let system = prep.assemble(model, &prep.elastic_states()?)?;
     let mass = prep.mass(model);
     for (d, &m) in mass.iter().enumerate() {
         if m > 0.0 && !system.is_restrained(d) && !system.is_active(d) {
@@ -557,7 +571,7 @@ fn modal_system(model: &Model) -> Result<(Prepared, SparseSystem, Vec<f64>)> {
             )));
         }
     }
-    Ok((prep, system, mass))
+    Ok((system, mass))
 }
 
 /// Inertia of K_r - σ M_r via sparse LBLᵀ. Each shift needs a numeric
