@@ -269,6 +269,14 @@ fn solve_combination(
                 internal[e.dofs[i]] += f[i];
             }
         }
+        // Grounded springs are part of the solved stiffness, so their force
+        // belongs in the internal vector too; leaving it out reports a
+        // constant spurious imbalance of k_spring * u.
+        for (i, &k) in prep.springs.iter().enumerate() {
+            if k > 0.0 {
+                internal[i] += k * u[i];
+            }
+        }
         // Equilibrium holds in the reduced space; constraint forces cancel under Tᵀ.
         let out_of_balance: Vec<f64> = internal
             .iter()

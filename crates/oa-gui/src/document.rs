@@ -216,7 +216,7 @@ pub fn read_model(path: &Path) -> Result<Model, String> {
 }
 
 pub fn write_model(model: &Model, path: &Path) -> Result<(), String> {
-    std::fs::write(path, oa_model::to_json(model)).map_err(|e| format!("{}: {e}", path.display()))
+    oa_model::save_json(model, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// A two-storey, two-bay steel moment frame with dead and wind cases, so a

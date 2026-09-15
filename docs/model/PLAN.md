@@ -171,7 +171,12 @@ obligations toward it are:
 
 The command log is journalled to a small SQLite file for autosave and crash
 recovery in Phase M1. Same crate as the result store, so one dependency
-serves both.
+serves both. Only accepted commands are journalled: the model applies a
+command first and records it second, and if recording fails the edit is
+rolled back, so a replay never stops at a rejected edit. Model documents are
+saved through a sibling temporary file and a rename, so a failed save leaves
+the previous document intact, and loading checks that ids are unique across
+tables, group members exist, and the allocator is past every id.
 
 ### Python and WebAssembly
 
@@ -216,6 +221,12 @@ Decisions made during implementation:
 - **`next_id` is monotonic and undo does not rewind it.** Ids are never
   reused even after undo, which keeps journals and external references safe.
   The property test masks this one field when comparing to the start state.
+  The counter saturates rather than wrapping, and a loaded document whose
+  counter lags its ids has it moved past the high-water mark.
+- **Compilation checks element geometry.** Degenerate, warped, or crossed
+  shells and unusable frame orientations are reported as entity-addressed
+  problems at compile time, the same checks analysis applies, so the GUI's
+  problem list and the agent's `compile` see them before a solve.
 - **Removal is refused while referenced.** No cascade command yet. A caller
   removes dependents first, in a `Batch` if it wants atomicity.
 - **Group membership is part of removal's inverse.** Removing an entity

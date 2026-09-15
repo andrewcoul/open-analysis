@@ -162,7 +162,7 @@ above the solver is planned separately in [docs/model/PLAN.md](../model/PLAN.md)
 | 5 Dynamics | Done | Lumped mass, `faer` Krylov-Schur behind an `EigenBackend` trait, Sturm count via LBLᵀ, CQC and SRSS spectrum. |
 | 6 Bindings | Done | PyO3 and wasm-bindgen wrap one versioned JSON protocol. No release packaging yet. |
 | 7 Building features | Done | Self-weight per load case, grounded nodal springs, rigid diaphragms. See below. |
-| 8 Result store | Done | `oa-results`: SQLite consumer, rehydration, envelopes, drift, read-only SQL with row limit, content-hash check. Timing recorded under Phase 8. |
+| 8 Result store | Done | `oa-results`: SQLite consumer, rehydration, envelopes, drift, read-only SQL with row limit and an authorizer, content-hash check, run completion status (schema version 2). Timing recorded under Phase 8. |
 
 ### Phase 7: Building features (added 2026-09-14)
 
@@ -377,16 +377,22 @@ crate does not change.
   statements, and commits per batch. Tables: `displacements`, `reactions`,
   `frame_end_forces`, `shell_results`, and later `frame_stations`. Every row
   carries the combination name and the entity index. A `run` table records
-  the model content hash, solver version, schema version, options, and
-  timestamp.
+  the model content hash, solver version, schema version, options,
+  timestamp, the combinations the run was asked for, and a completion flag
+  that the last combination's transaction sets. `open` refuses a run that
+  stopped early; `open_partial` exposes what finished together with the
+  missing names, and the model layer refuses to attach an unfinished run.
 - **Schema.** Fixed columns per table, documented in the crate, versioned
   with the same scheme as the JSON protocol. Composite index on
   `(combination, entity)` and on `(entity)` for envelopes. WAL journal mode.
 - **Query layer.** Rust functions for the common questions: envelope with
   governing combination per entity, per-storey drift, and extraction by a
   list of entities, which is how groups arrive from the model layer. Each is
-  a prepared SQL statement. The raw connection is also exposed so an agent
-  or a client can run its own SQL.
+  a prepared SQL statement. Agents get `sql`, which prepares the statement
+  under a SQLite authorizer that permits only reads and functions: `ATTACH`,
+  `DETACH`, pragmas, transactions, and schema changes are refused even
+  though SQLite itself classifies some of them as read-only. The raw
+  connection is also exposed for trusted Rust callers.
 - **Browser.** Unchanged. The in-memory consumer remains the only
   implementation for the WebAssembly target.
 - **Acceptance.** Round-trip test: run the benchmark frame through the

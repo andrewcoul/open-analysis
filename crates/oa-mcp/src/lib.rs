@@ -237,7 +237,7 @@ impl Session {
         let path = path
             .or_else(|| self.path.clone())
             .ok_or_else(|| SessionError::Invalid("no path given and the model has none".into()))?;
-        std::fs::write(&path, to_json(self.model()))?;
+        oa_model::save_json(self.model(), &path)?;
         self.path = Some(path.clone());
         Ok(path)
     }

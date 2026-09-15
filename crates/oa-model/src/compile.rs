@@ -133,6 +133,13 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
     check_references::<Diaphragm>(model, &mut problems);
     check_references::<LoadCase>(model, &mut problems);
     check_references::<Combination>(model, &mut problems);
+    for id in model.duplicate_ids() {
+        problems.push(Problem {
+            entity: Some(id),
+            name: None,
+            message: format!("id #{} is used by more than one entity", id.0),
+        });
+    }
     if !problems.is_empty() {
         return Err(problems);
     }
@@ -312,5 +319,36 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
             message: e.to_string(),
         }]);
     }
+    // Element geometry is checked here too, so a degenerate shell or an
+    // unusable frame orientation is a named problem at compile time rather
+    // than a surprise when analysis starts.
+    let mut problems = vec![];
+    for (index, id) in mapping.frame_id.iter().enumerate() {
+        if let Err(e) = solver.validate_frame(index) {
+            problems.push(element_problem(model, *id, &e, &format!("frame {index}: ")));
+        }
+    }
+    for (index, id) in mapping.shell_id.iter().enumerate() {
+        if let Err(e) = solver.validate_shell(index) {
+            problems.push(element_problem(model, *id, &e, &format!("shell {index}: ")));
+        }
+    }
+    if !problems.is_empty() {
+        return Err(problems);
+    }
     Ok(Compiled { solver, mapping })
+}
+
+/// Ties a solver element error back to the entity it came from, dropping
+/// the solver's index prefix since the problem already names the entity.
+fn element_problem(model: &Model, id: EntityId, error: &oa_core::Error, prefix: &str) -> Problem {
+    let message = match error {
+        oa_core::Error::Model(m) => m.clone(),
+        other => other.to_string(),
+    };
+    Problem {
+        entity: Some(id),
+        name: model.name_of(id).map(str::to_string),
+        message: message.strip_prefix(prefix).unwrap_or(&message).to_string(),
+    }
 }

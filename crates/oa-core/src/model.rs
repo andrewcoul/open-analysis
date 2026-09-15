@@ -659,6 +659,17 @@ impl Model {
         }
         out
     }
+    /// Geometry and orientation checks for one frame, exactly as element
+    /// preparation applies them before analysis. Call after [`Model::validate`]
+    /// so table indices are known to be in range.
+    pub fn validate_frame(&self, index: usize) -> Result<()> {
+        crate::element::frame::FrameElement::new(self, index).map(|_| ())
+    }
+    /// Geometry checks for one shell: degenerate, warped, or non-convex
+    /// corners and formulation-specific shape limits.
+    pub fn validate_shell(&self, index: usize) -> Result<()> {
+        crate::element::shell::ShellElement::new(self, index).map(|_| ())
+    }
     pub(crate) fn diaphragm_masters(&self) -> Vec<bool> {
         let mut out = vec![false; self.nodes.len()];
         for d in &self.diaphragms {

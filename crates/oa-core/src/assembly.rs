@@ -477,10 +477,20 @@ impl SparseSystem {
                 "equilibrium residual {rel:e} exceeds {RESIDUAL_TOLERANCE:e} after refinement; the stiffness matrix is too badly conditioned"
             )));
         }
-        let reactions = (0..u.len())
+        let out_of_balance: Vec<f64> = ku.iter().zip(f).map(|(a, b)| a - b).collect();
+        let reactions = self.reactions(&out_of_balance, &u);
+        Ok((u, reactions, rel))
+    }
+    /// Support and spring reactions from the full-space out-of-balance vector
+    /// g = K u - f. A restrained DOF carries its own row of g plus the
+    /// constraint force of every slave DOF that depends on it, which is the
+    /// restrained part of Tᵀ g. Without that transfer a restrained diaphragm
+    /// master would report no reaction for loads applied at its slaves.
+    pub fn reactions(&self, g: &[f64], u: &[f64]) -> Vec<f64> {
+        let mut out: Vec<f64> = (0..u.len())
             .map(|i| {
                 if self.restrained[i] {
-                    ku[i] - f[i]
+                    g[i]
                 } else if self.springs[i] > 0.0 {
                     -self.springs[i] * u[i]
                 } else {
@@ -488,7 +498,20 @@ impl SparseSystem {
                 }
             })
             .collect();
-        Ok((u, reactions, rel))
+        for (slave, terms) in self.constraints.iter().enumerate() {
+            let Some(terms) = terms else {
+                continue;
+            };
+            if self.restrained[slave] {
+                continue;
+            }
+            for &(master, c) in terms {
+                if self.restrained[master] {
+                    out[master] += c * g[slave];
+                }
+            }
+        }
+        out
     }
 }
 /// Relative equilibrium residual accepted from a linear solve.
