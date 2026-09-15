@@ -1,5 +1,7 @@
 //! The model tree: every entity kind as a collapsible section, with rows that
-//! select the entity. Mirrors the viewport's selection.
+//! select the entity; a double-click opens its properties. Mirrors the
+//! viewport's selection. Shown in a dialog from View > Model browser.
+use crate::actions::ShowProperties;
 use crate::document::Document;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, h_flex, v_flex};
@@ -158,8 +160,11 @@ impl Explorer {
                             .text_ellipsis()
                             .when(is_selected, |s| s.bg(active))
                             .hover(|s| s.bg(hover))
-                            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
-                                this.select(id, event.modifiers().shift, cx)
+                            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                this.select(id, event.modifiers().shift, cx);
+                                if event.click_count() == 2 {
+                                    window.dispatch_action(Box::new(ShowProperties), cx);
+                                }
                             }))
                             .child(name)
                     },
@@ -182,11 +187,7 @@ impl Explorer {
 impl Render for Explorer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (bg, fg, border) = (
-            theme.sidebar,
-            theme.sidebar_foreground,
-            theme.sidebar_border,
-        );
+        let (bg, fg) = (theme.sidebar, theme.sidebar_foreground);
         let sections: Vec<AnyElement> = KINDS
             .iter()
             .map(|kind| self.render_section(*kind, cx))
@@ -195,8 +196,6 @@ impl Render for Explorer {
             .size_full()
             .bg(bg)
             .text_color(fg)
-            .border_r_1()
-            .border_color(border)
             .child(
                 div()
                     .px_3()

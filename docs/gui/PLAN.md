@@ -26,27 +26,31 @@ crates/oa-gui/src/
   camera.rs      orthographic orbit camera, pure arithmetic with tests
   viewport.rs    3D canvas: nodes, frames, shells, labels, deformed shape, picking,
                  the draw tools, the view controls overlay, and the start card
-  explorer.rs    model tree by entity kind, click to select
-  properties.rs  property panel: fields per kind, commit through Update commands
+  explorer.rs    model tree by entity kind, click to select, double-click to edit;
+                 opens as a dialog from View > Model browser
+  properties.rs  property editor: fields per kind, commit through Update commands;
+                 opens as a dialog from Edit > Properties or a double-click
   dialogs.rs     add node by coordinates, materials and sections (library or custom), loads
-  ribbon.rs      one tabless ribbon (File, Edit, Draw, Define, Assign, Analyze),
-                 selection gates, the results chip, and the prompt strip
-  workspace.rs   window layout, menus, command palette, status bar, file, edit,
-                 and tool commands
+  prompt.rs      the prompt strip above the view and the selection gates
+  workspace.rs   window layout, menus, command palette, pop-up panels, status bar,
+                 file, edit, and tool commands
   text.rs        number formatting and parsing at the UI boundary
 ```
 
-The ribbon has no tabs: every command is visible at once, in the order a
-model is built (File, Edit, Draw, Define, Assign to selection, Analyze), each
-group captioned. Every button has a tooltip with its shortcut. Commands that
-need something first are greyed with the tooltip saying what, through the
-shared `Gates` that the menus and the command palette (Ctrl+K) also use. Run
-stays in view beside a chip saying whether the results are current, out of
-date after an edit, or absent. A prompt strip above the view says what the
-current tool wants next. View presets, fit, labels, and the up axis sit in the
-top-right corner of the view; an empty model shows a start card in the view.
-The ribbon's Lucide icons are embedded on top of the kit's default set in
-`main.rs`, which also gives both kit themes an indigo accent.
+There is no ribbon and no docked side panel: the window is the menu bar, a
+prompt strip, the 3D view, and a status bar. Every command lives in the menu
+bar, which reads in the order a model is built (File, Edit, View, Define,
+Draw, Assign, Analyze, Help), and in the command palette (Ctrl+K), which
+lists every action with its gate reason. Commands that need something first
+are disabled through the shared `Gates`. The model tree (Ctrl+B) and the
+property editor (Ctrl+E, or a double-click on an entity in the view or the
+tree) open as dialogs over the view. The status bar says whether the results
+are current, out of date after an edit, or absent. A prompt strip above the
+view says what the current tool wants next. View presets, fit, labels, and
+the up axis sit in the top-right corner of the view; an empty model shows a
+start card in the view. The few Lucide icons the view uses are embedded on
+top of the kit's default set in `main.rs`, which also gives both kit themes
+an indigo accent.
 
 Drawing is by tool. Node places a node where you click, on the ground plane
 snapped to 0.25 m (or in the view plane through the centre when the ground
@@ -55,8 +59,9 @@ from J; Shell takes four nodes in order. With nodes already selected, the
 Frame and Shell buttons draw on them at once. Esc drops the shape being
 drawn, then the tool, then the selection. The viewport reports finished
 shapes as `ViewportEvent`s and the workspace turns them into commands, so
-no edit bypasses the command interface. The Paper design the layout follows
-is the file "open-analysis GUI" (2026-09-15).
+no edit bypasses the command interface. The Paper file "open-analysis GUI"
+(2026-09-15) holds the design this grew from; it still shows the earlier
+ribbon and docked panels, which were dropped in favour of menus and dialogs.
 
 `Document` is one GPUI entity that every panel observes. Panels never hold
 model state of their own; they read the document in `render` and mutate it

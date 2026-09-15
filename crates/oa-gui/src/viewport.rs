@@ -51,11 +51,13 @@ impl Tool {
     }
 }
 
-/// A shape finished with a draw tool, for the workspace to add to the model.
+/// A shape finished with a draw tool, for the workspace to add to the model,
+/// or a double-click asking for the selection's properties.
 pub enum ViewportEvent {
     PlaceNode([f64; 3]),
     DrawFrame([EntityId; 2]),
     DrawShell([EntityId; 4]),
+    OpenProperties,
 }
 
 /// Grid the Node tool snaps to, in metres.
@@ -233,7 +235,7 @@ impl Viewport {
             return;
         };
         if drag.button == MouseButton::Left && !drag.moved {
-            self.click(event.position, event.modifiers.shift, cx);
+            self.click(event.position, event.modifiers.shift, event.click_count, cx);
         }
     }
     fn on_mouse_up_out(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
@@ -262,9 +264,21 @@ impl Viewport {
     }
 
     /// A left click that did not drag: the current tool decides what it means.
-    fn click(&mut self, position: Point<Pixels>, extend: bool, cx: &mut Context<Self>) {
+    /// A double-click with Select opens the properties of what was hit.
+    fn click(
+        &mut self,
+        position: Point<Pixels>,
+        extend: bool,
+        click_count: usize,
+        cx: &mut Context<Self>,
+    ) {
         match self.tool {
-            Tool::Select => self.pick(position, extend, cx),
+            Tool::Select => {
+                self.pick(position, extend, cx);
+                if click_count == 2 && !self.document.read(cx).selection().is_empty() {
+                    cx.emit(ViewportEvent::OpenProperties);
+                }
+            }
             Tool::Node => match self.node_at(position) {
                 Some(id) => self
                     .document
@@ -947,7 +961,7 @@ impl Viewport {
     }
 }
 
-/// Three ways to start and the order the ribbon reads in, shown over an empty model.
+/// Three ways to start and the order the menus read in, shown over an empty model.
 fn start_card(theme: &Theme) -> AnyElement {
     let (fg, muted, border, surface, primary, soft, panel) = (
         theme.foreground,
@@ -1065,7 +1079,7 @@ fn start_card(theme: &Theme) -> AnyElement {
                                 .text_xs()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(muted)
-                                .child("THE RIBBON READS LEFT TO RIGHT IN THIS ORDER"),
+                                .child("THE MENUS READ LEFT TO RIGHT IN THIS ORDER"),
                         )
                         .child(
                             h_flex()
@@ -1077,7 +1091,7 @@ fn start_card(theme: &Theme) -> AnyElement {
                                 .child(step("4 Analyze", "Run, then show the deformed shape")),
                         )
                         .child(div().text_xs().text_color(muted).child(
-                            "Anything greyed out says what it needs when you hover it. Ctrl+K searches every command.",
+                            "A greyed menu item needs something first; Ctrl+K lists every command with the reason. Ctrl+B opens the model browser, Ctrl+E the properties of the selection.",
                         )),
                 ),
         )

@@ -1,7 +1,7 @@
 //! Desktop model viewer and editor for open-analysis.
 //!
 //! Layout: one window, one [`Workspace`]. Every command is an action; the
-//! menu bar, toolbar, and key bindings dispatch actions, and this file routes
+//! menu bar, command palette, and key bindings dispatch actions, and this file routes
 //! each one to a workspace method.
 mod actions;
 mod camera;
@@ -9,7 +9,7 @@ mod dialogs;
 mod document;
 mod explorer;
 mod properties;
-mod ribbon;
+mod prompt;
 mod text;
 mod viewport;
 mod workspace;
@@ -20,39 +20,11 @@ use gpui_kit::component::{Root, TitleBar, WindowExt as _};
 use gpui_kit::*;
 use workspace::Workspace;
 
-// The kit embeds only its own component icons; the ribbon's Lucide icons are
-// selected here so the binary carries just those.
+// The kit embeds only its own component icons; the viewport's Lucide icons
+// are selected here so the binary carries just those.
 gpui_kit::assets::icon_assets!(
-    RibbonIcons,
-    [
-        Activity,
-        ArrowDownToDot,
-        Building2,
-        ChartLine,
-        ChevronsDown,
-        CircleDot,
-        Cuboid,
-        FilePlus,
-        FolderInput,
-        FolderOpen,
-        Grid3x3,
-        Group,
-        Layers,
-        Maximize,
-        MousePointer2,
-        Play,
-        Redo2,
-        Save,
-        SaveAll,
-        Search,
-        Sigma,
-        Slash,
-        Square,
-        SquareDashed,
-        Tag,
-        Trash,
-        Undo2,
-    ]
+    ViewIcons,
+    [Building2, CircleDot, FolderOpen, Maximize, Tag]
 );
 
 /// Indigo as the accent of both the light and dark themes, in place of the
@@ -95,19 +67,19 @@ fn indigo_accent(cx: &mut App) {
     Theme::change(mode, None, cx);
 }
 
-/// The ribbon icons on top of the kit's default assets.
+/// The view icons on top of the kit's default assets.
 struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
-        if let Some(bytes) = RibbonIcons.load(path)? {
+        if let Some(bytes) = ViewIcons.load(path)? {
             return Ok(Some(bytes));
         }
         gpui_kit::assets::Assets.load(path)
     }
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut paths = gpui_kit::assets::Assets.list(path)?;
-        paths.extend(RibbonIcons.list(path)?);
+        paths.extend(ViewIcons.list(path)?);
         paths.sort();
         paths.dedup();
         Ok(paths)
@@ -127,6 +99,8 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("escape", Cancel, None),
         KeyBinding::new("delete", DeleteSelected, None),
         KeyBinding::new("ctrl-k", OpenCommandPalette, None),
+        KeyBinding::new("ctrl-e", ShowProperties, None),
+        KeyBinding::new("ctrl-b", ShowModelBrowser, None),
         KeyBinding::new("f5", RunStaticAnalysis, None),
         KeyBinding::new("f2", ZoomExtents, None),
         KeyBinding::new("ctrl-1", ViewThreeD, None),
@@ -241,9 +215,13 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
     on!(NodeTool, |ws, _, _, cx| ws.set_tool(viewport::Tool::Node, cx));
     on!(FrameTool, |ws, _, window, cx| ws.use_frame_tool(window, cx));
     on!(ShellTool, |ws, _, window, cx| ws.use_shell_tool(window, cx));
-    on!(Cancel, |ws, _, _, cx| ws.cancel(cx));
+    on!(Cancel, |ws, _, window, cx| ws.cancel(window, cx));
     on!(OpenCommandPalette, |ws, _, window, cx| ws
         .open_palette(window, cx));
+    on!(ShowProperties, |ws, _, window, cx| ws
+        .show_properties(window, cx));
+    on!(ShowModelBrowser, |ws, _, window, cx| ws
+        .show_model_browser(window, cx));
     on!(About, |ws, _, window, cx| ws.about(window, cx));
     cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
 }

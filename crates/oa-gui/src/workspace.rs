@@ -1,14 +1,15 @@
-//! The main window: menu bar, ribbon, model tree, prompt strip and 3D view,
-//! property panel, and status bar. Every command arrives here as an action,
-//! and shapes finished with the draw tools arrive as viewport events.
+//! The main window: menu bar, prompt strip, 3D view, and status bar. Every
+//! command lives in the menu bar (and the Ctrl+K palette) and arrives here
+//! as an action; the model tree and the property editor open as dialogs.
+//! Shapes finished with the draw tools arrive as viewport events.
 use crate::actions::*;
 use crate::camera::{UpAxis, ViewPreset};
-use crate::document::{Document, example_frame, read_model, unused_name, write_model};
-use crate::explorer::Explorer;
-use crate::properties::PropertyEditor;
-use crate::ribbon::{
-    AnalysisSummary, Gates, RibbonState, render_prompt, render_ribbon, selection_summary,
+use crate::document::{
+    Document, ResultsState, example_frame, read_model, unused_name, write_model,
 };
+use crate::explorer::Explorer;
+use crate::prompt::{AnalysisSummary, Gates, PromptState, render_prompt, selection_summary};
+use crate::properties::PropertyEditor;
 use crate::viewport::{Tool, Viewport, ViewportEvent};
 use gpui_kit::component::command::{
     Command as CommandPalette, CommandGroup, CommandItem, CommandState,
@@ -18,7 +19,7 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, GlobalState, Root, TitleBar, WindowExt as _, h_flex,
-    h_resizable, resizable_panel, v_flex,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -151,12 +152,17 @@ impl Workspace {
                     MenuItem::separator(),
                     MenuItem::action("Delete selected", DeleteSelected)
                         .disabled(document.selection().is_empty()),
+                    MenuItem::separator(),
+                    MenuItem::action("Properties…", ShowProperties)
+                        .disabled(document.selection().is_empty()),
                 ],
                 disabled: false,
             },
             Menu {
                 name: "View".into(),
                 items: vec![
+                    MenuItem::action("Model browser…", ShowModelBrowser),
+                    MenuItem::separator(),
                     MenuItem::action("3D", ViewThreeD).checked(preset == Some(ViewPreset::ThreeD)),
                     MenuItem::action("Plan", ViewPlan).checked(preset == Some(ViewPreset::Plan)),
                     MenuItem::action("Elevation, X across", ViewElevationX)
@@ -607,6 +613,7 @@ impl Workspace {
             ViewportEvent::PlaceNode(position) => self.place_node(*position, window, cx),
             ViewportEvent::DrawFrame(nodes) => self.add_frame(*nodes, window, cx),
             ViewportEvent::DrawShell(nodes) => self.add_shell(*nodes, window, cx),
+            ViewportEvent::OpenProperties => self.show_properties(window, cx),
         }
     }
     pub fn set_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
@@ -630,11 +637,41 @@ impl Workspace {
         }
     }
     /// Escape: drops the shape being drawn, then the tool, then the selection.
-    pub fn cancel(&mut self, cx: &mut Context<Self>) {
+    /// An open dialog takes Escape for itself.
+    pub fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.has_active_dialog(cx) {
+            return;
+        }
         let handled = self.viewport.update(cx, |viewport, cx| viewport.cancel(cx));
         if !handled {
             self.deselect_all(cx);
         }
+    }
+
+    // MARK: Pop-up panels
+
+    /// The property editor for the selection, in a dialog.
+    pub fn show_properties(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.document.read(cx).selection().is_empty() {
+            return self.info("Select something to edit first", window, cx);
+        }
+        let properties = self.properties.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .w(px(460.))
+                .footer(div())
+                .child(div().h(px(560.)).child(properties.clone()))
+        });
+    }
+    /// The model tree, in a dialog. Click selects, double-click edits.
+    pub fn show_model_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let explorer = self.explorer.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .w(px(380.))
+                .footer(div())
+                .child(div().h(px(560.)).child(explorer.clone()))
+        });
     }
 
     // MARK: Command palette
@@ -727,6 +764,11 @@ impl Workspace {
                         Box::new(DeleteSelected),
                         document.selection().is_empty().then_some("select something first"),
                     ),
+                    item(
+                        "Properties…",
+                        Box::new(ShowProperties),
+                        document.selection().is_empty().then_some("select something first"),
+                    ),
                 ],
             ),
             (
@@ -776,6 +818,7 @@ impl Workspace {
             (
                 "View",
                 vec![
+                    item("Model browser…", Box::new(ShowModelBrowser), None),
                     item("3D view", Box::new(ViewThreeD), None),
                     item("Plan view", Box::new(ViewPlan), None),
                     item("Elevation, X across", Box::new(ViewElevationX), None),
@@ -969,13 +1012,11 @@ impl Workspace {
 
     // MARK: Rendering
 
-    fn ribbon_state(&self, cx: &App) -> RibbonState {
+    fn prompt_state(&self, cx: &App) -> PromptState {
         let document = self.document.read(cx);
         let viewport = self.viewport.read(cx);
         let model = document.model();
-        RibbonState {
-            can_undo: document.can_undo(),
-            can_redo: document.can_redo(),
+        PromptState {
             has_selection: !document.selection().is_empty(),
             selection: selection_summary(document),
             gates: Gates::of(document),
@@ -986,7 +1027,6 @@ impl Workspace {
                 .iter()
                 .filter_map(|id| model.nodes.get(id).map(|n| n.name.clone()))
                 .collect(),
-            results: document.results_state(),
             analysis: document.analysis().map(|analysis| AnalysisSummary {
                 combinations: analysis
                     .results
@@ -1017,6 +1057,11 @@ impl Workspace {
         let problems = document.problems();
         let theme = cx.theme();
         let (warning, muted, success) = (theme.warning, theme.muted_foreground, theme.success);
+        let (results, results_color) = match document.results_state() {
+            ResultsState::Current => ("Results current", success),
+            ResultsState::Stale => ("Results out of date", warning),
+            ResultsState::None => ("No results yet", muted),
+        };
         let problem_text = match problems.len() {
             0 => "Model is valid".to_string(),
             1 => problems[0].to_string(),
@@ -1052,6 +1097,15 @@ impl Workspace {
                 model.load_cases.len(),
                 model.combinations.len()
             )))
+            .right(
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
+                    .text_xs()
+                    .text_color(results_color)
+                    .child(div().size(px(7.)).rounded_full().bg(results_color))
+                    .child(results),
+            )
             .right(div().text_xs().text_color(muted).child("SI: m, N, Pa"))
             .right(div().text_xs().text_color(muted).child(
                 match viewport.up_axis() {
@@ -1084,37 +1138,13 @@ impl Render for Workspace {
                             .child(format!("{title} - open-analysis")),
                     ),
             )
-            .child(render_ribbon(self.ribbon_state(cx), cx))
+            .child(render_prompt(&self.prompt_state(cx), cx))
             .child(
-                div().flex_1().min_h_0().w_full().child(
-                    h_resizable("main-panels")
-                        .child(
-                            resizable_panel()
-                                .size(px(240.))
-                                .size_range(px(160.)..px(600.))
-                                .child(self.explorer.clone()),
-                        )
-                        .child(
-                            resizable_panel().child(
-                                v_flex()
-                                    .size_full()
-                                    .child(render_prompt(&self.ribbon_state(cx), cx))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_h_0()
-                                            .w_full()
-                                            .child(self.viewport.clone()),
-                                    ),
-                            ),
-                        )
-                        .child(
-                            resizable_panel()
-                                .size(px(340.))
-                                .size_range(px(220.)..px(700.))
-                                .child(self.properties.clone()),
-                        ),
-                ),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(self.viewport.clone()),
             )
             .child(self.render_status_bar(cx))
             .children(Root::render_dialog_layer(window, cx))
