@@ -54,6 +54,7 @@ pub fn solve_json(model: &str, options: &str) -> Result<String, ApiError> {
         model: compiled.solver,
         options,
     };
-    oa_core::solve_json(&serde_json::to_string(&request)?)
-        .map_err(|e| ApiError::Problems(e.to_string()))
+    // Call the typed solver directly; the request is already in memory.
+    let response = oa_core::solve(&request).map_err(|e| ApiError::Problems(e.to_string()))?;
+    Ok(serde_json::to_string(&response)?)
 }

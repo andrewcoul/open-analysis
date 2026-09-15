@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+CORES = os.cpu_count() or 1
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--reference", type=Path)
 parser.add_argument("--extension", type=Path, default=ROOT / "target/release/_oa.dll")
@@ -122,14 +123,17 @@ def run_case(bx, by, stories, combos, run_pynite):
     row = {"size": f"{bx}x{by}x{stories}", "nodes": len(model["nodes"]),
            "members": len(model["frames"]), "dofs": 6 * len(model["nodes"]),
            "combos": combos}
-    # Warm up the Rayon pool once so thread spawn is not billed to the first case.
-    time_oa(model, 0, 16)
+    # Warm up both pools so thread spawn is not billed to the first case.
+    # threads=1 runs the whole engine, preparation and factorization included,
+    # on one worker; threads=0 uses the default pool, one worker per logical CPU.
+    time_oa(model, 1, 1)
+    time_oa(model, 0, CORES)
     model_json = json.dumps(model)
     t = time.perf_counter()
     oa.validate_model_json(model_json)
     row["oa_parse_prep_s"] = time.perf_counter() - t
     row["oa_serial_s"], serial = time_oa(model, 1, 1)
-    row["oa_parallel_s"], parallel = time_oa(model, 0, 16)
+    row["oa_parallel_s"], parallel = time_oa(model, 0, CORES)
     a = np.asarray([c["displacements"] for c in serial["combinations"]])
     b = np.asarray([c["displacements"] for c in parallel["combinations"]])
     # Multithreaded factorization changes summation order; agreement is to roundoff.
@@ -153,7 +157,8 @@ def run_case(bx, by, stories, combos, run_pynite):
 
 
 def table(rows):
-    head = "| Frame | Nodes | DOFs | Combos | Pynite | OA 1 thread | OA 16 threads | of which parse + prep | Speedup 1T | Speedup 16T | Max rel diff |"
+    head = (f"| Frame | Nodes | DOFs | Combos | Pynite | OA 1 thread | OA {CORES} threads | "
+            f"of which parse + prep | Speedup 1T | Speedup {CORES}T | Max rel diff |")
     out = [head, "|" + "---|" * 11]
     for r in rows:
         py = f"{r['pynite_analyze_s']:.2f} s" if "pynite_analyze_s" in r else "skipped"

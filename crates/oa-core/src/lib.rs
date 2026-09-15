@@ -3,6 +3,7 @@ pub mod analysis;
 mod assembly;
 mod element;
 pub mod error;
+mod exec;
 pub mod io;
 pub mod modal;
 pub mod model;
