@@ -17,6 +17,16 @@ pub struct Analysis {
     pub combination: usize,
 }
 
+/// Whether the last analysis still describes the model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResultsState {
+    /// Never run, or the model was replaced since.
+    None,
+    Current,
+    /// Results were dropped by an edit; run again to refresh them.
+    Stale,
+}
+
 pub struct Document {
     editor: Editor,
     path: Option<PathBuf>,
@@ -26,6 +36,7 @@ pub struct Document {
     selection: Vec<EntityId>,
     problems: Vec<Problem>,
     analysis: Option<Analysis>,
+    results_stale: bool,
 }
 
 impl Document {
@@ -39,6 +50,7 @@ impl Document {
             selection: vec![],
             problems,
             analysis: None,
+            results_stale: false,
         }
     }
 
@@ -60,6 +72,13 @@ impl Document {
     }
     pub fn analysis(&self) -> Option<&Analysis> {
         self.analysis.as_ref()
+    }
+    pub fn results_state(&self) -> ResultsState {
+        match (&self.analysis, self.results_stale) {
+            (Some(_), _) => ResultsState::Current,
+            (None, true) => ResultsState::Stale,
+            (None, false) => ResultsState::None,
+        }
     }
     pub fn can_undo(&self) -> bool {
         self.editor.can_undo()
@@ -144,7 +163,9 @@ impl Document {
     fn after_edit(&mut self, cx: &mut Context<Self>) {
         self.dirty = true;
         self.revision += 1;
-        self.analysis = None;
+        if self.analysis.take().is_some() {
+            self.results_stale = true;
+        }
         self.problems = validate(self.model());
         let model = &self.editor.model;
         self.selection.retain(|id| model.kind_of(*id).is_some());
@@ -184,6 +205,7 @@ impl Document {
             results,
             combination: 0,
         });
+        self.results_stale = false;
         cx.notify();
         Ok(count)
     }

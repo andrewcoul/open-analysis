@@ -9,6 +9,7 @@ mod dialogs;
 mod document;
 mod explorer;
 mod properties;
+mod ribbon;
 mod text;
 mod viewport;
 mod workspace;
@@ -18,6 +19,100 @@ use camera::ViewPreset;
 use gpui_kit::component::{Root, TitleBar, WindowExt as _};
 use gpui_kit::*;
 use workspace::Workspace;
+
+// The kit embeds only its own component icons; the ribbon's Lucide icons are
+// selected here so the binary carries just those.
+gpui_kit::assets::icon_assets!(
+    RibbonIcons,
+    [
+        Activity,
+        ArrowDownToDot,
+        Building2,
+        ChartLine,
+        ChevronsDown,
+        CircleDot,
+        Cuboid,
+        FilePlus,
+        FolderInput,
+        FolderOpen,
+        Grid3x3,
+        Group,
+        Layers,
+        Maximize,
+        MousePointer2,
+        Play,
+        Redo2,
+        Save,
+        SaveAll,
+        Search,
+        Sigma,
+        Slash,
+        Square,
+        SquareDashed,
+        Tag,
+        Trash,
+        Undo2,
+    ]
+);
+
+/// Indigo as the accent of both the light and dark themes, in place of the
+/// kit's neutral primary. The configs are changed rather than the live colours
+/// so a theme switch keeps the accent.
+fn indigo_accent(cx: &mut App) {
+    use gpui_kit::component::{Theme, ThemeConfig};
+    let mode = Theme::global(cx).mode;
+    let configs = {
+        let theme = Theme::global(cx);
+        [theme.light_theme.clone(), theme.dark_theme.clone()]
+    };
+    for config in configs {
+        let dark = config.mode.is_dark();
+        let mut config: ThemeConfig = (*config).clone();
+        let some = |name: &str| Some(SharedString::from(name.to_string()));
+        let (primary, hover, active, soft, selection) = if dark {
+            ("indigo-500", "indigo-400", "indigo-600", "indigo-900", "indigo-800")
+        } else {
+            ("indigo-600", "indigo-700", "indigo-800", "indigo-50", "indigo-100")
+        };
+        let colors = &mut config.colors;
+        colors.primary = some(primary);
+        colors.primary_hover = some(hover);
+        colors.primary_active = some(active);
+        colors.primary_foreground = some("#ffffff");
+        colors.button_primary = some(primary);
+        colors.button_primary_hover = some(hover);
+        colors.button_primary_active = some(active);
+        colors.button_primary_foreground = some("#ffffff");
+        colors.ring = some(primary);
+        colors.link = some(primary);
+        colors.caret = some(primary);
+        colors.list_active = some(soft);
+        colors.list_active_border = some(primary);
+        colors.selection = some(selection);
+        colors.sidebar_primary = some(primary);
+        Theme::global_mut(cx).apply_config(&std::rc::Rc::new(config));
+    }
+    Theme::change(mode, None, cx);
+}
+
+/// The ribbon icons on top of the kit's default assets.
+struct AppAssets;
+
+impl AssetSource for AppAssets {
+    fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if let Some(bytes) = RibbonIcons.load(path)? {
+            return Ok(Some(bytes));
+        }
+        gpui_kit::assets::Assets.load(path)
+    }
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        let mut paths = gpui_kit::assets::Assets.list(path)?;
+        paths.extend(RibbonIcons.list(path)?);
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+}
 
 fn key_bindings() -> Vec<KeyBinding> {
     vec![
@@ -29,8 +124,9 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-y", Redo, None),
         KeyBinding::new("ctrl-shift-z", Redo, None),
         KeyBinding::new("ctrl-a", SelectAll, None),
-        KeyBinding::new("escape", DeselectAll, None),
+        KeyBinding::new("escape", Cancel, None),
         KeyBinding::new("delete", DeleteSelected, None),
+        KeyBinding::new("ctrl-k", OpenCommandPalette, None),
         KeyBinding::new("f5", RunStaticAnalysis, None),
         KeyBinding::new("f2", ZoomExtents, None),
         KeyBinding::new("ctrl-1", ViewThreeD, None),
@@ -141,15 +237,23 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
         .run_static(window, cx));
     on!(ShowCombination, |ws, action: &ShowCombination, _, cx| ws
         .show_combination(&action.0, cx));
+    on!(SelectTool, |ws, _, _, cx| ws.set_tool(viewport::Tool::Select, cx));
+    on!(NodeTool, |ws, _, _, cx| ws.set_tool(viewport::Tool::Node, cx));
+    on!(FrameTool, |ws, _, window, cx| ws.use_frame_tool(window, cx));
+    on!(ShellTool, |ws, _, window, cx| ws.use_shell_tool(window, cx));
+    on!(Cancel, |ws, _, _, cx| ws.cancel(cx));
+    on!(OpenCommandPalette, |ws, _, window, cx| ws
+        .open_palette(window, cx));
     on!(About, |ws, _, window, cx| ws.about(window, cx));
     cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
 }
 
 fn main() {
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(AppAssets)
         .run(|cx| {
             gpui_kit::init(cx);
+            indigo_accent(cx);
             cx.bind_keys(key_bindings());
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {

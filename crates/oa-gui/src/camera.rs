@@ -167,6 +167,34 @@ impl Camera {
             40.0
         };
     }
+    /// World point under a screen position. With `plane` as `(axis, value)`
+    /// the point is where the view ray meets that plane; when the plane is
+    /// edge-on, or no plane is given, the point lies in the view plane through
+    /// the target.
+    pub fn unproject(
+        &self,
+        screen: (f64, f64),
+        centre: (f64, f64),
+        plane: Option<(usize, f64)>,
+    ) -> [f64; 3] {
+        let (right, up, toward) = self.axes();
+        let dx = (screen.0 - centre.0) / self.scale;
+        let dy = (screen.1 - centre.1) / self.scale;
+        let mut p = [0.0; 3];
+        for i in 0..3 {
+            p[i] = self.target[i] + right[i] * dx - up[i] * dy;
+        }
+        if let Some((axis, value)) = plane
+            && toward[axis].abs() > 1e-6
+        {
+            let t = (value - p[axis]) / toward[axis];
+            for i in 0..3 {
+                p[i] += toward[i] * t;
+            }
+            p[axis] = value;
+        }
+        p
+    }
     pub fn set_preset(&mut self, preset: ViewPreset) {
         let (yaw, pitch) = match preset {
             ViewPreset::ThreeD => (-35f64.to_radians(), 25f64.to_radians()),
@@ -228,6 +256,30 @@ mod tests {
         camera.zoom(1.5, (x, y));
         let (x2, y2, _) = camera.project(p, (0.0, 0.0));
         assert!(close(x, x2) && close(y, y2));
+    }
+
+    #[test]
+    fn unproject_returns_to_the_ground_plane() {
+        let camera = Camera::default();
+        let p = [3.0, 4.0, 0.0];
+        let (x, y, _) = camera.project(p, (400.0, 300.0));
+        let back = camera.unproject((x, y), (400.0, 300.0), Some((2, 0.0)));
+        for i in 0..3 {
+            assert!(close(back[i], p[i]), "{back:?}");
+        }
+    }
+
+    #[test]
+    fn unproject_falls_back_to_the_view_plane_when_edge_on() {
+        let mut camera = Camera::default();
+        camera.set_preset(ViewPreset::ElevationX);
+        camera.target = [1.0, 2.0, 3.0];
+        let (x, y, _) = camera.project([5.0, 2.0, 7.0], (0.0, 0.0));
+        let back = camera.unproject((x, y), (0.0, 0.0), Some((2, 0.0)));
+        assert!(
+            close(back[0], 5.0) && close(back[1], 2.0) && close(back[2], 7.0),
+            "{back:?}"
+        );
     }
 
     #[test]

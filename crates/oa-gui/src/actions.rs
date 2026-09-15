@@ -40,6 +40,12 @@ actions!(
         ToggleUpAxis,
         ToggleDeformedShape,
         RunStaticAnalysis,
+        SelectTool,
+        NodeTool,
+        FrameTool,
+        ShellTool,
+        Cancel,
+        OpenCommandPalette,
         About,
     ]
 );
