@@ -361,3 +361,141 @@ fn rejects_conflicting_diaphragms_and_springs() {
         "out-of-plane restraint on a slave is fine"
     );
 }
+
+#[test]
+fn nonlinear_methods_include_spring_forces_in_equilibrium() {
+    // A grounded spring is part of the solved stiffness, so the iterative
+    // methods must count its force as internal. Both must reproduce the
+    // linear answer for this elastic configuration in one pass.
+    let ks = 1e6;
+    let kb = 3.0 * E * IZ / 27.0;
+    let p = -1000.0;
+    let mut m = cantilever(0.0);
+    m.nodes[1].spring_translation[1] = Stiffness::from_si(ks);
+    m.add_load_case(LoadCase {
+        name: "tip".into(),
+        nodal: vec![NodalLoad::force(
+            NodeId(1),
+            [Force::ZERO, Force::from_si(p), Force::ZERO],
+        )],
+        ..Default::default()
+    });
+    let u = p / (kb + ks);
+    for method in [StaticMethod::Nonlinear, StaticMethod::PDelta] {
+        let r = analyze_static(
+            &m,
+            &StaticOptions {
+                method,
+                max_iterations: 3,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let c = &r.combinations[0];
+        close(c.displacements.as_ref().unwrap()[1][1], u, 1e-10);
+        close(c.reactions.as_ref().unwrap()[1][1], -ks * u, 1e-10);
+        assert!(
+            c.relative_residual < 1e-9,
+            "{method:?}: {}",
+            c.relative_residual
+        );
+    }
+
+    // The same holds for a spring on a diaphragm master.
+    let (k, _) = column_stiffness();
+    let mut d = two_column_diaphragm(2.0);
+    d.nodes[4].spring_translation[0] = Stiffness::from_si(ks);
+    d.add_load_case(LoadCase {
+        name: "master".into(),
+        nodal: vec![NodalLoad::force(
+            NodeId(4),
+            [Force::from_si(1000.0), Force::ZERO, Force::ZERO],
+        )],
+        ..Default::default()
+    });
+    let um = 1000.0 / (2.0 * k + ks);
+    for method in [
+        StaticMethod::Linear,
+        StaticMethod::Nonlinear,
+        StaticMethod::PDelta,
+    ] {
+        let r = analyze_static(
+            &d,
+            &StaticOptions {
+                method,
+                max_iterations: 3,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let c = &r.combinations[0];
+        close(c.displacements.as_ref().unwrap()[4][0], um, 1e-9);
+        close(c.reactions.as_ref().unwrap()[4][0], -ks * um, 1e-9);
+    }
+}
+
+/// Cantilever along X whose tip is a slave of a Z-normal diaphragm with an
+/// offset master at (3, 1, 0). A tip load in X passes through the constraint.
+fn offset_master_cantilever(master_restrained: [bool; 6]) -> Model {
+    let mut m = cantilever(0.0);
+    let mut master = Node::new([Length::from_si(3.0), Length::from_si(1.0), Length::ZERO]);
+    master.restrained = master_restrained;
+    m.add_node(master);
+    m.diaphragms.push(Diaphragm {
+        master: NodeId(2),
+        nodes: vec![NodeId(1)],
+        normal: Axis::Z,
+    });
+    m.add_load_case(LoadCase {
+        name: "tip x".into(),
+        nodal: vec![NodalLoad::force(
+            NodeId(1),
+            [Force::from_si(1000.0), Force::ZERO, Force::ZERO],
+        )],
+        ..Default::default()
+    });
+    m
+}
+
+#[test]
+fn restrained_diaphragm_master_reports_transferred_reactions() {
+    let m = offset_master_cantilever([true; 6]);
+    let r = analyze_static(&m, &Default::default()).unwrap();
+    let c = &r.combinations[0];
+    let reactions = c.reactions.as_ref().unwrap();
+    let rx: f64 = reactions.iter().map(|v| v[0]).sum();
+    close(rx, -1000.0, 1e-12);
+    // The beam carries no axial force: the whole load reaches the master,
+    // together with the moment of its 1 m lever arm.
+    assert!(reactions[0][0].abs() < 1e-9);
+    close(reactions[2][0], -1000.0, 1e-12);
+    close(reactions[2][5], -1000.0, 1e-12);
+    assert!(reactions[1].iter().all(|v| *v == 0.0), "slaves report none");
+    assert!(c.relative_residual < 1e-10);
+}
+
+#[test]
+fn partially_restrained_master_balances_forces_and_moments() {
+    // Only the master's X translation is restrained. Its rotation is free, so
+    // part of the load reaches the base through the beam and part through the
+    // master; together they must balance the applied load and its moment.
+    let m = offset_master_cantilever([true, false, false, false, false, false]);
+    let r = analyze_static(&m, &Default::default()).unwrap();
+    let c = &r.combinations[0];
+    let reactions = c.reactions.as_ref().unwrap();
+    let base = reactions[0];
+    let master = reactions[2];
+    assert!(master[0].abs() > 1.0, "master carries part of the load");
+    assert!(base[0].abs() > 1.0, "the beam carries the rest axially");
+    close(base[0] + master[0], -1000.0, 1e-10);
+    assert!(base[1].abs() < 1e-9 * 1000.0);
+    // Moments about the origin: the load acts along its own line through the
+    // origin, so the reaction moments must cancel; the master's force at
+    // (3, 1, 0) contributes -1 m * Rx.
+    let moment = base[5] + (3.0 * master[1] - 1.0 * master[0]);
+    assert!(moment.abs() < 1e-9 * 1000.0, "moment imbalance {moment}");
+    assert!(
+        master[1..].iter().all(|v| *v == 0.0),
+        "unrestrained master DOFs report none"
+    );
+}

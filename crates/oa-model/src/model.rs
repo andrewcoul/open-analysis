@@ -183,15 +183,60 @@ impl Entity for Group {
 
 impl Model {
     /// Hands out the next unused id and reserves it.
+    ///
+    /// The counter saturates rather than wrapping: at exhaustion the same id
+    /// comes back and command validation rejects it as in use, instead of a
+    /// wrapped id silently replacing an unrelated entity.
     pub fn allocate(&mut self) -> EntityId {
         let id = EntityId(self.next_id);
-        self.next_id += 1;
+        self.next_id = self.next_id.saturating_add(1);
         id
     }
     pub(crate) fn reserve(&mut self, id: EntityId) {
         if id.0 >= self.next_id {
-            self.next_id = id.0 + 1;
+            self.next_id = id.0.saturating_add(1);
         }
+    }
+    fn all_ids(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.nodes
+            .keys()
+            .chain(self.materials.keys())
+            .chain(self.sections.keys())
+            .chain(self.frames.keys())
+            .chain(self.shells.keys())
+            .chain(self.diaphragms.keys())
+            .chain(self.load_cases.keys())
+            .chain(self.combinations.keys())
+            .chain(self.groups.keys())
+            .copied()
+    }
+    /// The highest id any table holds.
+    pub fn max_id(&self) -> Option<EntityId> {
+        self.all_ids().max()
+    }
+    /// Ids that more than one table holds. Identity is model-wide, so any
+    /// such id makes `kind_of` and every id-based lookup ambiguous.
+    pub fn duplicate_ids(&self) -> Vec<EntityId> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut duplicates = std::collections::BTreeSet::new();
+        for id in self.all_ids() {
+            if !seen.insert(id) {
+                duplicates.insert(id);
+            }
+        }
+        duplicates.into_iter().collect()
+    }
+    /// Group members that no table holds, as (group, member).
+    pub fn dangling_group_members(&self) -> Vec<(EntityId, EntityId)> {
+        self.groups
+            .iter()
+            .flat_map(|(group, g)| {
+                g.members
+                    .iter()
+                    .filter(|m| self.kind_of(**m).is_none())
+                    .map(move |m| (*group, *m))
+            })
+            .collect()
     }
     pub fn kind_of(&self, id: EntityId) -> Option<EntityKind> {
         [

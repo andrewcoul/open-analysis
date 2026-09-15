@@ -288,3 +288,162 @@ fn timing_sqlite_write_versus_json() {
     drop(store);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Cantilever with torsional releases at both ends and two cases: a valid
+/// tip load, then a tip torque nothing can resist. The second case fails.
+fn model_whose_second_case_fails() -> Model {
+    let mut m = Model::default();
+    m.add_material(Material {
+        young: Pressure::from_si(200e9),
+        poisson: 0.3,
+        density: MassDensity::ZERO,
+    });
+    m.add_section(Section {
+        area: Area::from_si(0.01),
+        iy: SecondMoment::from_si(2e-5),
+        iz: SecondMoment::from_si(4e-5),
+        torsion: SecondMoment::from_si(1e-5),
+    });
+    m.add_node(Node::fixed([Length::ZERO; 3]));
+    m.add_node(Node::new([
+        Length::from_si(3.0),
+        Length::ZERO,
+        Length::ZERO,
+    ]));
+    let mut frame = Frame::new([NodeId(0), NodeId(1)], MaterialId(0), SectionId(0));
+    frame.releases[3] = true;
+    frame.releases[9] = true;
+    m.add_frame(frame);
+    m.add_load_case(LoadCase {
+        name: "good".into(),
+        nodal: vec![NodalLoad::force(
+            NodeId(1),
+            [Force::ZERO, Force::from_si(-1000.0), Force::ZERO],
+        )],
+        ..Default::default()
+    });
+    m.add_load_case(LoadCase {
+        name: "bad".into(),
+        nodal: vec![NodalLoad {
+            node: NodeId(1),
+            force: [Force::ZERO; 3],
+            moment: [Moment::from_si(100.0), Moment::ZERO, Moment::ZERO],
+        }],
+        ..Default::default()
+    });
+    m
+}
+
+#[test]
+fn unfinished_run_is_refused_until_opened_as_partial() {
+    let dir = std::env::temp_dir().join(format!("oa-results-partial-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("partial.sqlite");
+    let model = model_whose_second_case_fails();
+    let options = StaticOptions::default();
+    let mut store = ResultStore::create(&path, &model, &options).unwrap();
+    assert_eq!(store.info().expected_combinations, vec!["good", "bad"]);
+    analyze_static_into(&model, &options, &mut store).unwrap_err();
+    // The store in hand knows it is unfinished and refuses to answer.
+    assert!(!store.info().complete);
+    assert_eq!(store.missing_combinations(), vec!["bad"]);
+    assert!(matches!(
+        store.envelope_displacement(1, 1),
+        Err(oa_results::Error::Incomplete { .. })
+    ));
+    assert!(matches!(
+        store.combination("good"),
+        Err(oa_results::Error::Incomplete { .. })
+    ));
+    assert!(matches!(
+        store.sql("select 1", 1),
+        Err(oa_results::Error::Incomplete { .. })
+    ));
+    drop(store);
+    // Reopening normally fails; the partial view says exactly what is missing.
+    assert!(matches!(
+        ResultStore::open(&path),
+        Err(oa_results::Error::Incomplete { missing }) if missing == ["bad"]
+    ));
+    let partial = ResultStore::open_partial(&path).unwrap();
+    assert!(!partial.info().complete);
+    assert_eq!(partial.missing_combinations(), vec!["bad"]);
+    assert_eq!(partial.combinations(), vec!["good"]);
+    let envelope = partial.envelope_displacement(1, 1).unwrap();
+    assert_eq!(envelope.maximum.combination, "good");
+    drop(partial);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // A combination the run never asked for is refused, and a finished run
+    // is marked complete by its last write.
+    let frame = frame_model(1, 1, 1, 2);
+    let options = StaticOptions {
+        combinations: vec!["c1".into()],
+        ..Default::default()
+    };
+    let mut store = ResultStore::create_in_memory(&frame, &options).unwrap();
+    let stray = CombinationResult {
+        combination: "c0".into(),
+        iterations: 1,
+        relative_residual: 0.0,
+        displacements: None,
+        reactions: None,
+        frames: None,
+        shells: None,
+    };
+    assert!(store.consume(stray).is_err());
+    analyze_static_into(&frame, &options, &mut store).unwrap();
+    assert!(store.info().complete);
+    assert!(store.missing_combinations().is_empty());
+    assert_eq!(store.combinations(), vec!["c1"]);
+}
+
+#[test]
+fn sql_cannot_attach_databases_or_change_the_connection() {
+    let model = frame_model(1, 1, 1, 1);
+    let options = StaticOptions::default();
+    let mut store = ResultStore::create_in_memory(&model, &options).unwrap();
+    analyze_static_into(&model, &options, &mut store).unwrap();
+    let dir = std::env::temp_dir().join(format!("oa-results-attach-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("unexpected.sqlite");
+    let attach = format!(
+        "attach database '{}' as extra",
+        path.display().to_string().replace('\'', "''")
+    );
+    assert!(store.sql(&attach, 10).is_err());
+    assert!(
+        !path.exists(),
+        "no file may be created through read-only SQL"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    for statement in [
+        "detach database main",
+        "pragma journal_mode = delete",
+        "pragma synchronous = off",
+        "create table scratch(a)",
+        "create temp table scratch(a)",
+        "begin",
+        "savepoint s",
+        "insert into combinations(name, iterations, relative_residual) values('x', 1, 0)",
+        "delete from displacements",
+    ] {
+        assert!(
+            store.sql(statement, 10).is_err(),
+            "{statement} must be refused"
+        );
+    }
+    // Plain reads, including schema reads and functions, still work afterwards.
+    let tables = store
+        .sql(
+            "select name from sqlite_master where type = 'table' order by name",
+            50,
+        )
+        .unwrap();
+    assert!(tables.rows.iter().any(|r| r[0] == "displacements"));
+    let count = store
+        .sql("select count(*), max(abs(ux)) from displacements", 1)
+        .unwrap();
+    assert_eq!(count.rows.len(), 1);
+    assert_eq!(store.combinations(), vec!["c0"]);
+}

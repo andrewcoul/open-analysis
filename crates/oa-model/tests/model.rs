@@ -511,3 +511,264 @@ fn m5_json_api_applies_commands_compiles_and_solves() {
     let bad = serde_json::json!([{"command": "remove_node", "id": 1}]);
     assert!(oa_model::api::apply_commands_json(base, &bad.to_string()).is_err());
 }
+
+#[test]
+fn journal_records_only_accepted_commands_and_replays_cleanly() {
+    let dir = std::env::temp_dir().join(format!("oa-model-journal-reject-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("session.sqlite");
+    {
+        let journal = oa_model::store::Journal::open(&path).unwrap();
+        let mut editor = Editor::new(Model::default()).with_journal(journal);
+        let a = Node::new("A", [Length::ZERO; 3]);
+        editor
+            .apply(Command::AddNode {
+                id: EntityId(1),
+                node: a.clone(),
+            })
+            .unwrap();
+        // Rejected: duplicate name. Must leave no trace in the journal.
+        assert!(matches!(
+            editor.apply(Command::AddNode {
+                id: EntityId(2),
+                node: a,
+            }),
+            Err(ModelError::DuplicateName { .. })
+        ));
+        // Rejected batch: the second command dangles, so the whole batch rolls back.
+        assert!(
+            editor
+                .apply(Command::Batch {
+                    commands: vec![
+                        Command::AddNode {
+                            id: EntityId(5),
+                            node: Node::new("C", [Length::ZERO; 3]),
+                        },
+                        Command::RemoveNode { id: EntityId(99) },
+                    ],
+                })
+                .is_err()
+        );
+        editor
+            .apply(Command::AddNode {
+                id: EntityId(3),
+                node: Node::new("B", [Length::ZERO; 3]),
+            })
+            .unwrap();
+        assert!(editor.undo().unwrap());
+        assert!(editor.redo().unwrap());
+        assert_eq!(editor.model.nodes.len(), 2);
+    }
+    let journal = oa_model::store::Journal::open(&path).unwrap();
+    let commands = journal.replay().unwrap();
+    assert_eq!(commands.len(), 4, "add A, add B, undo, redo");
+    let mut recovered = Model::default();
+    for command in commands {
+        command.apply(&mut recovered).unwrap();
+    }
+    assert_eq!(recovered.nodes.len(), 2);
+    assert_eq!(recovered.nodes[&EntityId(1)].name, "A");
+    assert_eq!(recovered.nodes[&EntityId(3)].name, "B");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn loading_checks_identity_invariants_and_repairs_a_stale_allocator() {
+    let mut editor = Editor::new(Model::default());
+    portal(&mut editor);
+    let model = editor.model;
+    let count = model.nodes.len();
+
+    // A stale allocator is moved past the highest id instead of handing out
+    // ids that are already taken.
+    let mut stale = model.clone();
+    stale.next_id = 1;
+    let mut loaded = from_json(&to_json(&stale)).unwrap();
+    assert_eq!(loaded.next_id, model.next_id);
+    let fresh = loaded.insert(Node::new("fresh", [Length::ZERO; 3]));
+    assert!(fresh > model.max_id().unwrap());
+    assert_eq!(loaded.nodes.len(), count + 1);
+    // A well-formed document loads unchanged.
+    assert_eq!(from_json(&to_json(&model)).unwrap(), model);
+
+    // The same id in two tables is refused, by the loader and by compilation.
+    let mut colliding = model.clone();
+    let node = *colliding.nodes.keys().next().unwrap();
+    colliding.groups.insert(
+        node,
+        Group {
+            name: "colliding".into(),
+            members: Default::default(),
+        },
+    );
+    assert!(matches!(
+        from_json(&to_json(&colliding)),
+        Err(oa_model::format::FormatError::Corrupt(_))
+    ));
+    let problems = compile(&colliding).unwrap_err();
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.entity == Some(node) && p.message.contains("more than one"))
+    );
+
+    // A group pointing at a missing entity is refused.
+    let mut dangling = model.clone();
+    let group = *dangling.groups.keys().next().unwrap();
+    dangling
+        .groups
+        .get_mut(&group)
+        .unwrap()
+        .members
+        .insert(EntityId(9_999));
+    assert!(matches!(
+        from_json(&to_json(&dangling)),
+        Err(oa_model::format::FormatError::Corrupt(_))
+    ));
+
+    // An exhausted id space is refused rather than wrapped later.
+    let mut exhausted = model.clone();
+    exhausted.next_id = u64::MAX;
+    assert!(matches!(
+        from_json(&to_json(&exhausted)),
+        Err(oa_model::format::FormatError::Corrupt(_))
+    ));
+    // And the allocator itself saturates instead of overflowing.
+    let mut saturated = Model {
+        next_id: u64::MAX,
+        ..Default::default()
+    };
+    assert_eq!(saturated.allocate(), EntityId(u64::MAX));
+    assert_eq!(saturated.allocate(), EntityId(u64::MAX));
+}
+
+#[test]
+fn compile_reports_element_geometry_problems_by_entity() {
+    let mut m = Model::default();
+    let mat = m.insert(steel());
+    let n0 = m.insert(Node::fixed("N0", [Length::ZERO; 3]));
+    let shell = m.insert(Shell {
+        name: "collapsed".into(),
+        nodes: [n0; 4],
+        material: mat,
+        thickness: Length::from_si(0.1),
+        formulation: ShellFormulation::Dkmq,
+        drilling_ratio: 1e-3,
+    });
+    m.insert(LoadCase::new("empty"));
+    let problems = compile(&m).unwrap_err();
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].entity, Some(shell));
+    assert_eq!(problems[0].name.as_deref(), Some("collapsed"));
+    assert!(
+        problems[0].message.contains("degenerate"),
+        "{}",
+        problems[0]
+    );
+
+    let mut m = Model::default();
+    let mat = m.insert(steel());
+    let sec = m.insert(section());
+    let n0 = m.insert(Node::fixed("N0", [Length::ZERO; 3]));
+    let n1 = m.insert(Node::new(
+        "N1",
+        [Length::from_si(3.0), Length::ZERO, Length::ZERO],
+    ));
+    let mut frame = Frame::new("twisted", [n0, n1], mat, sec);
+    frame.local_y = Some([1.0, 0.0, 0.0]);
+    let frame = m.insert(frame);
+    m.insert(LoadCase::new("empty"));
+    let problems = compile(&m).unwrap_err();
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].entity, Some(frame));
+    assert!(problems[0].message.contains("local_y"), "{}", problems[0]);
+}
+
+#[test]
+fn save_json_preserves_the_previous_document_when_writing_fails() {
+    let dir = std::env::temp_dir().join(format!("oa-model-save-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("model.json");
+    let mut first = Model::default();
+    first.metadata.name = "first".into();
+    save_json(&first, &path).unwrap();
+    assert_eq!(
+        from_json(&std::fs::read_to_string(&path).unwrap()).unwrap(),
+        first
+    );
+
+    // Block the temporary file: a directory sits where it would be created.
+    let temporary = oa_model::format::temporary_path(&path);
+    std::fs::create_dir(&temporary).unwrap();
+    let mut second = first.clone();
+    second.metadata.name = "second".into();
+    assert!(save_json(&second, &path).is_err());
+    assert_eq!(
+        from_json(&std::fs::read_to_string(&path).unwrap()).unwrap(),
+        first,
+        "the previous document survives a failed save"
+    );
+    std::fs::remove_dir(&temporary).unwrap();
+
+    save_json(&second, &path).unwrap();
+    assert_eq!(
+        from_json(&std::fs::read_to_string(&path).unwrap()).unwrap(),
+        second
+    );
+    assert!(!temporary.exists(), "no temporary file is left behind");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn attach_refuses_an_unfinished_run() {
+    let mut editor = Editor::new(Model::default());
+    portal(&mut editor);
+    // Add a load case that cannot be carried: a torque on a node whose only
+    // member releases torsion at both ends. The run stops there.
+    let m = &mut editor.model;
+    let mat = m.find::<Material>("steel").unwrap();
+    let sec = m.find::<Section>("column").unwrap();
+    let base = m.insert(Node::fixed(
+        "T0",
+        [Length::from_si(20.0), Length::ZERO, Length::ZERO],
+    ));
+    let tip = m.insert(Node::new(
+        "T1",
+        [Length::from_si(23.0), Length::ZERO, Length::ZERO],
+    ));
+    let mut released = Frame::new("released", [base, tip], mat, sec);
+    released.releases[3] = true;
+    released.releases[9] = true;
+    m.insert(released);
+    let mut torque = LoadCase::new("torque");
+    torque.nodal.push(NodalLoad {
+        node: tip,
+        force: [Force::ZERO; 3],
+        moment: [Moment::from_si(100.0), Moment::ZERO, Moment::ZERO],
+    });
+    let torque = m.insert(torque);
+    m.insert(Combination {
+        name: "1.0T".into(),
+        terms: vec![(torque, 1.0)],
+    });
+    let compiled = compile(m).unwrap();
+    let dir = std::env::temp_dir().join(format!("oa-model-partial-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("run.sqlite");
+    let options = oa_core::StaticOptions::default();
+    let mut store = oa_results::ResultStore::create(&path, &compiled.solver, &options).unwrap();
+    oa_core::analyze_static_into(&compiled.solver, &options, &mut store).unwrap_err();
+    assert!(matches!(
+        oa_model::store::attach(&compiled, &store),
+        Err(oa_model::store::StoreError::IncompleteResults { .. })
+    ));
+    drop(store);
+    assert!(oa_results::ResultStore::open(&path).is_err());
+    let partial = oa_results::ResultStore::open_partial(&path).unwrap();
+    assert!(matches!(
+        oa_model::store::attach(&compiled, &partial),
+        Err(oa_model::store::StoreError::IncompleteResults { missing }) if missing == ["1.0T"]
+    ));
+    drop(partial);
+    let _ = std::fs::remove_dir_all(&dir);
+}

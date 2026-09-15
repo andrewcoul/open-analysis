@@ -1,5 +1,10 @@
-//! Versioned JSON file format with forward migrations.
+//! Versioned JSON file format with forward migrations, integrity checks on
+//! load, and a save that never leaves the destination half written.
 use crate::model::Model;
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 pub const FORMAT_VERSION: u32 = 1;
 
@@ -11,13 +16,17 @@ pub enum FormatError {
     TooNew(u32),
     #[error("missing or invalid format_version")]
     MissingVersion,
+    #[error("corrupt document: {0}")]
+    Corrupt(String),
 }
 
 pub fn to_json(model: &Model) -> String {
     serde_json::to_string_pretty(model).expect("model serializes")
 }
 
-/// Loads a model document, migrating older format versions forward.
+/// Loads a model document, migrating older format versions forward and
+/// checking the identity invariants every command relies on: ids are unique
+/// across tables, group members exist, and the allocator is ahead of every id.
 pub fn from_json(text: &str) -> Result<Model, FormatError> {
     let mut value: serde_json::Value = serde_json::from_str(text)?;
     let mut version = value
@@ -32,7 +41,64 @@ pub fn from_json(text: &str) -> Result<Model, FormatError> {
         version += 1;
         value["format_version"] = serde_json::json!(version);
     }
-    Ok(serde_json::from_value(value)?)
+    let mut model: Model = serde_json::from_value(value)?;
+    check_integrity(&mut model)?;
+    Ok(model)
+}
+
+fn check_integrity(model: &mut Model) -> Result<(), FormatError> {
+    let duplicates = model.duplicate_ids();
+    if !duplicates.is_empty() {
+        return Err(FormatError::Corrupt(format!(
+            "ids used by more than one entity: {:?}",
+            duplicates.iter().map(|d| d.0).collect::<Vec<_>>()
+        )));
+    }
+    if let Some((group, member)) = model.dangling_group_members().first() {
+        return Err(FormatError::Corrupt(format!(
+            "group #{} lists missing entity #{}",
+            group.0, member.0
+        )));
+    }
+    let high_water = model.max_id().map_or(0, |id| id.0);
+    if high_water == u64::MAX || model.next_id == u64::MAX {
+        return Err(FormatError::Corrupt("entity id space is exhausted".into()));
+    }
+    // A stale allocator would hand out ids that are already taken. Move it
+    // past the high-water mark; nothing else about the document changes.
+    model.next_id = model.next_id.max(high_water + 1).max(1);
+    Ok(())
+}
+
+/// Writes a model document without ever leaving the destination truncated.
+/// The JSON goes to a sibling temporary file first, is flushed to disk, and
+/// then replaces the destination in one rename. If any step fails the
+/// previous document is untouched and the temporary file is removed.
+pub fn save_json(model: &Model, path: &Path) -> std::io::Result<()> {
+    let json = to_json(model);
+    let temporary = temporary_path(path);
+    let written = (|| {
+        let mut file = std::fs::File::create(&temporary)?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
+}
+
+/// `model.json` is written through `model.json.tmp` beside it, so the final
+/// rename stays within one directory and one filesystem.
+pub fn temporary_path(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_else(|| "model".into());
+    name.push(".tmp");
+    path.with_file_name(name)
 }
 
 /// One step: a document at `from` becomes a document at `from + 1`.

@@ -134,6 +134,8 @@ pub fn analyze_spectrum(model: &Model, options: &SpectrumOptions) -> Result<Spec
         &vec![true; prep.frames.len()],
     )?;
     // No second factorization: element force recovery suffices for support reactions.
+    let mass = prep.mass(model);
+    let restrained: Vec<bool> = model.nodes.iter().flat_map(|n| n.restrained).collect();
     let mut responses = vec![];
     for (j, mode) in modal.modes.iter().enumerate() {
         let sa = interpolate(&options.spectrum, mode.period_seconds)?;
@@ -164,6 +166,24 @@ pub fn analyze_spectrum(model: &Model, options: &SpectrumOptions) -> Result<Spec
             let global = e.t.transpose() * local;
             for i in 0..24 {
                 reaction[e.dofs[i]] += global[i];
+            }
+        }
+        // A slave DOF's element sum is K u there, which equals the modal
+        // inertia of its own lumped mass plus the constraint force. Transfer
+        // that constraint force to restrained masters through Tᵀ, so a
+        // restrained diaphragm master reports the forces its slaves feed it.
+        for (slave, terms) in prep.constraints.iter().enumerate() {
+            let Some(terms) = terms else {
+                continue;
+            };
+            if restrained[slave] {
+                continue;
+            }
+            let constraint_force = reaction[slave] - mode.eigenvalue * mass[slave] * u[slave];
+            for &(master, c) in terms {
+                if restrained[master] {
+                    reaction[master] += c * constraint_force;
+                }
             }
         }
         let mut base = [0.0; 6];

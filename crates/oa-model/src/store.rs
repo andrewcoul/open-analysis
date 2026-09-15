@@ -12,6 +12,8 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("results were computed from a different model (hash {found}, expected {expected})")]
     StaleResults { expected: String, found: String },
+    #[error("results are incomplete: the run never stored combinations {missing:?}")]
+    IncompleteResults { missing: Vec<String> },
 }
 
 /// Append-only log of commands. Replaying it onto the model the session
@@ -54,8 +56,14 @@ impl Journal {
     }
 }
 
-/// Refuses a result store that was not computed from exactly this compiled model.
+/// Refuses a result store that was not computed from exactly this compiled
+/// model, or whose run stopped before every requested combination was stored.
 pub fn attach(compiled: &Compiled, store: &oa_results::ResultStore) -> Result<(), StoreError> {
+    if !store.info().complete {
+        return Err(StoreError::IncompleteResults {
+            missing: store.missing_combinations(),
+        });
+    }
     let expected = compiled.content_hash();
     let found = store.info().model_hash.clone();
     if expected != found {

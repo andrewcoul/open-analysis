@@ -4,11 +4,19 @@
 use oa_core::{
     CombinationResult, Envelope, FrameResult, Model, ResultConsumer, ShellResult, StaticOptions,
 };
-use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::ValueRef};
+use rusqlite::{
+    Connection, OptionalExtension,
+    hooks::{AuthAction, AuthContext, Authorization},
+    params, params_from_iter,
+    types::ValueRef,
+};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 
-pub const SCHEMA_VERSION: u32 = 1;
+/// Version 2 records which combinations a run was asked for and whether all
+/// of them were stored, so a run that stopped early is never mistaken for a
+/// finished one.
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -20,6 +28,10 @@ pub enum Error {
     Store(String),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    #[error(
+        "result store is incomplete: the run never stored combinations {missing:?}; open it with open_partial to inspect what finished"
+    )]
+    Incomplete { missing: Vec<String> },
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -36,6 +48,10 @@ pub struct RunInfo {
     pub created_unix: u64,
     /// The `StaticOptions` used, as JSON.
     pub options: String,
+    /// Every combination the run was asked to compute, in request order.
+    pub expected_combinations: Vec<String>,
+    /// True once every expected combination has been committed.
+    pub complete: bool,
 }
 
 /// A read-only query result for callers, such as agents, that write their own SQL.
@@ -82,7 +98,7 @@ fn schema() -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "create table run(id integer primary key check (id = 1), schema_version integer not null, model_hash text not null, solver_version text not null, created_unix integer not null, options text not null);
+        "create table run(id integer primary key check (id = 1), schema_version integer not null, model_hash text not null, solver_version text not null, created_unix integer not null, options text not null, expected_combinations text not null, complete integer not null default 0);
 create table combinations(id integer primary key, name text not null unique, iterations integer not null, relative_residual real not null);
 {}
 {}
@@ -99,11 +115,35 @@ pub struct ResultStore {
     conn: Connection,
     info: RunInfo,
     combos: BTreeMap<String, i64>,
+    /// Set by `open_partial`: the caller asked to read an unfinished run.
+    allow_partial: bool,
 }
 
 impl ResultStore {
     /// Creates a new store for one analysis run. `path` may be `:memory:`.
+    /// The combinations the run will compute are recorded up front, and the
+    /// run counts as complete only once every one of them has been written.
     pub fn create(path: impl AsRef<Path>, model: &Model, options: &StaticOptions) -> Result<Self> {
+        let expected: Vec<String> = if options.combinations.is_empty() {
+            model
+                .effective_combinations()
+                .into_iter()
+                .map(|c| c.name)
+                .collect()
+        } else {
+            options.combinations.clone()
+        };
+        if expected.is_empty() {
+            return Err(Error::Store(
+                "a run needs at least one combination to store".into(),
+            ));
+        }
+        let mut unique = std::collections::HashSet::new();
+        if let Some(duplicate) = expected.iter().find(|n| !unique.insert(n.as_str())) {
+            return Err(Error::Store(format!(
+                "combination {duplicate:?} is requested twice"
+            )));
+        }
         let conn = Connection::open(path)?;
         conn.execute_batch("pragma journal_mode = wal; pragma synchronous = normal;")?;
         conn.execute_batch(&schema())?;
@@ -116,41 +156,63 @@ impl ResultStore {
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
             options: serde_json::to_string(options)?,
+            expected_combinations: expected,
+            complete: false,
         };
         conn.execute(
-            "insert into run(id, schema_version, model_hash, solver_version, created_unix, options) values(1, ?1, ?2, ?3, ?4, ?5)",
+            "insert into run(id, schema_version, model_hash, solver_version, created_unix, options, expected_combinations, complete) values(1, ?1, ?2, ?3, ?4, ?5, ?6, 0)",
             params![
                 info.schema_version,
                 info.model_hash,
                 info.solver_version,
                 info.created_unix as i64,
-                info.options
+                info.options,
+                serde_json::to_string(&info.expected_combinations)?,
             ],
         )?;
         Ok(Self {
             conn,
             info,
             combos: BTreeMap::new(),
+            allow_partial: false,
         })
     }
     pub fn create_in_memory(model: &Model, options: &StaticOptions) -> Result<Self> {
         Self::create(":memory:", model, options)
     }
-    /// Opens an existing store.
+    /// Opens a finished store. A run that stopped before every requested
+    /// combination was written is refused with [`Error::Incomplete`].
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let store = Self::open_partial(path)?;
+        if !store.info.complete {
+            return Err(Error::Incomplete {
+                missing: store.missing_combinations(),
+            });
+        }
+        Ok(store)
+    }
+    /// Opens a store whether or not its run finished. Check [`RunInfo::complete`]
+    /// and [`ResultStore::missing_combinations`] before trusting envelopes,
+    /// which only range over what was stored.
+    pub fn open_partial(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path)?;
-        let info: RunInfo = conn
+        let (info, expected_json): (RunInfo, String) = conn
             .query_row(
-                "select schema_version, model_hash, solver_version, created_unix, options from run where id = 1",
+                "select schema_version, model_hash, solver_version, created_unix, options, expected_combinations, complete from run where id = 1",
                 [],
                 |r| {
-                    Ok(RunInfo {
-                        schema_version: r.get(0)?,
-                        model_hash: r.get(1)?,
-                        solver_version: r.get(2)?,
-                        created_unix: r.get::<_, i64>(3)? as u64,
-                        options: r.get(4)?,
-                    })
+                    Ok((
+                        RunInfo {
+                            schema_version: r.get(0)?,
+                            model_hash: r.get(1)?,
+                            solver_version: r.get(2)?,
+                            created_unix: r.get::<_, i64>(3)? as u64,
+                            options: r.get(4)?,
+                            expected_combinations: vec![],
+                            complete: r.get::<_, i64>(6)? != 0,
+                        },
+                        r.get(5)?,
+                    ))
                 },
             )
             .optional()?
@@ -161,6 +223,8 @@ impl ResultStore {
                 info.schema_version
             )));
         }
+        let mut info = info;
+        info.expected_combinations = serde_json::from_str(&expected_json)?;
         let mut combos = BTreeMap::new();
         let mut stmt = conn.prepare("select id, name from combinations order by id")?;
         for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
@@ -168,10 +232,35 @@ impl ResultStore {
             combos.insert(name, id);
         }
         drop(stmt);
-        Ok(Self { conn, info, combos })
+        Ok(Self {
+            conn,
+            info,
+            combos,
+            allow_partial: true,
+        })
     }
     pub fn info(&self) -> &RunInfo {
         &self.info
+    }
+    /// Expected combinations that were never stored; empty once the run is complete.
+    pub fn missing_combinations(&self) -> Vec<String> {
+        self.info
+            .expected_combinations
+            .iter()
+            .filter(|name| !self.combos.contains_key(*name))
+            .cloned()
+            .collect()
+    }
+    /// Reads are refused on an unfinished run unless the caller opened it
+    /// with `open_partial`, so a partial envelope is never taken for a full one.
+    fn require_complete(&self) -> Result<()> {
+        if self.info.complete || self.allow_partial {
+            Ok(())
+        } else {
+            Err(Error::Incomplete {
+                missing: self.missing_combinations(),
+            })
+        }
     }
     /// True when the store was computed from exactly this model.
     pub fn matches(&self, model: &Model) -> Result<bool> {
@@ -191,6 +280,12 @@ impl ResultStore {
         if self.combos.contains_key(&r.combination) {
             return Err(Error::Store(format!(
                 "combination {:?} already stored",
+                r.combination
+            )));
+        }
+        if !self.info.expected_combinations.contains(&r.combination) {
+            return Err(Error::Store(format!(
+                "combination {:?} was not part of this run",
                 r.combination
             )));
         }
@@ -257,8 +352,19 @@ impl ResultStore {
                 stmt.execute(params_from_iter(row))?;
             }
         }
+        // The last expected combination marks the run complete in the same
+        // transaction, so the flag and the data land together or not at all.
+        let finishing = self
+            .info
+            .expected_combinations
+            .iter()
+            .all(|name| *name == r.combination || self.combos.contains_key(name));
+        if finishing {
+            tx.execute("update run set complete = 1 where id = 1", [])?;
+        }
         tx.commit()?;
         self.combos.insert(r.combination, id);
+        self.info.complete = finishing;
         Ok(())
     }
 
@@ -270,6 +376,7 @@ impl ResultStore {
     }
     /// Rehydrates one combination. Deselected outputs come back as `None`.
     pub fn combination(&self, name: &str) -> Result<CombinationResult> {
+        self.require_complete()?;
         let id = self.combo_id(name)?;
         let (iterations, relative_residual): (i64, f64) = self.conn.query_row(
             "select iterations, relative_residual from combinations where id = ?1",
@@ -348,6 +455,7 @@ impl ResultStore {
     }
     /// One frame's result for a combination, for on-demand section forces.
     pub fn frame_result(&self, combination: &str, frame: usize) -> Result<Option<FrameResult>> {
+        self.require_complete()?;
         let id = self.combo_id(combination)?;
         let mut stmt = self.conn.prepare_cached(&format!(
             "select active, {}, {} from frame_results where combination = ?1 and frame = ?2",
@@ -372,6 +480,7 @@ impl ResultStore {
         entity: usize,
         column: &str,
     ) -> Result<Envelope> {
+        self.require_complete()?;
         let mut stmt = self.conn.prepare_cached(&format!(
             "select c.name, t.{column} from {table} t join combinations c on c.id = t.combination where t.{key} = ?1"
         ))?;
@@ -410,6 +519,7 @@ impl ResultStore {
     }
     /// Envelope of a displacement difference between two nodes, such as storey drift.
     pub fn envelope_drift(&self, upper: usize, lower: usize, component: usize) -> Result<Envelope> {
+        self.require_complete()?;
         let col = column(&DISPLACEMENT_COLUMNS, component)?;
         let mut stmt = self.conn.prepare_cached(&format!(
             "select c.name, u.{col} - l.{col} from displacements u join displacements l on l.combination = u.combination join combinations c on c.id = u.combination where u.node = ?1 and l.node = ?2"
@@ -446,8 +556,19 @@ impl ResultStore {
     }
 
     /// Runs a read-only SQL statement and returns at most `limit` rows.
+    ///
+    /// SQLite's own read-only classification lets `ATTACH`, `DETACH`, and
+    /// pragmas through because they change no database content, yet they can
+    /// create files and alter the connection. An authorizer restricts the
+    /// statement to plain reads while it is prepared; the read-only check
+    /// stays as a second guard.
     pub fn sql(&self, sql: &str, limit: usize) -> Result<Table> {
-        let mut stmt = self.conn.prepare(sql)?;
+        self.require_complete()?;
+        self.conn.authorizer(Some(read_only_authorizer))?;
+        let prepared = self.conn.prepare(sql);
+        self.conn
+            .authorizer::<fn(AuthContext<'_>) -> Authorization>(None)?;
+        let mut stmt = prepared?;
         if !stmt.readonly() {
             return Err(Error::Store("only read-only statements are allowed".into()));
         }
@@ -484,6 +605,19 @@ impl ResultStore {
             rows,
             truncated,
         })
+    }
+}
+
+/// Permits reading tables, columns, and functions and nothing else. Every
+/// write, schema change, transaction control, `ATTACH`, `DETACH`, and pragma
+/// makes preparation fail with a "not authorized" error.
+fn read_only_authorizer(ctx: AuthContext<'_>) -> Authorization {
+    match ctx.action {
+        AuthAction::Select
+        | AuthAction::Read { .. }
+        | AuthAction::Function { .. }
+        | AuthAction::Recursive => Authorization::Allow,
+        _ => Authorization::Deny,
     }
 }
 
