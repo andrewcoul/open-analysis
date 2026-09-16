@@ -194,10 +194,91 @@ pub struct SurfaceLoad {
     pub pressure: Pressure,
 }
 
+/// The nominal load a case represents, in the vocabulary of ASCE 7 chapter 2.
+/// Combination generators pick cases by it; the solver never reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadType {
+    Dead,
+    Live,
+    RoofLive,
+    Snow,
+    Rain,
+    Wind,
+    Earthquake,
+    EarthPressure,
+    Fluid,
+    SelfStraining,
+    Flood,
+    Ice,
+    WindOnIce,
+    /// A case of the user's own that no generator touches.
+    #[default]
+    Other,
+}
+impl LoadType {
+    /// Every type, in the order ASCE 7 lists them, with `Other` last.
+    pub const ALL: [LoadType; 14] = [
+        LoadType::Dead,
+        LoadType::Live,
+        LoadType::RoofLive,
+        LoadType::Snow,
+        LoadType::Rain,
+        LoadType::Wind,
+        LoadType::Earthquake,
+        LoadType::EarthPressure,
+        LoadType::Fluid,
+        LoadType::SelfStraining,
+        LoadType::Flood,
+        LoadType::Ice,
+        LoadType::WindOnIce,
+        LoadType::Other,
+    ];
+    /// The chapter 2 symbol, empty for `Other`.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            LoadType::Dead => "D",
+            LoadType::Live => "L",
+            LoadType::RoofLive => "Lr",
+            LoadType::Snow => "S",
+            LoadType::Rain => "R",
+            LoadType::Wind => "W",
+            LoadType::Earthquake => "E",
+            LoadType::EarthPressure => "H",
+            LoadType::Fluid => "F",
+            LoadType::SelfStraining => "T",
+            LoadType::Flood => "Fa",
+            LoadType::Ice => "Di",
+            LoadType::WindOnIce => "Wi",
+            LoadType::Other => "",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            LoadType::Dead => "Dead",
+            LoadType::Live => "Live",
+            LoadType::RoofLive => "Roof live",
+            LoadType::Snow => "Snow",
+            LoadType::Rain => "Rain",
+            LoadType::Wind => "Wind",
+            LoadType::Earthquake => "Earthquake",
+            LoadType::EarthPressure => "Earth pressure",
+            LoadType::Fluid => "Fluid",
+            LoadType::SelfStraining => "Self-straining",
+            LoadType::Flood => "Flood",
+            LoadType::Ice => "Ice",
+            LoadType::WindOnIce => "Wind on ice",
+            LoadType::Other => "Other",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoadCase {
     pub name: String,
+    #[serde(default)]
+    pub load_type: LoadType,
     #[serde(default)]
     pub self_weight: [f64; 3],
     #[serde(default)]
@@ -211,11 +292,16 @@ impl LoadCase {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            load_type: LoadType::Other,
             self_weight: [0.0; 3],
             nodal: vec![],
             member: vec![],
             surface: vec![],
         }
+    }
+    pub fn with_type(mut self, load_type: LoadType) -> Self {
+        self.load_type = load_type;
+        self
     }
 }
 

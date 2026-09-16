@@ -5,9 +5,10 @@
 use crate::actions::*;
 use crate::camera::{UpAxis, ViewPreset};
 use crate::document::{
-    Document, ResultsState, example_frame, read_model, unused_name, write_model,
+    Document, ResultsState, example_frame, new_model, read_model, unused_name, write_model,
 };
 use crate::explorer::Explorer;
+use crate::loads::{LoadPanel, Section};
 use crate::prompt::{AnalysisSummary, Gates, PromptState, render_prompt, selection_summary};
 use crate::properties::PropertyEditor;
 use crate::viewport::{Tool, Viewport, ViewportEvent};
@@ -36,6 +37,8 @@ pub struct Workspace {
     viewport: Entity<Viewport>,
     explorer: Entity<Explorer>,
     properties: Entity<PropertyEditor>,
+    load_cases: Entity<LoadPanel>,
+    combinations: Entity<LoadPanel>,
     menu_bar: Entity<AppMenuBar>,
     /// The command palette's search state, made on first use.
     palette: Option<Entity<CommandState>>,
@@ -48,6 +51,10 @@ impl Workspace {
         let viewport = cx.new(|cx| Viewport::new(document.clone(), cx));
         let explorer = cx.new(|cx| Explorer::new(document.clone(), cx));
         let properties = cx.new(|cx| PropertyEditor::new(document.clone(), window, cx));
+        let load_cases =
+            cx.new(|cx| LoadPanel::new(document.clone(), Section::Cases, window, cx));
+        let combinations =
+            cx.new(|cx| LoadPanel::new(document.clone(), Section::Combinations, window, cx));
         let menu_bar = AppMenuBar::new(cx);
         let subscriptions = vec![
             cx.observe_in(&document, window, |this, _, window, cx| {
@@ -71,6 +78,8 @@ impl Workspace {
             viewport,
             explorer,
             properties,
+            load_cases,
+            combinations,
             menu_bar,
             palette: None,
             _subscriptions: subscriptions,
@@ -195,8 +204,14 @@ impl Workspace {
                     MenuItem::action("Section from library…", AddSectionFromLibrary),
                     MenuItem::action("Custom section…", AddCustomSection),
                     MenuItem::separator(),
-                    MenuItem::action("Load case", AddLoadCase),
-                    MenuItem::action("Load combination", AddCombination),
+                    MenuItem::action("Load cases…", ShowLoadCases),
+                    MenuItem::action("Add load case", AddLoadCase),
+                    MenuItem::action("Add ASCE 7 load case…", AddAsceLoadCase),
+                    MenuItem::separator(),
+                    MenuItem::action("Load combinations…", ShowCombinations),
+                    MenuItem::action("Add load combination", AddCombination),
+                    MenuItem::action("Generate combinations from ASCE 7…", GenerateCombinations)
+                        .disabled(gates.generate.is_some()),
                     MenuItem::separator(),
                     MenuItem::action("Group from selection", AddGroupFromSelection)
                         .disabled(gates.group.is_some()),
@@ -316,7 +331,7 @@ impl Workspace {
 
     pub fn new_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.confirm_discard(window, cx, |this, _, cx| {
-            this.replace(Model::default(), None, cx)
+            this.replace(new_model(), None, cx)
         });
     }
     pub fn new_example(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -668,6 +683,28 @@ impl Workspace {
                 .child(div().h(px(560.)).child(properties.clone()))
         });
     }
+    /// The load cases table, in a dialog.
+    pub fn show_load_cases(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = self.load_cases.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title("Load cases")
+                .w(px(760.))
+                .footer(div())
+                .child(div().h(px(480.)).child(panel.clone()))
+        });
+    }
+    /// The load combinations matrix, in a dialog.
+    pub fn show_combinations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = self.combinations.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title("Load combinations")
+                .w(px(920.))
+                .footer(div())
+                .child(div().h(px(480.)).child(panel.clone()))
+        });
+    }
     /// The model tree, in a dialog. Click selects, double-click edits.
     pub fn show_model_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let explorer = self.explorer.clone();
@@ -811,8 +848,16 @@ impl Workspace {
                     item("Custom material…", Box::new(AddCustomMaterial), None),
                     item("Section from library…", Box::new(AddSectionFromLibrary), None),
                     item("Custom section…", Box::new(AddCustomSection), None),
+                    item("Load cases…", Box::new(ShowLoadCases), None),
                     item("Add load case", Box::new(AddLoadCase), None),
+                    item("Add ASCE 7 load case…", Box::new(AddAsceLoadCase), None),
+                    item("Load combinations…", Box::new(ShowCombinations), None),
                     item("Add load combination", Box::new(AddCombination), None),
+                    item(
+                        "Generate combinations from ASCE 7…",
+                        Box::new(GenerateCombinations),
+                        gates.generate,
+                    ),
                 ],
             ),
             (
@@ -1026,7 +1071,7 @@ impl Workspace {
                         .child(heading("Keys anywhere"))
                         .child(row("Ctrl+E · Ctrl+B · Ctrl+K", "Properties · model browser · search commands"))
                         .child(row("Ctrl+M · Ctrl+T", "Material · section (add Shift for a custom one)"))
-                        .child(row("Ctrl+L · Ctrl+Shift+L", "Load case · combination"))
+                        .child(row("Ctrl+L · Ctrl+Shift+L", "Load cases · load combinations"))
                         .child(row("Ctrl+R · Ctrl+] · Ctrl+[", "Run · next · previous combination"))
                         .child(row("Esc", "Stop drawing, then back to Select, then deselect"))
                         .child(heading("Drawing"))

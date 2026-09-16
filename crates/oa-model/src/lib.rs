@@ -4,6 +4,7 @@
 //! return their inverse, and [`compile`] produces solver input plus a
 //! two-way [`Mapping`]. See docs/model/PLAN.md.
 pub mod api;
+pub mod asce7;
 pub mod command;
 pub mod compile;
 pub mod editor;

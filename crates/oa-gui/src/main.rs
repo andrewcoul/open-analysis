@@ -8,6 +8,7 @@ mod camera;
 mod dialogs;
 mod document;
 mod explorer;
+mod loads;
 mod properties;
 mod prompt;
 mod text;
@@ -112,8 +113,8 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-m", AddCustomMaterial, None),
         KeyBinding::new("ctrl-t", AddSectionFromLibrary, None),
         KeyBinding::new("ctrl-shift-t", AddCustomSection, None),
-        KeyBinding::new("ctrl-l", AddLoadCase, None),
-        KeyBinding::new("ctrl-shift-l", AddCombination, None),
+        KeyBinding::new("ctrl-l", ShowLoadCases, None),
+        KeyBinding::new("ctrl-shift-l", ShowCombinations, None),
         // Draw
         KeyBinding::new("v", SelectTool, VIEW),
         KeyBinding::new("n", NodeTool, VIEW),
@@ -200,10 +201,20 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
     on!(AddCustomSection, |ws, _, window, cx| {
         dialogs::add_custom_section(ws.document().clone(), window, cx)
     });
+    on!(ShowLoadCases, |ws, _, window, cx| ws
+        .show_load_cases(window, cx));
+    on!(ShowCombinations, |ws, _, window, cx| ws
+        .show_combinations(window, cx));
     on!(AddLoadCase, |ws, _, window, cx| ws
         .add_load_case(window, cx));
+    on!(AddAsceLoadCase, |ws, _, window, cx| {
+        dialogs::add_asce_load_case(ws.document().clone(), window, cx)
+    });
     on!(AddCombination, |ws, _, window, cx| ws
         .add_combination(window, cx));
+    on!(GenerateCombinations, |ws, _, window, cx| {
+        dialogs::generate_combinations(ws.document().clone(), window, cx)
+    });
     on!(AddGroupFromSelection, |ws, _, window, cx| ws
         .add_group_from_selection(window, cx));
     on!(AddDiaphragmFromSelection, |ws, _, window, cx| ws

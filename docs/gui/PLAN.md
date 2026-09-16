@@ -30,7 +30,10 @@ crates/oa-gui/src/
                  opens as a dialog from View > Model browser
   properties.rs  property editor: fields per kind, commit through Update commands;
                  opens as a dialog from Edit > Properties or a double-click
-  dialogs.rs     add node by coordinates, materials and sections (library or custom), loads
+  dialogs.rs     add node by coordinates, materials and sections (library or custom), loads,
+                 ASCE 7 load cases, and the ASCE 7 combination generator
+  loads.rs       the load cases table and the load combinations matrix, each a dialog
+                 from the Define menu (Ctrl+L, Ctrl+Shift+L)
   prompt.rs      the prompt strip above the view and the selection gates
   workspace.rs   window layout, menus, command palette, pop-up panels, status bar,
                  file, edit, and tool commands
@@ -56,12 +59,15 @@ a text field: V N F S for the tools, L U G D for loads, groups, and
 diaphragms, 1 2 3 4 and Z for the views and fit, Shift+N/F/Z/D for labels,
 up axis, and deformed shape. Everything else holds Ctrl (Ctrl+E properties,
 Ctrl+B model browser, Ctrl+K search, Ctrl+M material, Ctrl+T section, Ctrl+L
-load case, Ctrl+R run, Ctrl+] and Ctrl+[ to step combinations). Every menu
+load cases, Ctrl+Shift+L load combinations, Ctrl+R run, Ctrl+] and Ctrl+[
+to step combinations). Every menu
 item shows its key. The visual system is set in `main.rs`: Switzer (three
 weights embedded from `assets/fonts`), 14px base with three text styles
 (20 Medium titles, 14 Regular body, 12 Medium labels), an 8px radius on
 every control, sizes on an 8px grid, indigo as the accent of both kit
-themes, and no icons in the chrome. The kit's title bar is 34px, the one
+themes, and no icons in the chrome. Destructive controls (remove, delete,
+x) always use the kit's red danger variant, outlined where they sit in a
+table row, so the colour alone says what the button does. The kit's title bar is 34px, the one
 size off the grid. The Paper file "open-analysis GUI", page "v2 · Menus and
 keybinds", holds the design.
 
@@ -109,6 +115,20 @@ Actions are routed to `Workspace` methods in `main.rs`.
 - Define materials and sections from the starter library or by value; add
   load cases, combinations, groups, diaphragms; add nodal loads to selected
   nodes and uniform loads to selected frames.
+- Load cases (Ctrl+L) and load combinations (Ctrl+Shift+L) as two dialogs
+  built on the kit's plain `Table` (the composable one, not the
+  delegate-driven `DataTable`, which suits large read-only sets). Cases have
+  a name, an ASCE 7 load type (`LoadType` on the model's `LoadCase`, `other`
+  for the user's own), and a self-weight vector; combinations are a matrix of
+  one factor per case, blank meaning absent. Every cell commits on Enter or
+  blur as an undoable command.
+  A new model starts with Dead (self weight down Z) and Live. Cases can be
+  added from the ASCE 7 chapter 2 list, which is the same in 7-16 and 7-22,
+  and combinations generated for either edition, strength or allowable
+  stress, from `oa_model::asce7`: only the cases that exist take part, a
+  combination that needs a missing load is dropped, wind and earthquake
+  cases each get their own combinations, and ones the model already has are
+  skipped.
 - Static analysis of every combination through `oa-core`, with the deformed
   shape drawn for a chosen combination and auto-scaled to 5% of the model
   extent. Results are dropped on any edit so a stale shape cannot be shown.

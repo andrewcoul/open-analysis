@@ -3,7 +3,8 @@
 //! inputs survive re-renders of the overlay.
 use crate::document::{Document, unused_name};
 use crate::text::parse_num;
-use gpui_kit::component::dialog::DialogButtonProps;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::dialog::{Cancel, Confirm, DialogFooter};
 use gpui_kit::component::form::{Field, Form};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::notification::Notification;
@@ -12,9 +13,10 @@ use gpui_kit::component::{IndexPath, Sizable as _, WindowExt as _};
 use gpui_kit::*;
 use oa_core::units::Length;
 use oa_core::units::*;
+use oa_model::asce7::{Edition, Method};
 use oa_model::{
-    Axes, Command, EntityId, EntityKind, Frame, Library, LoadCase, Material, MemberLoad, Model,
-    NodalLoad, Node, Section,
+    Axes, Command, EntityId, EntityKind, Frame, Library, LoadCase, LoadType, Material, MemberLoad,
+    Model, NodalLoad, Node, Section,
 };
 
 type Choice = Entity<SelectState<SearchableVec<SharedString>>>;
@@ -114,6 +116,8 @@ fn apply(document: &Entity<Document>, command: Command, window: &mut Window, cx:
 
 /// Opens a dialog whose confirm button, labelled `ok`, runs `on_ok`; Enter
 /// in any field does the same. The dialog closes when `on_ok` returns true.
+/// The footer is built here because the kit's `Dialog` draws none on its
+/// own: only `AlertDialog` turns button props into buttons.
 fn open<F>(
     title: &'static str,
     ok: &'static str,
@@ -133,7 +137,17 @@ fn open<F>(
             .title(title)
             .w(px(420.))
             .child(inputs.form())
-            .button_props(DialogButtonProps::default().ok_text(ok))
+            .footer(
+                DialogFooter::new()
+                    .child(Button::new("cancel").label("Cancel").on_click(
+                        |_, window, cx| window.dispatch_action(Box::new(Cancel), cx),
+                    ))
+                    .child(Button::new("ok").primary().label(ok).on_click(
+                        |_, window, cx| {
+                            window.dispatch_action(Box::new(Confirm { secondary: false }), cx)
+                        },
+                    )),
+            )
             .on_ok(move |_, window, cx| on_ok(&inputs_for_ok, window, cx))
     });
 }
@@ -376,6 +390,124 @@ pub fn add_custom_section(document: Entity<Document>, window: &mut Window, cx: &
                 window,
                 cx,
             )
+        },
+    );
+}
+
+/// Adds a load case of one of the nominal loads of ASCE 7 chapter 2 (the
+/// list is the same in 7-16 and 7-22), named after the load. The first dead
+/// case in a model gets the self weight, acting down Z.
+pub fn add_asce_load_case(document: Entity<Document>, window: &mut Window, cx: &mut App) {
+    let types: Vec<LoadType> = LoadType::ALL
+        .into_iter()
+        .filter(|t| *t != LoadType::Other)
+        .collect();
+    let options = types
+        .iter()
+        .map(|t| crate::loads::type_label(*t).into())
+        .collect();
+    let inputs = Inputs::new(window, cx, &[]).with_choice("Load", options, Some(0), window, cx);
+    open(
+        "Add ASCE 7 load case",
+        "Add load case",
+        inputs,
+        window,
+        cx,
+        move |inputs, window, cx| {
+            let Some(ix) = inputs.choice("Load", cx) else {
+                notify_error(window, cx, "Choose a load");
+                return false;
+            };
+            let load_type = types[ix];
+            let model = document.read(cx).model();
+            let base = load_type.label();
+            let name = std::iter::once(base.to_string())
+                .chain((2..).map(|n| format!("{base} {n}")))
+                .find(|name| model.find::<LoadCase>(name).is_none())
+                .expect("unbounded");
+            let mut load_case = LoadCase::new(name).with_type(load_type);
+            let carries_self_weight = model.load_cases.values().any(|c| c.self_weight != [0.0; 3]);
+            if load_type == LoadType::Dead && !carries_self_weight {
+                load_case.self_weight = [0.0, 0.0, -1.0];
+            }
+            let id = EntityId(model.next_id);
+            apply(
+                &document,
+                Command::AddLoadCase { id, load_case },
+                window,
+                cx,
+            )
+        },
+    );
+}
+
+/// Generates the ASCE 7 combinations the defined load cases can form, for
+/// the chosen edition and method, skipping any the model already has.
+pub fn generate_combinations(document: Entity<Document>, window: &mut Window, cx: &mut App) {
+    if document.read(cx).model().load_cases.is_empty() {
+        notify_error(window, cx, "Define a load case first (Define > Load cases and combinations)");
+        return;
+    }
+    let inputs = Inputs::new(window, cx, &[])
+        .with_choice(
+            "Edition",
+            vec!["ASCE 7-16".into(), "ASCE 7-22".into()],
+            Some(1),
+            window,
+            cx,
+        )
+        .with_choice(
+            "Method",
+            vec!["Strength (LRFD)".into(), "Allowable stress (ASD)".into()],
+            Some(0),
+            window,
+            cx,
+        );
+    open(
+        "Generate load combinations",
+        "Generate",
+        inputs,
+        window,
+        cx,
+        move |inputs, window, cx| {
+            let edition = match inputs.choice("Edition", cx) {
+                Some(0) => Edition::Asce7_16,
+                _ => Edition::Asce7_22,
+            };
+            let method = match inputs.choice("Method", cx) {
+                Some(1) => Method::AllowableStress,
+                _ => Method::Strength,
+            };
+            let commands: Vec<Command> = {
+                let model = document.read(cx).model();
+                oa_model::asce7::generate(model, edition, method)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, combination)| Command::AddCombination {
+                        id: EntityId(model.next_id + i as u64),
+                        combination,
+                    })
+                    .collect()
+            };
+            let count = commands.len();
+            if count == 0 {
+                window.push_notification(
+                    Notification::info(
+                        "No new combinations: every one the defined cases can form already exists",
+                    ),
+                    cx,
+                );
+                return true;
+            }
+            if apply(&document, Command::Batch { commands }, window, cx) {
+                window.push_notification(
+                    Notification::info(format!("Added {count} combinations")),
+                    cx,
+                );
+                true
+            } else {
+                false
+            }
         },
     );
 }
