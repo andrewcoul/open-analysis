@@ -72,3 +72,13 @@ audited with `cargo license` or `cargo deny`. The principal ones are:
 - `rayon` (MIT or Apache-2.0) for parallel combination solves.
 - `pyo3` (MIT or Apache-2.0) and `wasm-bindgen` (MIT or Apache-2.0) for the
   Python and WebAssembly bindings.
+
+## Switzer
+
+The desktop GUI (`crates/oa-gui`) embeds the Regular, Medium, and Semibold
+weights of [Switzer](https://www.fontshare.com/fonts/switzer) by Indian Type
+Foundry, from `crates/oa-gui/assets/fonts/`, so the interface looks the same
+whether or not the font is installed. Switzer is distributed by Fontshare
+under the Fontshare Free Font License, which permits use in desktop
+applications; the font files are not modified and are not offered for
+download on their own.

@@ -40,6 +40,8 @@ actions!(
         ToggleUpAxis,
         ToggleDeformedShape,
         RunStaticAnalysis,
+        NextCombination,
+        PreviousCombination,
         SelectTool,
         NodeTool,
         FrameTool,

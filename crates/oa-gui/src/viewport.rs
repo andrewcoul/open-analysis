@@ -8,12 +8,8 @@
 use crate::actions::*;
 use crate::camera::{Camera, UpAxis, ViewPreset};
 use crate::document::Document;
-use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonGroup};
-use gpui_kit::component::menu::DropdownMenu as _;
-use gpui_kit::component::{
-    ActiveTheme as _, Icon, Selectable as _, Sizable as _, Theme, h_flex, v_flex,
-};
+use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, Theme, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use oa_model::EntityId;
@@ -137,6 +133,10 @@ impl Viewport {
     }
     pub fn picked(&self) -> &[EntityId] {
         &self.picked
+    }
+    /// Focus here puts the single-key bindings in reach.
+    pub fn focus_handle(&self) -> &FocusHandle {
+        &self.focus_handle
     }
     pub fn set_options(&mut self, options: DisplayOptions, cx: &mut Context<Self>) {
         self.options = options;
@@ -862,20 +862,19 @@ fn paint_scene(
 // MARK: Overlays
 
 impl Viewport {
-    /// View presets, fit, labels, and the up axis, in the top-right corner.
-    fn view_controls(&self, cx: &App) -> AnyElement {
+    /// View presets, fit, and the up axis in the top-right corner, each
+    /// labelled with its key. Text only; the key map is the affordance.
+    fn view_controls(&self) -> AnyElement {
         let preset = self.preset;
         let up = self.camera.up;
-        let options = self.options;
-        let solved = self.document.read(cx).analysis().is_some();
         let presets = [
-            ("view-3d", "3D", "Look from above and to the side", ViewPreset::ThreeD),
-            ("view-plan", "Plan", "Look straight down", ViewPreset::Plan),
-            ("view-x", "Elev X", "Elevation with X across the screen", ViewPreset::ElevationX),
-            ("view-y", "Elev Y", "Elevation with Y across the screen", ViewPreset::ElevationY),
+            ("view-3d", "3D  1", "Look from above and to the side", ViewPreset::ThreeD),
+            ("view-plan", "Plan  2", "Look straight down", ViewPreset::Plan),
+            ("view-x", "Elev X  3", "Elevation with X across the screen", ViewPreset::ElevationX),
+            ("view-y", "Elev Y  4", "Elevation with Y across the screen", ViewPreset::ElevationY),
         ];
         let camera = ButtonGroup::new("view-presets")
-            .xsmall()
+            .small()
             .outline()
             .children(presets.iter().map(|(id, label, description, which)| {
                 let action = preset_action(*which);
@@ -892,50 +891,25 @@ impl Viewport {
                 }
             });
         let fit = Button::new("fit")
-            .xsmall()
+            .small()
             .outline()
-            .icon(Icon::new(Lucide::Maximize))
+            .label("Fit  Z")
             .tooltip_with_action("Fit the whole model in the view", &ZoomExtents, None)
             .on_click(|_, window, cx| window.dispatch_action(Box::new(ZoomExtents), cx));
-        let labels = Button::new("labels")
-            .xsmall()
-            .outline()
-            .icon(Icon::new(Lucide::Tag))
-            .dropdown_caret(true)
-            .tooltip("Labels and overlays")
-            .dropdown_menu(move |menu, _, _| {
-                menu.menu_with_check(
-                    "Node labels",
-                    options.node_labels,
-                    Box::new(ToggleNodeLabels),
-                )
-                .menu_with_check(
-                    "Frame labels",
-                    options.frame_labels,
-                    Box::new(ToggleFrameLabels),
-                )
-                .separator()
-                .menu_with_check_and_disabled(
-                    "Deformed shape",
-                    options.deformed,
-                    Box::new(ToggleDeformedShape),
-                    !solved,
-                )
-            });
         let up_axis = ButtonGroup::new("up-axis")
-            .xsmall()
+            .small()
             .outline()
             .child(
                 Button::new("up-y")
                     .label("Y up")
                     .selected(up == UpAxis::Y)
-                    .tooltip("Draw Y as the vertical axis"),
+                    .tooltip_with_action("Draw Y as the vertical axis", &ToggleUpAxis, None),
             )
             .child(
                 Button::new("up-z")
                     .label("Z up")
                     .selected(up == UpAxis::Z)
-                    .tooltip("Draw Z as the vertical axis"),
+                    .tooltip_with_action("Draw Z as the vertical axis", &ToggleUpAxis, None),
             )
             .on_click(move |clicks, window, cx| {
                 let want = if clicks.first() == Some(&0) {
@@ -949,65 +923,68 @@ impl Viewport {
             });
         h_flex()
             .absolute()
-            .top_2()
-            .right_2()
-            .gap_1()
+            .top_4()
+            .right_4()
+            .gap_2()
             .occlude()
             .child(camera)
             .child(fit)
-            .child(labels)
             .child(up_axis)
             .into_any_element()
     }
 }
 
-/// Three ways to start and the order the menus read in, shown over an empty model.
+/// Three ways to start and the order the menus read in, each with its key,
+/// shown over an empty model. Text only, on the 8px grid.
 fn start_card(theme: &Theme) -> AnyElement {
-    let (fg, muted, border, surface, primary, soft, panel) = (
+    let (fg, muted, border, surface, primary, panel) = (
         theme.foreground,
         theme.muted_foreground,
         theme.border,
-        theme.popover,
+        theme.background,
         theme.primary,
-        theme.list_active,
         theme.sidebar,
     );
-    let tile = move |id: &'static str,
-                     icon: Lucide,
-                     title: &'static str,
-                     detail: &'static str,
-                     featured: bool,
-                     action: Box<dyn Action>| {
+    let key = move |text: &'static str, color: Hsla| {
         div()
+            .text_xs()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(color)
+            .whitespace_nowrap()
+            .child(text)
+    };
+    let choice = move |id: &'static str,
+                       label: &'static str,
+                       shortcut: &'static str,
+                       featured: bool,
+                       action: Box<dyn Action>| {
+        h_flex()
             .id(id)
-            .flex()
-            .flex_col()
-            .gap_2()
-            .flex_1()
-            .p_3()
-            .rounded_lg()
+            .h(px(40.))
+            .px_4()
+            .items_center()
+            .justify_between()
+            .rounded(px(8.))
             .border_1()
             .border_color(if featured { primary } else { border })
-            .bg(if featured { soft } else { surface })
-            .text_color(if featured { primary } else { fg })
+            .bg(surface)
+            .text_sm()
+            .text_color(fg)
             .cursor_pointer()
-            .hover(|s| s.border_color(primary))
+            .hover(move |s| s.border_color(primary))
             .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
-            .child(Icon::new(icon).size(px(24.)))
-            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(title))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(if featured { primary } else { muted })
-                    .child(detail),
-            )
+            .child(label)
+            .child(key(shortcut, if featured { primary } else { muted }))
     };
-    let step = move |n: &'static str, what: &'static str| {
-        v_flex()
-            .flex_1()
-            .gap_0p5()
-            .child(div().text_xs().text_color(primary).child(n))
-            .child(div().text_xs().text_color(fg).child(what))
+    let step = move |what: &'static str, keys: &'static str| {
+        h_flex()
+            .h(px(24.))
+            .items_center()
+            .justify_between()
+            .text_sm()
+            .text_color(fg)
+            .child(what)
+            .child(key(keys, muted))
     };
     v_flex()
         .absolute()
@@ -1018,52 +995,49 @@ fn start_card(theme: &Theme) -> AnyElement {
             v_flex()
                 .id("start-card")
                 .occlude()
-                .w(px(560.))
-                .gap_5()
-                .p_6()
-                .rounded_lg()
+                .w(px(480.))
+                .gap_6()
+                .p_8()
+                .rounded(px(8.))
                 .border_1()
                 .border_color(border)
                 .bg(panel)
                 .child(
                     v_flex()
-                        .gap_1()
+                        .gap_2()
                         .child(
                             div()
-                                .text_2xl()
-                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_size(px(20.))
+                                .line_height(px(24.))
+                                .font_weight(FontWeight::MEDIUM)
                                 .text_color(fg)
                                 .child("Start a model"),
                         )
                         .child(div().text_sm().text_color(muted).child(
-                            "Three ways in. You can always change your mind: every step is undoable.",
+                            "Every step is undoable. The menus read left to right in the order a model is built.",
                         )),
                 )
                 .child(
-                    h_flex()
+                    v_flex()
                         .gap_2()
-                        .items_stretch()
-                        .child(tile(
+                        .child(choice(
                             "start-example",
-                            Lucide::Building2,
-                            "Example frame",
-                            "Two storeys, loaded and ready to run",
+                            "Example frame · two storeys, loaded",
+                            "Ctrl+Shift+N",
                             true,
                             Box::new(NewExampleModel),
                         ))
-                        .child(tile(
+                        .child(choice(
                             "start-node",
-                            Lucide::CircleDot,
-                            "Node tool",
-                            "Click in the view to place nodes",
+                            "Place nodes by clicking in the view",
+                            "N",
                             false,
                             Box::new(NodeTool),
                         ))
-                        .child(tile(
+                        .child(choice(
                             "start-open",
-                            Lucide::FolderOpen,
-                            "Open file…",
-                            "A saved .oa.json model",
+                            "Open a saved model",
+                            "Ctrl+O",
                             false,
                             Box::new(OpenModel),
                         )),
@@ -1074,25 +1048,10 @@ fn start_card(theme: &Theme) -> AnyElement {
                         .pt_4()
                         .border_t_1()
                         .border_color(border)
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(muted)
-                                .child("THE MENUS READ LEFT TO RIGHT IN THIS ORDER"),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_start()
-                                .child(step("1 Define", "A material and a section"))
-                                .child(step("2 Draw", "Nodes, then frames and shells between them"))
-                                .child(step("3 Assign", "A load case, then loads on the selection"))
-                                .child(step("4 Analyze", "Run, then show the deformed shape")),
-                        )
-                        .child(div().text_xs().text_color(muted).child(
-                            "A greyed menu item needs something first; Ctrl+K lists every command with the reason. Ctrl+B opens the model browser, Ctrl+E the properties of the selection.",
-                        )),
+                        .child(step("1  Define a material and a section", "Ctrl+M · Ctrl+T"))
+                        .child(step("2  Draw nodes, then frames and shells", "N · F · S"))
+                        .child(step("3  Assign a load case and loads", "Ctrl+L · L · U"))
+                        .child(step("4  Run and show the deformed shape", "Ctrl+R · Shift+D")),
                 ),
         )
         .into_any_element()
@@ -1115,7 +1074,7 @@ impl Render for Viewport {
         let hint_color = theme.muted_foreground;
         let empty = self.document.read(cx).model().nodes.is_empty();
         let card = empty.then(|| start_card(theme));
-        let controls = self.view_controls(cx);
+        let controls = self.view_controls();
         let style = window.text_style();
         let view = cx.entity().downgrade();
         let drawing = self.tool != Tool::Select;
@@ -1127,6 +1086,7 @@ impl Render for Viewport {
             .child(
                 div()
                     .id("viewport")
+                    .key_context("Viewport")
                     .track_focus(&self.focus_handle)
                     .size_full()
                     .when(drawing, |this| this.cursor_crosshair())
@@ -1161,15 +1121,15 @@ impl Render for Viewport {
             .child(
                 h_flex()
                     .absolute()
-                    .bottom_2()
-                    .right_3()
-                    .gap_3()
+                    .bottom_4()
+                    .right_4()
+                    .gap_4()
                     .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
                     .text_color(hint_color)
                     .child("Right-drag orbit")
                     .child("Middle-drag pan")
-                    .child("Wheel zoom")
-                    .child("Shift+click adds"),
+                    .child("Wheel zoom"),
             )
     }
 }

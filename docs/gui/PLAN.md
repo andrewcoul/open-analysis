@@ -46,11 +46,24 @@ are disabled through the shared `Gates`. The model tree (Ctrl+B) and the
 property editor (Ctrl+E, or a double-click on an entity in the view or the
 tree) open as dialogs over the view. The status bar says whether the results
 are current, out of date after an edit, or absent. A prompt strip above the
-view says what the current tool wants next. View presets, fit, labels, and
-the up axis sit in the top-right corner of the view; an empty model shows a
-start card in the view. The few Lucide icons the view uses are embedded on
-top of the kit's default set in `main.rs`, which also gives both kit themes
-an indigo accent.
+view says what the current tool wants next. View presets, fit, and the up
+axis sit in the top-right corner of the view as text buttons labelled with
+their keys; an empty model shows a start card in the view.
+
+The interface is keyboard first. Single letters and digits are bound in the
+`Viewport` key context, so they act while the view has focus and never fight
+a text field: V N F S for the tools, L U G D for loads, groups, and
+diaphragms, 1 2 3 4 and Z for the views and fit, Shift+N/F/Z/D for labels,
+up axis, and deformed shape. Everything else holds Ctrl (Ctrl+E properties,
+Ctrl+B model browser, Ctrl+K search, Ctrl+M material, Ctrl+T section, Ctrl+L
+load case, Ctrl+R run, Ctrl+] and Ctrl+[ to step combinations). Every menu
+item shows its key. The visual system is set in `main.rs`: Switzer (three
+weights embedded from `assets/fonts`), 14px base with three text styles
+(20 Medium titles, 14 Regular body, 12 Medium labels), an 8px radius on
+every control, sizes on an 8px grid, indigo as the accent of both kit
+themes, and no icons in the chrome. The kit's title bar is 34px, the one
+size off the grid. The Paper file "open-analysis GUI", page "v2 · Menus and
+keybinds", holds the design.
 
 Drawing is by tool. Node places a node where you click, on the ground plane
 snapped to 0.25 m (or in the view plane through the centre when the ground
@@ -59,9 +72,7 @@ from J; Shell takes four nodes in order. With nodes already selected, the
 Frame and Shell buttons draw on them at once. Esc drops the shape being
 drawn, then the tool, then the selection. The viewport reports finished
 shapes as `ViewportEvent`s and the workspace turns them into commands, so
-no edit bypasses the command interface. The Paper file "open-analysis GUI"
-(2026-09-15) holds the design this grew from; it still shows the earlier
-ribbon and docked panels, which were dropped in favour of menus and dialogs.
+no edit bypasses the command interface.
 
 `Document` is one GPUI entity that every panel observes. Panels never hold
 model state of their own; they read the document in `render` and mutate it

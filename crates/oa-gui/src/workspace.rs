@@ -80,6 +80,9 @@ impl Workspace {
             this.document.read(cx).title()
         ));
         this.refresh_menus(cx);
+        // The single-key bindings live on the view, so it starts focused.
+        let focus = this.viewport.read(cx).focus_handle().clone();
+        window.focus(&focus, cx);
         this
     }
 
@@ -162,6 +165,7 @@ impl Workspace {
                 name: "View".into(),
                 items: vec![
                     MenuItem::action("Model browser…", ShowModelBrowser),
+                    MenuItem::action("Search commands…", OpenCommandPalette),
                     MenuItem::separator(),
                     MenuItem::action("3D", ViewThreeD).checked(preset == Some(ViewPreset::ThreeD)),
                     MenuItem::action("Plan", ViewPlan).checked(preset == Some(ViewPreset::Plan)),
@@ -236,6 +240,10 @@ impl Workspace {
                 items: vec![
                     MenuItem::action("Run static analysis", RunStaticAnalysis),
                     MenuItem::separator(),
+                    MenuItem::action("Next combination", NextCombination)
+                        .disabled(combinations.len() < 2),
+                    MenuItem::action("Previous combination", PreviousCombination)
+                        .disabled(combinations.len() < 2),
                     MenuItem::submenu(Menu {
                         name: "Show combination".into(),
                         disabled: combinations.is_empty(),
@@ -246,10 +254,7 @@ impl Workspace {
             },
             Menu {
                 name: "Help".into(),
-                items: vec![
-                    MenuItem::action("Search commands…", OpenCommandPalette),
-                    MenuItem::action("Guide and shortcuts…", About),
-                ],
+                items: vec![MenuItem::action("Guide and keys…", About)],
                 disabled: false,
             },
         ]
@@ -733,6 +738,14 @@ impl Workspace {
         };
         let mut analyze = vec![item("Run static analysis", Box::new(RunStaticAnalysis), None)];
         if let Some(analysis) = document.analysis() {
+            let several = (analysis.results.combinations.len() < 2)
+                .then_some("only one combination");
+            analyze.push(item("Next combination", Box::new(NextCombination), several));
+            analyze.push(item(
+                "Previous combination",
+                Box::new(PreviousCombination),
+                several,
+            ));
             for c in &analysis.results.combinations {
                 analyze.push(item(
                     &format!("Show combination: {}", c.combination),
@@ -949,6 +962,18 @@ impl Workspace {
             Err(e) => self.error(format!("Analysis failed: {e}"), window, cx),
         }
     }
+    /// Shows the next (+1) or previous (-1) combination, wrapping around.
+    pub fn step_combination(&mut self, step: isize, cx: &mut Context<Self>) {
+        let next = self.document.read(cx).analysis().and_then(|a| {
+            let count = a.results.combinations.len() as isize;
+            (count > 0).then(|| ((a.combination as isize + step).rem_euclid(count)) as usize)
+        });
+        if let Some(ix) = next {
+            self.document
+                .update(cx, |document, cx| document.set_combination(ix, cx));
+            self.toggle_option(|o| o.deformed = true, cx);
+        }
+    }
     pub fn show_combination(&mut self, name: &str, cx: &mut Context<Self>) {
         let ix = self.document.read(cx).analysis().and_then(|a| {
             a.results
@@ -986,24 +1011,24 @@ impl Workspace {
                     v_flex()
                         .gap_1()
                         .text_sm()
-                        .child("The ribbon reads left to right in the order a model is built: define a material and section, draw nodes and frames, assign loads, run. The strip above the view says what the current tool wants next. Select things in the view or the model tree and edit them in the panel on the right.")
+                        .child("The menus read left to right in the order a model is built: define a material and section, draw nodes and frames, assign loads, run. Every menu item shows its key. Single letters and digits work while the view has focus; everything else holds Ctrl. The strip above the view says what the current tool wants next.")
                         .child("Models are SI: metres, newtons, pascals, kilograms.")
                         .child(heading("Mouse"))
-                        .child(row("Click", "Select; shift+click adds to the selection"))
+                        .child(row("Click", "Select; shift+click adds; double-click edits"))
                         .child(row("Right-drag", "Orbit"))
                         .child(row("Middle-drag", "Pan (or shift + right-drag)"))
                         .child(row("Wheel", "Zoom about the pointer"))
-                        .child(heading("Keyboard"))
-                        .child(row("Ctrl+N / Ctrl+O", "New model / Open"))
-                        .child(row("Ctrl+S / Ctrl+Shift+S", "Save / Save as"))
-                        .child(row("Ctrl+Z / Ctrl+Y", "Undo / Redo"))
-                        .child(row("Ctrl+A", "Select all"))
+                        .child(heading("Keys in the view"))
+                        .child(row("V N F S", "Select, Node, Frame, Shell tools"))
+                        .child(row("L U G D", "Nodal load, uniform load, group, diaphragm"))
+                        .child(row("1 2 3 4 · Z", "3D, plan, elevation X, elevation Y · fit"))
+                        .child(row("Shift+N / F / Z / D", "Node labels, frame labels, up axis, deformed shape"))
+                        .child(heading("Keys anywhere"))
+                        .child(row("Ctrl+E · Ctrl+B · Ctrl+K", "Properties · model browser · search commands"))
+                        .child(row("Ctrl+M · Ctrl+T", "Material · section (add Shift for a custom one)"))
+                        .child(row("Ctrl+L · Ctrl+Shift+L", "Load case · combination"))
+                        .child(row("Ctrl+R · Ctrl+] · Ctrl+[", "Run · next · previous combination"))
                         .child(row("Esc", "Stop drawing, then back to Select, then deselect"))
-                        .child(row("Delete", "Delete the selection"))
-                        .child(row("Ctrl+K", "Search every command"))
-                        .child(row("Ctrl+1 to Ctrl+4", "3D, plan, elevation X, elevation Y"))
-                        .child(row("F2", "Zoom extents"))
-                        .child(row("F5", "Run static analysis"))
                         .child(heading("Drawing"))
                         .child("Node places a node where you click, on the ground plane. Frame joins node I to node J and carries on from J. Shell takes four nodes in order around it. With nodes already selected, Frame and Shell draw on them at once. Loads go on the selected nodes or frames."),
                 )
@@ -1059,8 +1084,8 @@ impl Workspace {
         let (warning, muted, success) = (theme.warning, theme.muted_foreground, theme.success);
         let (results, results_color) = match document.results_state() {
             ResultsState::Current => ("Results current", success),
-            ResultsState::Stale => ("Results out of date", warning),
-            ResultsState::None => ("No results yet", muted),
+            ResultsState::Stale => ("Results out of date · Ctrl+R", warning),
+            ResultsState::None => ("No results yet · Ctrl+R", muted),
         };
         let problem_text = match problems.len() {
             0 => "Model is valid".to_string(),

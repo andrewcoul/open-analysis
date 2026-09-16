@@ -20,17 +20,18 @@ use gpui_kit::component::{Root, TitleBar, WindowExt as _};
 use gpui_kit::*;
 use workspace::Workspace;
 
-// The kit embeds only its own component icons; the viewport's Lucide icons
-// are selected here so the binary carries just those.
-gpui_kit::assets::icon_assets!(
-    ViewIcons,
-    [Building2, CircleDot, FolderOpen, Maximize, Tag]
-);
+/// Switzer, embedded so the interface looks the same without the font installed.
+const FONTS: [&[u8]; 3] = [
+    include_bytes!("../assets/fonts/Switzer-Regular.otf"),
+    include_bytes!("../assets/fonts/Switzer-Medium.otf"),
+    include_bytes!("../assets/fonts/Switzer-Semibold.otf"),
+];
 
-/// Indigo as the accent of both the light and dark themes, in place of the
-/// kit's neutral primary. The configs are changed rather than the live colours
-/// so a theme switch keeps the accent.
-fn indigo_accent(cx: &mut App) {
+/// The visual system on top of the kit's themes: Switzer at 14px, an 8px
+/// radius everywhere, and indigo as the accent of both the light and dark
+/// themes. The configs are changed rather than the live values so a theme
+/// switch keeps them.
+fn apply_visual_system(cx: &mut App) {
     use gpui_kit::component::{Theme, ThemeConfig};
     let mode = Theme::global(cx).mode;
     let configs = {
@@ -41,6 +42,12 @@ fn indigo_accent(cx: &mut App) {
         let dark = config.mode.is_dark();
         let mut config: ThemeConfig = (*config).clone();
         let some = |name: &str| Some(SharedString::from(name.to_string()));
+        config.font_family = some("Switzer");
+        config.font_size = Some(14.0);
+        config.mono_font_family = some("Switzer");
+        config.mono_font_size = Some(12.0);
+        config.radius = Some(8);
+        config.radius_lg = Some(8);
         let (primary, hover, active, soft, selection) = if dark {
             ("indigo-500", "indigo-400", "indigo-600", "indigo-900", "indigo-800")
         } else {
@@ -67,46 +74,63 @@ fn indigo_accent(cx: &mut App) {
     Theme::change(mode, None, cx);
 }
 
-/// The view icons on top of the kit's default assets.
-struct AppAssets;
-
-impl AssetSource for AppAssets {
-    fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
-        if let Some(bytes) = ViewIcons.load(path)? {
-            return Ok(Some(bytes));
-        }
-        gpui_kit::assets::Assets.load(path)
-    }
-    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut paths = gpui_kit::assets::Assets.list(path)?;
-        paths.extend(ViewIcons.list(path)?);
-        paths.sort();
-        paths.dedup();
-        Ok(paths)
-    }
-}
-
+/// The key map, in menu order. Single letters and digits are bound in the
+/// `Viewport` key context, so they act only while the view has focus and
+/// never fight a text field; everything else holds Ctrl and works anywhere.
 fn key_bindings() -> Vec<KeyBinding> {
+    const VIEW: Option<&str> = Some("Viewport");
     vec![
+        // File
         KeyBinding::new("ctrl-n", NewModel, None),
+        KeyBinding::new("ctrl-shift-n", NewExampleModel, None),
         KeyBinding::new("ctrl-o", OpenModel, None),
         KeyBinding::new("ctrl-s", SaveModel, None),
         KeyBinding::new("ctrl-shift-s", SaveModelAs, None),
+        KeyBinding::new("ctrl-q", Quit, None),
+        // Edit
         KeyBinding::new("ctrl-z", Undo, None),
         KeyBinding::new("ctrl-y", Redo, None),
         KeyBinding::new("ctrl-shift-z", Redo, None),
         KeyBinding::new("ctrl-a", SelectAll, None),
         KeyBinding::new("escape", Cancel, None),
         KeyBinding::new("delete", DeleteSelected, None),
-        KeyBinding::new("ctrl-k", OpenCommandPalette, None),
         KeyBinding::new("ctrl-e", ShowProperties, None),
+        // View
         KeyBinding::new("ctrl-b", ShowModelBrowser, None),
-        KeyBinding::new("f5", RunStaticAnalysis, None),
-        KeyBinding::new("f2", ZoomExtents, None),
-        KeyBinding::new("ctrl-1", ViewThreeD, None),
-        KeyBinding::new("ctrl-2", ViewPlan, None),
-        KeyBinding::new("ctrl-3", ViewElevationX, None),
-        KeyBinding::new("ctrl-4", ViewElevationY, None),
+        KeyBinding::new("ctrl-k", OpenCommandPalette, None),
+        KeyBinding::new("1", ViewThreeD, VIEW),
+        KeyBinding::new("2", ViewPlan, VIEW),
+        KeyBinding::new("3", ViewElevationX, VIEW),
+        KeyBinding::new("4", ViewElevationY, VIEW),
+        KeyBinding::new("z", ZoomExtents, VIEW),
+        KeyBinding::new("shift-n", ToggleNodeLabels, VIEW),
+        KeyBinding::new("shift-f", ToggleFrameLabels, VIEW),
+        KeyBinding::new("shift-z", ToggleUpAxis, VIEW),
+        KeyBinding::new("shift-d", ToggleDeformedShape, VIEW),
+        // Define
+        KeyBinding::new("ctrl-m", AddMaterialFromLibrary, None),
+        KeyBinding::new("ctrl-shift-m", AddCustomMaterial, None),
+        KeyBinding::new("ctrl-t", AddSectionFromLibrary, None),
+        KeyBinding::new("ctrl-shift-t", AddCustomSection, None),
+        KeyBinding::new("ctrl-l", AddLoadCase, None),
+        KeyBinding::new("ctrl-shift-l", AddCombination, None),
+        // Draw
+        KeyBinding::new("v", SelectTool, VIEW),
+        KeyBinding::new("n", NodeTool, VIEW),
+        KeyBinding::new("f", FrameTool, VIEW),
+        KeyBinding::new("s", ShellTool, VIEW),
+        KeyBinding::new("shift-a", AddNode, VIEW),
+        // Assign
+        KeyBinding::new("l", AddNodalLoad, VIEW),
+        KeyBinding::new("u", AddDistributedLoad, VIEW),
+        KeyBinding::new("g", AddGroupFromSelection, VIEW),
+        KeyBinding::new("d", AddDiaphragmFromSelection, VIEW),
+        // Analyze
+        KeyBinding::new("ctrl-r", RunStaticAnalysis, None),
+        KeyBinding::new("ctrl-]", NextCombination, None),
+        KeyBinding::new("ctrl-[", PreviousCombination, None),
+        // Help
+        KeyBinding::new("f1", About, None),
     ]
 }
 
@@ -209,6 +233,9 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
     on!(ToggleUpAxis, |ws, _, _, cx| ws.toggle_up_axis(cx));
     on!(RunStaticAnalysis, |ws, _, window, cx| ws
         .run_static(window, cx));
+    on!(NextCombination, |ws, _, _, cx| ws.step_combination(1, cx));
+    on!(PreviousCombination, |ws, _, _, cx| ws
+        .step_combination(-1, cx));
     on!(ShowCombination, |ws, action: &ShowCombination, _, cx| ws
         .show_combination(&action.0, cx));
     on!(SelectTool, |ws, _, _, cx| ws.set_tool(viewport::Tool::Select, cx));
@@ -228,10 +255,13 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
 
 fn main() {
     gpui_kit::application()
-        .with_assets(AppAssets)
+        .with_assets(gpui_kit::assets::Assets)
         .run(|cx| {
+            cx.text_system()
+                .add_fonts(FONTS.iter().map(|f| std::borrow::Cow::Borrowed(*f)).collect())
+                .expect("the embedded fonts load");
             gpui_kit::init(cx);
-            indigo_accent(cx);
+            apply_visual_system(cx);
             cx.bind_keys(key_bindings());
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {

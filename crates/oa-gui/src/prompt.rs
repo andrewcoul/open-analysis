@@ -111,8 +111,6 @@ struct Prompt {
     title: String,
     text: String,
     aside: Option<String>,
-    /// Which pick the draw tool is waiting for.
-    step: Option<usize>,
     /// A tool other than Select is in use.
     active: bool,
 }
@@ -123,7 +121,6 @@ fn prompt(state: &PromptState) -> Prompt {
             title: "Select".into(),
             text: "The model is empty. Pick a start in the view, or choose Draw > Node tool and click to place nodes.".into(),
             aside: None,
-            step: None,
             active: false,
         },
         Tool::Select if !state.has_selection => Prompt {
@@ -135,7 +132,6 @@ fn prompt(state: &PromptState) -> Prompt {
                     format!("Showing deformed shape for {}", analysis.combinations[shown])
                 })
             }),
-            step: None,
             active: false,
         },
         Tool::Select => {
@@ -162,7 +158,6 @@ fn prompt(state: &PromptState) -> Prompt {
                     )
                 },
                 aside: Some("Esc clears the selection".into()),
-                step: None,
                 active: false,
             }
         }
@@ -174,7 +169,6 @@ fn prompt(state: &PromptState) -> Prompt {
                 "Click empty space to place a node on the ground plane, snapped to 0.25 m. Click a node to select it. Esc returns to Select.".into()
             },
             aside: None,
-            step: None,
             active: true,
         },
         Tool::Frame => Prompt {
@@ -189,7 +183,6 @@ fn prompt(state: &PromptState) -> Prompt {
                 .defaults
                 .as_ref()
                 .map(|(material, section)| format!("Section {section} · Material {material}")),
-            step: Some(state.picked.len().min(1) + 1),
             active: true,
         },
         Tool::Shell => Prompt {
@@ -202,7 +195,6 @@ fn prompt(state: &PromptState) -> Prompt {
                 .defaults
                 .as_ref()
                 .map(|(material, _)| format!("Material {material}")),
-            step: Some((state.picked.len() + 1).min(4)),
             active: true,
         },
     }
@@ -221,17 +213,13 @@ pub fn render_prompt(state: &PromptState, cx: &App) -> impl IntoElement {
         )
     } else {
         (
-            theme.sidebar,
+            theme.background,
             theme.foreground,
             theme.border,
             theme.muted_foreground,
         )
     };
-    let (primary, on_primary, muted) = (
-        theme.primary,
-        theme.primary_foreground,
-        theme.muted_foreground,
-    );
+    let muted = theme.muted_foreground;
     h_flex()
         .w_full()
         .h(px(32.))
@@ -248,33 +236,14 @@ pub fn render_prompt(state: &PromptState, cx: &App) -> impl IntoElement {
                 .gap_2()
                 .items_center()
                 .min_w_0()
-                .when_some(p.step, |this, step| {
-                    this.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(18.))
-                            .rounded_full()
-                            .bg(primary)
-                            .text_color(on_primary)
-                            .text_xs()
-                            .child(step.to_string()),
-                    )
-                })
-                .child(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(fg)
-                        .whitespace_nowrap()
-                        .child(p.title),
-                )
+                .child(div().text_color(fg).whitespace_nowrap().child(p.title))
                 .child(div().text_color(body).truncate().child(p.text)),
         )
         .when_some(p.aside, |this, aside| {
             this.child(
                 div()
                     .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
                     .text_color(if p.active { fg } else { muted })
                     .whitespace_nowrap()
                     .child(aside),
