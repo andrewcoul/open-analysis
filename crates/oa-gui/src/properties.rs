@@ -1301,10 +1301,9 @@ fn remove_button(
 impl Render for PropertyEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (bg, fg, border, muted) = (
+        let (bg, fg, muted) = (
             theme.sidebar,
             theme.sidebar_foreground,
-            theme.sidebar_border,
             theme.muted_foreground,
         );
         let title: SharedString = match &self.shown {
@@ -1333,8 +1332,6 @@ impl Render for PropertyEditor {
             .size_full()
             .bg(bg)
             .text_color(fg)
-            .border_l_1()
-            .border_color(border)
             .child(
                 div()
                     .px_3()

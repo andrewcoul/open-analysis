@@ -24,13 +24,55 @@ crates/oa-gui/src/
   actions.rs     the command set: one GPUI action per menu item / shortcut
   document.rs    Editor + path + dirty flag + selection + problems + last analysis
   camera.rs      orthographic orbit camera, pure arithmetic with tests
-  viewport.rs    3D canvas: nodes, frames, shells, labels, deformed shape, picking
-  explorer.rs    model tree by entity kind, click to select
-  properties.rs  property panel: fields per kind, commit through Update commands
-  dialogs.rs     add node, materials and sections (library or custom), loads
-  workspace.rs   window layout, menus, toolbar, status bar, file and edit commands
+  viewport.rs    3D canvas: nodes, frames, shells, labels, deformed shape, picking,
+                 the draw tools, the view controls overlay, and the start card
+  explorer.rs    model tree by entity kind, click to select, double-click to edit;
+                 opens as a dialog from View > Model browser
+  properties.rs  property editor: fields per kind, commit through Update commands;
+                 opens as a dialog from Edit > Properties or a double-click
+  dialogs.rs     add node by coordinates, materials and sections (library or custom), loads
+  prompt.rs      the prompt strip above the view and the selection gates
+  workspace.rs   window layout, menus, command palette, pop-up panels, status bar,
+                 file, edit, and tool commands
   text.rs        number formatting and parsing at the UI boundary
 ```
+
+There is no ribbon and no docked side panel: the window is the menu bar, a
+prompt strip, the 3D view, and a status bar. Every command lives in the menu
+bar, which reads in the order a model is built (File, Edit, View, Define,
+Draw, Assign, Analyze, Help), and in the command palette (Ctrl+K), which
+lists every action with its gate reason. Commands that need something first
+are disabled through the shared `Gates`. The model tree (Ctrl+B) and the
+property editor (Ctrl+E, or a double-click on an entity in the view or the
+tree) open as dialogs over the view. The status bar says whether the results
+are current, out of date after an edit, or absent. A prompt strip above the
+view says what the current tool wants next. View presets, fit, and the up
+axis sit in the top-right corner of the view as text buttons labelled with
+their keys; an empty model shows a start card in the view.
+
+The interface is keyboard first. Single letters and digits are bound in the
+`Viewport` key context, so they act while the view has focus and never fight
+a text field: V N F S for the tools, L U G D for loads, groups, and
+diaphragms, 1 2 3 4 and Z for the views and fit, Shift+N/F/Z/D for labels,
+up axis, and deformed shape. Everything else holds Ctrl (Ctrl+E properties,
+Ctrl+B model browser, Ctrl+K search, Ctrl+M material, Ctrl+T section, Ctrl+L
+load case, Ctrl+R run, Ctrl+] and Ctrl+[ to step combinations). Every menu
+item shows its key. The visual system is set in `main.rs`: Switzer (three
+weights embedded from `assets/fonts`), 14px base with three text styles
+(20 Medium titles, 14 Regular body, 12 Medium labels), an 8px radius on
+every control, sizes on an 8px grid, indigo as the accent of both kit
+themes, and no icons in the chrome. The kit's title bar is 34px, the one
+size off the grid. The Paper file "open-analysis GUI", page "v2 · Menus and
+keybinds", holds the design.
+
+Drawing is by tool. Node places a node where you click, on the ground plane
+snapped to 0.25 m (or in the view plane through the centre when the ground
+is edge-on in an elevation). Frame takes node I then node J and carries on
+from J; Shell takes four nodes in order. With nodes already selected, the
+Frame and Shell buttons draw on them at once. Esc drops the shape being
+drawn, then the tool, then the selection. The viewport reports finished
+shapes as `ViewportEvent`s and the workspace turns them into commands, so
+no edit bypasses the command interface.
 
 `Document` is one GPUI entity that every panel observes. Panels never hold
 model state of their own; they read the document in `render` and mutate it
@@ -38,7 +80,7 @@ only through `Document::apply`, which runs a command, recompiles for
 validation problems, discards results, and notifies observers.
 
 Every user command is a GPUI action registered at application level, so the
-menu bar, toolbar, key bindings, and panel buttons dispatch the same thing.
+menu bar, ribbon, key bindings, and panel buttons dispatch the same thing.
 Actions are routed to `Workspace` methods in `main.rs`.
 
 ## What works
@@ -74,8 +116,8 @@ Actions are routed to `Workspace` methods in `main.rs`.
 
 ## Not yet done
 
-- Drawing by clicking in the view. Frames and shells are created from
-  selected nodes; nodes come from a dialog.
+- Snapping the Node tool to anything but the 0.25 m grid: no snapping to
+  existing nodes, frame ends, or a story level, and no box selection.
 - Grids and stories. There is no story or grid system, which ETABS relies on
   for plan views and level selection.
 - Display units. The model is SI and every field is labelled in SI. The
@@ -101,6 +143,8 @@ Actions are routed to `Workspace` methods in `main.rs`.
   through `Window::dispatch_action` at startup and capturing the result. Click
   selection of a node and of a frame, and the property panel they open, were
   checked with one test click each. Property editing, undo, dialogs, menus,
-  orbit, and file open/save have not been exercised interactively yet and are
-  not covered by automated UI tests. GPUI Kit's `test-support` feature offers
+  orbit, file open/save, the draw tools, and the command palette have not
+  been exercised interactively yet and are not covered by automated UI tests;
+  the 2026-09-15 ribbon rework was verified by build, clippy, the camera
+  unprojection tests, and a PrintWindow capture of the launched window. GPUI Kit's `test-support` feature offers
   headless UI tests and is the intended route.

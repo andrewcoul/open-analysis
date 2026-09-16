@@ -1,5 +1,5 @@
-//! Every command the GUI offers, so menus, toolbar buttons, key bindings, and
-//! panels all dispatch the same actions to the workspace.
+//! Every command the GUI offers, so menus, the command palette, key bindings,
+//! and view overlays all dispatch the same actions to the workspace.
 use gpui_kit::*;
 use serde::Deserialize;
 
@@ -40,6 +40,16 @@ actions!(
         ToggleUpAxis,
         ToggleDeformedShape,
         RunStaticAnalysis,
+        NextCombination,
+        PreviousCombination,
+        SelectTool,
+        NodeTool,
+        FrameTool,
+        ShellTool,
+        Cancel,
+        OpenCommandPalette,
+        ShowProperties,
+        ShowModelBrowser,
         About,
     ]
 );

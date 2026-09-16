@@ -1,25 +1,32 @@
-//! The main window: menu bar, toolbar, model tree, 3D view, property panel,
-//! and status bar. Every command arrives here as an action.
+//! The main window: menu bar, prompt strip, 3D view, and status bar. Every
+//! command lives in the menu bar (and the Ctrl+K palette) and arrives here
+//! as an action; the model tree and the property editor open as dialogs.
+//! Shapes finished with the draw tools arrive as viewport events.
 use crate::actions::*;
 use crate::camera::{UpAxis, ViewPreset};
-use crate::document::{Document, example_frame, read_model, unused_name, write_model};
+use crate::document::{
+    Document, ResultsState, example_frame, read_model, unused_name, write_model,
+};
 use crate::explorer::Explorer;
+use crate::prompt::{AnalysisSummary, Gates, PromptState, render_prompt, selection_summary};
 use crate::properties::PropertyEditor;
-use crate::viewport::Viewport;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use crate::viewport::{Tool, Viewport, ViewportEvent};
+use gpui_kit::component::command::{
+    Command as CommandPalette, CommandGroup, CommandItem, CommandState,
+};
 use gpui_kit::component::menu::AppMenuBar;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, GlobalState, IconName, Root, Selectable as _, Sizable as _,
-    TitleBar, WindowExt as _, h_flex, h_resizable, resizable_panel, v_flex,
+    ActiveTheme as _, Disableable as _, GlobalState, Root, TitleBar, WindowExt as _, h_flex,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use oa_core::units::Length;
 use oa_model::{
     Axis, Combination, Command, Diaphragm, EntityId, EntityKind, Frame, Group, LoadCase, Model,
-    Shell,
+    Node, Shell,
 };
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -30,6 +37,8 @@ pub struct Workspace {
     explorer: Entity<Explorer>,
     properties: Entity<PropertyEditor>,
     menu_bar: Entity<AppMenuBar>,
+    /// The command palette's search state, made on first use.
+    palette: Option<Entity<CommandState>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -53,6 +62,9 @@ impl Workspace {
                 this.refresh_menus(cx);
                 cx.notify();
             }),
+            cx.subscribe_in(&viewport, window, |this, _, event, window, cx| {
+                this.on_viewport_event(event, window, cx)
+            }),
         ];
         let mut this = Self {
             document,
@@ -60,6 +72,7 @@ impl Workspace {
             explorer,
             properties,
             menu_bar,
+            palette: None,
             _subscriptions: subscriptions,
         };
         window.set_window_title(&format!(
@@ -67,6 +80,9 @@ impl Workspace {
             this.document.read(cx).title()
         ));
         this.refresh_menus(cx);
+        // The single-key bindings live on the view, so it starts focused.
+        let focus = this.viewport.read(cx).focus_handle().clone();
+        window.focus(&focus, cx);
         this
     }
 
@@ -92,6 +108,9 @@ impl Workspace {
         let document = self.document.read(cx);
         let viewport = self.viewport.read(cx);
         let options = viewport.options();
+        let preset = viewport.preset();
+        let tool = viewport.tool();
+        let gates = Gates::of(document);
         let combinations: Vec<MenuItem> = document
             .analysis()
             .map(|analysis| {
@@ -136,16 +155,24 @@ impl Workspace {
                     MenuItem::separator(),
                     MenuItem::action("Delete selected", DeleteSelected)
                         .disabled(document.selection().is_empty()),
+                    MenuItem::separator(),
+                    MenuItem::action("Properties…", ShowProperties)
+                        .disabled(document.selection().is_empty()),
                 ],
                 disabled: false,
             },
             Menu {
                 name: "View".into(),
                 items: vec![
-                    MenuItem::action("3D", ViewThreeD),
-                    MenuItem::action("Plan", ViewPlan),
-                    MenuItem::action("Elevation, X across", ViewElevationX),
-                    MenuItem::action("Elevation, Y across", ViewElevationY),
+                    MenuItem::action("Model browser…", ShowModelBrowser),
+                    MenuItem::action("Search commands…", OpenCommandPalette),
+                    MenuItem::separator(),
+                    MenuItem::action("3D", ViewThreeD).checked(preset == Some(ViewPreset::ThreeD)),
+                    MenuItem::action("Plan", ViewPlan).checked(preset == Some(ViewPreset::Plan)),
+                    MenuItem::action("Elevation, X across", ViewElevationX)
+                        .checked(preset == Some(ViewPreset::ElevationX)),
+                    MenuItem::action("Elevation, Y across", ViewElevationY)
+                        .checked(preset == Some(ViewPreset::ElevationY)),
                     MenuItem::action("Zoom extents", ZoomExtents),
                     MenuItem::separator(),
                     MenuItem::action("Node labels", ToggleNodeLabels).checked(options.node_labels),
@@ -171,25 +198,40 @@ impl Workspace {
                     MenuItem::action("Load case", AddLoadCase),
                     MenuItem::action("Load combination", AddCombination),
                     MenuItem::separator(),
-                    MenuItem::action("Group from selection", AddGroupFromSelection),
-                    MenuItem::action("Diaphragm from selected nodes", AddDiaphragmFromSelection),
+                    MenuItem::action("Group from selection", AddGroupFromSelection)
+                        .disabled(gates.group.is_some()),
+                    MenuItem::action("Diaphragm from selected nodes", AddDiaphragmFromSelection)
+                        .disabled(gates.diaphragm.is_some()),
                 ],
                 disabled: false,
             },
             Menu {
                 name: "Draw".into(),
                 items: vec![
-                    MenuItem::action("Add node…", AddNode),
-                    MenuItem::action("Frame between two selected nodes", AddFrameBetweenSelected),
-                    MenuItem::action("Shell from four selected nodes", AddShellFromSelected),
+                    MenuItem::action("Select tool", SelectTool).checked(tool == Tool::Select),
+                    MenuItem::action("Node tool", NodeTool).checked(tool == Tool::Node),
+                    MenuItem::action("Frame tool", FrameTool)
+                        .checked(tool == Tool::Frame)
+                        .disabled(gates.frame_tool.is_some()),
+                    MenuItem::action("Shell tool", ShellTool)
+                        .checked(tool == Tool::Shell)
+                        .disabled(gates.shell_tool.is_some()),
+                    MenuItem::separator(),
+                    MenuItem::action("Add node by coordinates…", AddNode),
+                    MenuItem::action("Frame between two selected nodes", AddFrameBetweenSelected)
+                        .disabled(gates.frame.is_some()),
+                    MenuItem::action("Shell from four selected nodes", AddShellFromSelected)
+                        .disabled(gates.shell.is_some()),
                 ],
                 disabled: false,
             },
             Menu {
                 name: "Assign".into(),
                 items: vec![
-                    MenuItem::action("Nodal load to selected nodes…", AddNodalLoad),
-                    MenuItem::action("Uniform load to selected frames…", AddDistributedLoad),
+                    MenuItem::action("Nodal load to selected nodes…", AddNodalLoad)
+                        .disabled(gates.nodal_load.is_some()),
+                    MenuItem::action("Uniform load to selected frames…", AddDistributedLoad)
+                        .disabled(gates.distributed_load.is_some()),
                 ],
                 disabled: false,
             },
@@ -198,6 +240,10 @@ impl Workspace {
                 items: vec![
                     MenuItem::action("Run static analysis", RunStaticAnalysis),
                     MenuItem::separator(),
+                    MenuItem::action("Next combination", NextCombination)
+                        .disabled(combinations.len() < 2),
+                    MenuItem::action("Previous combination", PreviousCombination)
+                        .disabled(combinations.len() < 2),
                     MenuItem::submenu(Menu {
                         name: "Show combination".into(),
                         disabled: combinations.is_empty(),
@@ -208,7 +254,7 @@ impl Workspace {
             },
             Menu {
                 name: "Help".into(),
-                items: vec![MenuItem::action("About open-analysis", About)],
+                items: vec![MenuItem::action("Guide and keys…", About)],
                 disabled: false,
             },
         ]
@@ -500,21 +546,7 @@ impl Workspace {
             self.error("Select exactly two nodes, in order from I to J", window, cx);
             return;
         };
-        let (material, section) = match self.first_material_and_section(cx) {
-            Ok(x) => x,
-            Err(e) => return self.error(e, window, cx),
-        };
-        let model = self.document.read(cx).model();
-        let frame = Frame::new(
-            unused_name::<Frame>(model, "F"),
-            [*a, *b],
-            material,
-            section,
-        );
-        let id = EntityId(model.next_id);
-        if self.apply(Command::AddFrame { id, frame }, window, cx) {
-            self.select(vec![id], cx);
-        }
+        self.add_frame([*a, *b], window, cx);
     }
     pub fn add_shell_from_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let nodes = self.document.read(cx).selected_of(EntityKind::Node);
@@ -526,6 +558,23 @@ impl Workspace {
             );
             return;
         };
+        self.add_shell([*n0, *n1, *n2, *n3], window, cx);
+    }
+    /// A frame from I to J with the first material and section.
+    fn add_frame(&mut self, nodes: [EntityId; 2], window: &mut Window, cx: &mut Context<Self>) {
+        let (material, section) = match self.first_material_and_section(cx) {
+            Ok(x) => x,
+            Err(e) => return self.error(e, window, cx),
+        };
+        let model = self.document.read(cx).model();
+        let frame = Frame::new(unused_name::<Frame>(model, "F"), nodes, material, section);
+        let id = EntityId(model.next_id);
+        if self.apply(Command::AddFrame { id, frame }, window, cx) {
+            self.select(vec![id], cx);
+        }
+    }
+    /// A 200 mm shell on four nodes with the first material.
+    fn add_shell(&mut self, nodes: [EntityId; 4], window: &mut Window, cx: &mut Context<Self>) {
         let material = match self.first_material_and_section(cx) {
             Ok((material, _)) => material,
             Err(e) => return self.error(e, window, cx),
@@ -533,7 +582,7 @@ impl Workspace {
         let model = self.document.read(cx).model();
         let shell = Shell {
             name: unused_name::<Shell>(model, "SH"),
-            nodes: [*n0, *n1, *n2, *n3],
+            nodes,
             material,
             thickness: Length::from_metres(0.2),
             formulation: Default::default(),
@@ -543,6 +592,271 @@ impl Workspace {
         if self.apply(Command::AddShell { id, shell }, window, cx) {
             self.select(vec![id], cx);
         }
+    }
+    /// A node at a point the Node tool clicked.
+    fn place_node(&mut self, position: [f64; 3], window: &mut Window, cx: &mut Context<Self>) {
+        let model = self.document.read(cx).model();
+        let node = Node::new(
+            unused_name::<Node>(model, "N"),
+            position.map(Length::from_metres),
+        );
+        let id = EntityId(model.next_id);
+        if self.apply(Command::AddNode { id, node }, window, cx) {
+            self.select(vec![id], cx);
+        }
+    }
+
+    // MARK: Tools
+
+    fn on_viewport_event(
+        &mut self,
+        event: &ViewportEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            ViewportEvent::PlaceNode(position) => self.place_node(*position, window, cx),
+            ViewportEvent::DrawFrame(nodes) => self.add_frame(*nodes, window, cx),
+            ViewportEvent::DrawShell(nodes) => self.add_shell(*nodes, window, cx),
+            ViewportEvent::OpenProperties => self.show_properties(window, cx),
+        }
+    }
+    pub fn set_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+        self.viewport
+            .update(cx, |viewport, cx| viewport.set_tool(tool, cx));
+    }
+    /// With exactly two nodes selected, draws between them; otherwise picks up the tool.
+    pub fn use_frame_tool(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let nodes = self.document.read(cx).selected_of(EntityKind::Node);
+        match nodes.as_slice() {
+            [a, b] => self.add_frame([*a, *b], window, cx),
+            _ => self.set_tool(Tool::Frame, cx),
+        }
+    }
+    /// With exactly four nodes selected, draws on them; otherwise picks up the tool.
+    pub fn use_shell_tool(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let nodes = self.document.read(cx).selected_of(EntityKind::Node);
+        match nodes.as_slice() {
+            [a, b, c, d] => self.add_shell([*a, *b, *c, *d], window, cx),
+            _ => self.set_tool(Tool::Shell, cx),
+        }
+    }
+    /// Escape: drops the shape being drawn, then the tool, then the selection.
+    /// An open dialog takes Escape for itself.
+    pub fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        let handled = self.viewport.update(cx, |viewport, cx| viewport.cancel(cx));
+        if !handled {
+            self.deselect_all(cx);
+        }
+    }
+
+    // MARK: Pop-up panels
+
+    /// The property editor for the selection, in a dialog.
+    pub fn show_properties(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.document.read(cx).selection().is_empty() {
+            return self.info("Select something to edit first", window, cx);
+        }
+        let properties = self.properties.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .w(px(460.))
+                .footer(div())
+                .child(div().h(px(560.)).child(properties.clone()))
+        });
+    }
+    /// The model tree, in a dialog. Click selects, double-click edits.
+    pub fn show_model_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let explorer = self.explorer.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .w(px(380.))
+                .footer(div())
+                .child(div().h(px(560.)).child(explorer.clone()))
+        });
+    }
+
+    // MARK: Command palette
+
+    pub fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = match &self.palette {
+            Some(state) => state.clone(),
+            None => {
+                let state = cx.new(|cx| CommandState::new(window, cx));
+                self.palette = Some(state.clone());
+                state
+            }
+        };
+        state.update(cx, |state, cx| state.set_query("", window, cx));
+        let workspace = cx.entity().downgrade();
+        let palette_state = state.clone();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let groups = workspace
+                .upgrade()
+                .map(|workspace| workspace.read(cx).palette_entries(cx))
+                .unwrap_or_default();
+            let mut palette = CommandPalette::new(&palette_state)
+                .placeholder("Type a command, or the name of something to define…")
+                .bordered(false)
+                .max_h(px(420.))
+                .on_confirm(|_, window, cx| window.close_dialog(cx))
+                .on_cancel(|window, cx| window.close_dialog(cx));
+            for (label, items) in groups {
+                palette = palette.group(CommandGroup::new().label(label).items(items));
+            }
+            dialog.w(px(620.)).footer(div()).child(palette)
+        });
+        window.defer(cx, move |window, cx| {
+            state.update(cx, |state, cx| state.focus(window, cx))
+        });
+    }
+
+    /// Every action, grouped like the ribbon. Gated ones stay listed, greyed,
+    /// with the reason in the label so a search never comes up empty.
+    fn palette_entries(&self, cx: &App) -> Vec<(&'static str, Vec<CommandItem>)> {
+        let document = self.document.read(cx);
+        let viewport = self.viewport.read(cx);
+        let gates = Gates::of(document);
+        let options = viewport.options();
+        let solved = document.analysis().is_some();
+        fn item(label: &str, action: Box<dyn Action>, gate: Option<&str>) -> CommandItem {
+            let item = CommandItem::new().action(action);
+            match gate {
+                None => item.label(label.to_string()),
+                Some(reason) => item.label(format!("{label} — {reason}")).disabled(true),
+            }
+        }
+        let on = |label: &str, checked: bool| {
+            if checked {
+                format!("{label} (on)")
+            } else {
+                label.to_string()
+            }
+        };
+        let mut analyze = vec![item("Run static analysis", Box::new(RunStaticAnalysis), None)];
+        if let Some(analysis) = document.analysis() {
+            let several = (analysis.results.combinations.len() < 2)
+                .then_some("only one combination");
+            analyze.push(item("Next combination", Box::new(NextCombination), several));
+            analyze.push(item(
+                "Previous combination",
+                Box::new(PreviousCombination),
+                several,
+            ));
+            for c in &analysis.results.combinations {
+                analyze.push(item(
+                    &format!("Show combination: {}", c.combination),
+                    Box::new(ShowCombination(c.combination.clone().into())),
+                    None,
+                ));
+            }
+        }
+        vec![
+            (
+                "File",
+                vec![
+                    item("New model", Box::new(NewModel), None),
+                    item("New example frame", Box::new(NewExampleModel), None),
+                    item("Open…", Box::new(OpenModel), None),
+                    item("Save", Box::new(SaveModel), None),
+                    item("Save as…", Box::new(SaveModelAs), None),
+                ],
+            ),
+            (
+                "Edit",
+                vec![
+                    item("Undo", Box::new(Undo), (!document.can_undo()).then_some("nothing to undo")),
+                    item("Redo", Box::new(Redo), (!document.can_redo()).then_some("nothing to redo")),
+                    item("Select all", Box::new(SelectAll), None),
+                    item("Deselect", Box::new(DeselectAll), None),
+                    item(
+                        "Delete selected",
+                        Box::new(DeleteSelected),
+                        document.selection().is_empty().then_some("select something first"),
+                    ),
+                    item(
+                        "Properties…",
+                        Box::new(ShowProperties),
+                        document.selection().is_empty().then_some("select something first"),
+                    ),
+                ],
+            ),
+            (
+                "Draw",
+                vec![
+                    item("Select tool", Box::new(SelectTool), None),
+                    item("Node tool", Box::new(NodeTool), None),
+                    item("Frame tool", Box::new(FrameTool), gates.frame_tool),
+                    item("Shell tool", Box::new(ShellTool), gates.shell_tool),
+                    item("Add node by coordinates…", Box::new(AddNode), None),
+                    item(
+                        "Frame between two selected nodes",
+                        Box::new(AddFrameBetweenSelected),
+                        gates.frame,
+                    ),
+                    item(
+                        "Shell from four selected nodes",
+                        Box::new(AddShellFromSelected),
+                        gates.shell,
+                    ),
+                ],
+            ),
+            (
+                "Define",
+                vec![
+                    item("Material from library…", Box::new(AddMaterialFromLibrary), None),
+                    item("Custom material…", Box::new(AddCustomMaterial), None),
+                    item("Section from library…", Box::new(AddSectionFromLibrary), None),
+                    item("Custom section…", Box::new(AddCustomSection), None),
+                    item("Add load case", Box::new(AddLoadCase), None),
+                    item("Add load combination", Box::new(AddCombination), None),
+                ],
+            ),
+            (
+                "Assign to selection",
+                vec![
+                    item("Nodal load…", Box::new(AddNodalLoad), gates.nodal_load),
+                    item("Uniform load…", Box::new(AddDistributedLoad), gates.distributed_load),
+                    item("Group from selection", Box::new(AddGroupFromSelection), gates.group),
+                    item(
+                        "Diaphragm from selected nodes",
+                        Box::new(AddDiaphragmFromSelection),
+                        gates.diaphragm,
+                    ),
+                ],
+            ),
+            (
+                "View",
+                vec![
+                    item("Model browser…", Box::new(ShowModelBrowser), None),
+                    item("3D view", Box::new(ViewThreeD), None),
+                    item("Plan view", Box::new(ViewPlan), None),
+                    item("Elevation, X across", Box::new(ViewElevationX), None),
+                    item("Elevation, Y across", Box::new(ViewElevationY), None),
+                    item("Zoom extents", Box::new(ZoomExtents), None),
+                    item(&on("Node labels", options.node_labels), Box::new(ToggleNodeLabels), None),
+                    item(&on("Frame labels", options.frame_labels), Box::new(ToggleFrameLabels), None),
+                    item(
+                        match viewport.up_axis() {
+                            UpAxis::Y => "Draw Z as up",
+                            UpAxis::Z => "Draw Y as up",
+                        },
+                        Box::new(ToggleUpAxis),
+                        None,
+                    ),
+                    item(
+                        &on("Deformed shape", options.deformed),
+                        Box::new(ToggleDeformedShape),
+                        (!solved).then_some("run the analysis first"),
+                    ),
+                ],
+            ),
+            ("Analyze", analyze),
+            ("Help", vec![item("Guide and shortcuts…", Box::new(About), None)]),
+        ]
     }
     pub fn add_load_case(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let model = self.document.read(cx).model();
@@ -648,6 +962,18 @@ impl Workspace {
             Err(e) => self.error(format!("Analysis failed: {e}"), window, cx),
         }
     }
+    /// Shows the next (+1) or previous (-1) combination, wrapping around.
+    pub fn step_combination(&mut self, step: isize, cx: &mut Context<Self>) {
+        let next = self.document.read(cx).analysis().and_then(|a| {
+            let count = a.results.combinations.len() as isize;
+            (count > 0).then(|| ((a.combination as isize + step).rem_euclid(count)) as usize)
+        });
+        if let Some(ix) = next {
+            self.document
+                .update(cx, |document, cx| document.set_combination(ix, cx));
+            self.toggle_option(|o| o.deformed = true, cx);
+        }
+    }
     pub fn show_combination(&mut self, name: &str, cx: &mut Context<Self>) {
         let ix = self.document.read(cx).analysis().and_then(|a| {
             a.results
@@ -662,131 +988,157 @@ impl Workspace {
         }
     }
     pub fn about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        window.open_dialog(cx, |dialog, _, _| {
+        window.open_dialog(cx, |dialog, _, cx| {
+            let muted = cx.theme().muted_foreground;
+            let heading = move |text: &'static str| {
+                div()
+                    .mt_2()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(muted)
+                    .child(text)
+            };
+            let row = move |keys: &'static str, what: &'static str| {
+                h_flex()
+                    .gap_3()
+                    .child(div().w(px(150.)).text_color(muted).child(keys))
+                    .child(what)
+            };
             dialog
-                .title("open-analysis")
+                .title("Guide")
+                .w(px(480.))
                 .child(
                     v_flex()
-                        .gap_2()
+                        .gap_1()
                         .text_sm()
-                        .child("Structural analysis engine and model editor.")
+                        .child("The menus read left to right in the order a model is built: define a material and section, draw nodes and frames, assign loads, run. Every menu item shows its key. Single letters and digits work while the view has focus; everything else holds Ctrl. The strip above the view says what the current tool wants next.")
                         .child("Models are SI: metres, newtons, pascals, kilograms.")
-                        .child("Right-drag orbits, shift+right or middle-drag pans, the wheel zooms. Click selects, shift+click extends."),
+                        .child(heading("Mouse"))
+                        .child(row("Click", "Select; shift+click adds; double-click edits"))
+                        .child(row("Right-drag", "Orbit"))
+                        .child(row("Middle-drag", "Pan (or shift + right-drag)"))
+                        .child(row("Wheel", "Zoom about the pointer"))
+                        .child(heading("Keys in the view"))
+                        .child(row("V N F S", "Select, Node, Frame, Shell tools"))
+                        .child(row("L U G D", "Nodal load, uniform load, group, diaphragm"))
+                        .child(row("1 2 3 4 · Z", "3D, plan, elevation X, elevation Y · fit"))
+                        .child(row("Shift+N / F / Z / D", "Node labels, frame labels, up axis, deformed shape"))
+                        .child(heading("Keys anywhere"))
+                        .child(row("Ctrl+E · Ctrl+B · Ctrl+K", "Properties · model browser · search commands"))
+                        .child(row("Ctrl+M · Ctrl+T", "Material · section (add Shift for a custom one)"))
+                        .child(row("Ctrl+L · Ctrl+Shift+L", "Load case · combination"))
+                        .child(row("Ctrl+R · Ctrl+] · Ctrl+[", "Run · next · previous combination"))
+                        .child(row("Esc", "Stop drawing, then back to Select, then deselect"))
+                        .child(heading("Drawing"))
+                        .child("Node places a node where you click, on the ground plane. Frame joins node I to node J and carries on from J. Shell takes four nodes in order around it. With nodes already selected, Frame and Shell draw on them at once. Loads go on the selected nodes or frames."),
                 )
         });
     }
 
     // MARK: Rendering
 
-    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn prompt_state(&self, cx: &App) -> PromptState {
         let document = self.document.read(cx);
-        let (can_undo, can_redo, has_selection) = (
-            document.can_undo(),
-            document.can_redo(),
-            !document.selection().is_empty(),
-        );
-        let options = self.viewport.read(cx).options();
-        let border = cx.theme().border;
-        fn command(
-            id: &'static str,
-            label: &'static str,
-            action: impl Action + Clone + 'static,
-        ) -> Button {
-            Button::new(id)
-                .small()
-                .ghost()
-                .label(label)
-                .on_click(move |_, window, cx| window.dispatch_action(Box::new(action.clone()), cx))
+        let viewport = self.viewport.read(cx);
+        let model = document.model();
+        PromptState {
+            has_selection: !document.selection().is_empty(),
+            selection: selection_summary(document),
+            gates: Gates::of(document),
+            options: viewport.options(),
+            tool: viewport.tool(),
+            picked: viewport
+                .picked()
+                .iter()
+                .filter_map(|id| model.nodes.get(id).map(|n| n.name.clone()))
+                .collect(),
+            analysis: document.analysis().map(|analysis| AnalysisSummary {
+                combinations: analysis
+                    .results
+                    .combinations
+                    .iter()
+                    .map(|c| SharedString::from(c.combination.clone()))
+                    .collect(),
+                shown: analysis.combination,
+            }),
+            empty: model.nodes.is_empty(),
+            defaults: model
+                .materials
+                .values()
+                .next()
+                .zip(model.sections.values().next())
+                .map(|(material, section)| (material.name.clone(), section.name.clone())),
+            in_elevation: matches!(
+                viewport.preset(),
+                Some(ViewPreset::ElevationX | ViewPreset::ElevationY)
+            ),
         }
-        h_flex()
-            .gap_1()
-            .px_2()
-            .py_1()
-            .border_b_1()
-            .border_color(border)
-            .flex_wrap()
-            .child(command("new", "New", NewModel).icon(IconName::File))
-            .child(command("open", "Open", OpenModel).icon(IconName::FolderOpen))
-            .child(command("save", "Save", SaveModel))
-            .child(
-                command("undo", "Undo", Undo)
-                    .icon(IconName::Undo2)
-                    .disabled(!can_undo),
-            )
-            .child(
-                command("redo", "Redo", Redo)
-                    .icon(IconName::Redo2)
-                    .disabled(!can_redo),
-            )
-            .child(
-                command("delete", "Delete", DeleteSelected)
-                    .icon(IconName::Delete)
-                    .disabled(!has_selection),
-            )
-            .child(command("add-node", "Node", AddNode).icon(IconName::Plus))
-            .child(command("add-frame", "Frame", AddFrameBetweenSelected).icon(IconName::Plus))
-            .child(command("view-3d", "3D", ViewThreeD))
-            .child(command("view-plan", "Plan", ViewPlan))
-            .child(command("view-x", "Elev X", ViewElevationX))
-            .child(command("view-y", "Elev Y", ViewElevationY))
-            .child(command("zoom-extents", "Extents", ZoomExtents).icon(IconName::Maximize))
-            .child(
-                command("node-labels", "Node labels", ToggleNodeLabels)
-                    .selected(options.node_labels)
-                    .toggled(options.node_labels),
-            )
-            .child(
-                command("frame-labels", "Frame labels", ToggleFrameLabels)
-                    .selected(options.frame_labels)
-                    .toggled(options.frame_labels),
-            )
-            .child(command("run", "Run analysis", RunStaticAnalysis).icon(IconName::Play))
-            .child(
-                command("deformed", "Deformed", ToggleDeformedShape)
-                    .selected(options.deformed)
-                    .toggled(options.deformed),
-            )
     }
 
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let document = self.document.read(cx);
+        let viewport = self.viewport.read(cx);
         let model = document.model();
         let problems = document.problems();
-        let (warning, muted) = (cx.theme().warning, cx.theme().muted_foreground);
+        let theme = cx.theme();
+        let (warning, muted, success) = (theme.warning, theme.muted_foreground, theme.success);
+        let (results, results_color) = match document.results_state() {
+            ResultsState::Current => ("Results current", success),
+            ResultsState::Stale => ("Results out of date · Ctrl+R", warning),
+            ResultsState::None => ("No results yet · Ctrl+R", muted),
+        };
         let problem_text = match problems.len() {
             0 => "Model is valid".to_string(),
             1 => problems[0].to_string(),
             n => format!("{n} problems: {}", problems[0]),
         };
-        let selected = document.selection().len();
+        let valid = problems.is_empty();
+        let view = match viewport.preset() {
+            Some(ViewPreset::ThreeD) => "3D view",
+            Some(ViewPreset::Plan) => "Plan view",
+            Some(ViewPreset::ElevationX) => "Elevation, X across",
+            Some(ViewPreset::ElevationY) => "Elevation, Y across",
+            None => "Free orbit",
+        };
         StatusBar::new()
-            .left(div().text_xs().child(document.title()))
+            .left(
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
+                    .text_xs()
+                    .child(
+                        div()
+                            .size(px(7.))
+                            .rounded_full()
+                            .bg(if valid { success } else { warning }),
+                    )
+                    .child(div().when(!valid, |d| d.text_color(warning)).child(problem_text)),
+            )
             .left(div().text_xs().text_color(muted).child(format!(
-                "{} nodes, {} frames, {} shells, {} cases, {} combinations",
+                "{} nodes · {} frames · {} shells · {} cases · {} combinations",
                 model.nodes.len(),
                 model.frames.len(),
                 model.shells.len(),
                 model.load_cases.len(),
                 model.combinations.len()
             )))
-            .left(
-                div()
-                    .text_xs()
-                    .when(!problems.is_empty(), |d| d.text_color(warning))
-                    .child(problem_text),
-            )
             .right(
-                div()
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
                     .text_xs()
-                    .text_color(muted)
-                    .child(format!("{selected} selected")),
+                    .text_color(results_color)
+                    .child(div().size(px(7.)).rounded_full().bg(results_color))
+                    .child(results),
             )
+            .right(div().text_xs().text_color(muted).child("SI: m, N, Pa"))
             .right(div().text_xs().text_color(muted).child(
-                match self.viewport.read(cx).up_axis() {
+                match viewport.up_axis() {
                     UpAxis::Y => "Y up",
                     UpAxis::Z => "Z up",
                 },
             ))
+            .right(div().text_xs().text_color(muted).child(view))
     }
 }
 
@@ -811,24 +1163,13 @@ impl Render for Workspace {
                             .child(format!("{title} - open-analysis")),
                     ),
             )
-            .child(self.render_toolbar(cx))
+            .child(render_prompt(&self.prompt_state(cx), cx))
             .child(
-                div().flex_1().min_h_0().w_full().child(
-                    h_resizable("main-panels")
-                        .child(
-                            resizable_panel()
-                                .size(px(240.))
-                                .size_range(px(160.)..px(600.))
-                                .child(self.explorer.clone()),
-                        )
-                        .child(resizable_panel().child(self.viewport.clone()))
-                        .child(
-                            resizable_panel()
-                                .size(px(340.))
-                                .size_range(px(220.)..px(700.))
-                                .child(self.properties.clone()),
-                        ),
-                ),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(self.viewport.clone()),
             )
             .child(self.render_status_bar(cx))
             .children(Root::render_dialog_layer(window, cx))

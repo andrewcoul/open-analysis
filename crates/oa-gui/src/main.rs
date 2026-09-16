@@ -1,7 +1,7 @@
 //! Desktop model viewer and editor for open-analysis.
 //!
 //! Layout: one window, one [`Workspace`]. Every command is an action; the
-//! menu bar, toolbar, and key bindings dispatch actions, and this file routes
+//! menu bar, command palette, and key bindings dispatch actions, and this file routes
 //! each one to a workspace method.
 mod actions;
 mod camera;
@@ -9,6 +9,7 @@ mod dialogs;
 mod document;
 mod explorer;
 mod properties;
+mod prompt;
 mod text;
 mod viewport;
 mod workspace;
@@ -19,24 +20,117 @@ use gpui_kit::component::{Root, TitleBar, WindowExt as _};
 use gpui_kit::*;
 use workspace::Workspace;
 
+/// Switzer, embedded so the interface looks the same without the font installed.
+const FONTS: [&[u8]; 3] = [
+    include_bytes!("../assets/fonts/Switzer-Regular.otf"),
+    include_bytes!("../assets/fonts/Switzer-Medium.otf"),
+    include_bytes!("../assets/fonts/Switzer-Semibold.otf"),
+];
+
+/// The visual system on top of the kit's themes: Switzer at 14px, an 8px
+/// radius everywhere, and indigo as the accent of both the light and dark
+/// themes. The configs are changed rather than the live values so a theme
+/// switch keeps them.
+fn apply_visual_system(cx: &mut App) {
+    use gpui_kit::component::{Theme, ThemeConfig};
+    let mode = Theme::global(cx).mode;
+    let configs = {
+        let theme = Theme::global(cx);
+        [theme.light_theme.clone(), theme.dark_theme.clone()]
+    };
+    for config in configs {
+        let dark = config.mode.is_dark();
+        let mut config: ThemeConfig = (*config).clone();
+        let some = |name: &str| Some(SharedString::from(name.to_string()));
+        config.font_family = some("Switzer");
+        config.font_size = Some(14.0);
+        config.mono_font_family = some("Switzer");
+        config.mono_font_size = Some(12.0);
+        config.radius = Some(8);
+        config.radius_lg = Some(8);
+        let (primary, hover, active, soft, selection) = if dark {
+            ("indigo-500", "indigo-400", "indigo-600", "indigo-900", "indigo-800")
+        } else {
+            ("indigo-600", "indigo-700", "indigo-800", "indigo-50", "indigo-100")
+        };
+        let colors = &mut config.colors;
+        colors.primary = some(primary);
+        colors.primary_hover = some(hover);
+        colors.primary_active = some(active);
+        colors.primary_foreground = some("#ffffff");
+        colors.button_primary = some(primary);
+        colors.button_primary_hover = some(hover);
+        colors.button_primary_active = some(active);
+        colors.button_primary_foreground = some("#ffffff");
+        colors.ring = some(primary);
+        colors.link = some(primary);
+        colors.caret = some(primary);
+        colors.list_active = some(soft);
+        colors.list_active_border = some(primary);
+        colors.selection = some(selection);
+        colors.sidebar_primary = some(primary);
+        Theme::global_mut(cx).apply_config(&std::rc::Rc::new(config));
+    }
+    Theme::change(mode, None, cx);
+}
+
+/// The key map, in menu order. Single letters and digits are bound in the
+/// `Viewport` key context, so they act only while the view has focus and
+/// never fight a text field; everything else holds Ctrl and works anywhere.
 fn key_bindings() -> Vec<KeyBinding> {
+    const VIEW: Option<&str> = Some("Viewport");
     vec![
+        // File
         KeyBinding::new("ctrl-n", NewModel, None),
+        KeyBinding::new("ctrl-shift-n", NewExampleModel, None),
         KeyBinding::new("ctrl-o", OpenModel, None),
         KeyBinding::new("ctrl-s", SaveModel, None),
         KeyBinding::new("ctrl-shift-s", SaveModelAs, None),
+        KeyBinding::new("ctrl-q", Quit, None),
+        // Edit
         KeyBinding::new("ctrl-z", Undo, None),
         KeyBinding::new("ctrl-y", Redo, None),
         KeyBinding::new("ctrl-shift-z", Redo, None),
         KeyBinding::new("ctrl-a", SelectAll, None),
-        KeyBinding::new("escape", DeselectAll, None),
+        KeyBinding::new("escape", Cancel, None),
         KeyBinding::new("delete", DeleteSelected, None),
-        KeyBinding::new("f5", RunStaticAnalysis, None),
-        KeyBinding::new("f2", ZoomExtents, None),
-        KeyBinding::new("ctrl-1", ViewThreeD, None),
-        KeyBinding::new("ctrl-2", ViewPlan, None),
-        KeyBinding::new("ctrl-3", ViewElevationX, None),
-        KeyBinding::new("ctrl-4", ViewElevationY, None),
+        KeyBinding::new("ctrl-e", ShowProperties, None),
+        // View
+        KeyBinding::new("ctrl-b", ShowModelBrowser, None),
+        KeyBinding::new("ctrl-k", OpenCommandPalette, None),
+        KeyBinding::new("1", ViewThreeD, VIEW),
+        KeyBinding::new("2", ViewPlan, VIEW),
+        KeyBinding::new("3", ViewElevationX, VIEW),
+        KeyBinding::new("4", ViewElevationY, VIEW),
+        KeyBinding::new("z", ZoomExtents, VIEW),
+        KeyBinding::new("shift-n", ToggleNodeLabels, VIEW),
+        KeyBinding::new("shift-f", ToggleFrameLabels, VIEW),
+        KeyBinding::new("shift-z", ToggleUpAxis, VIEW),
+        KeyBinding::new("shift-d", ToggleDeformedShape, VIEW),
+        // Define
+        KeyBinding::new("ctrl-m", AddMaterialFromLibrary, None),
+        KeyBinding::new("ctrl-shift-m", AddCustomMaterial, None),
+        KeyBinding::new("ctrl-t", AddSectionFromLibrary, None),
+        KeyBinding::new("ctrl-shift-t", AddCustomSection, None),
+        KeyBinding::new("ctrl-l", AddLoadCase, None),
+        KeyBinding::new("ctrl-shift-l", AddCombination, None),
+        // Draw
+        KeyBinding::new("v", SelectTool, VIEW),
+        KeyBinding::new("n", NodeTool, VIEW),
+        KeyBinding::new("f", FrameTool, VIEW),
+        KeyBinding::new("s", ShellTool, VIEW),
+        KeyBinding::new("shift-a", AddNode, VIEW),
+        // Assign
+        KeyBinding::new("l", AddNodalLoad, VIEW),
+        KeyBinding::new("u", AddDistributedLoad, VIEW),
+        KeyBinding::new("g", AddGroupFromSelection, VIEW),
+        KeyBinding::new("d", AddDiaphragmFromSelection, VIEW),
+        // Analyze
+        KeyBinding::new("ctrl-r", RunStaticAnalysis, None),
+        KeyBinding::new("ctrl-]", NextCombination, None),
+        KeyBinding::new("ctrl-[", PreviousCombination, None),
+        // Help
+        KeyBinding::new("f1", About, None),
     ]
 }
 
@@ -139,8 +233,22 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
     on!(ToggleUpAxis, |ws, _, _, cx| ws.toggle_up_axis(cx));
     on!(RunStaticAnalysis, |ws, _, window, cx| ws
         .run_static(window, cx));
+    on!(NextCombination, |ws, _, _, cx| ws.step_combination(1, cx));
+    on!(PreviousCombination, |ws, _, _, cx| ws
+        .step_combination(-1, cx));
     on!(ShowCombination, |ws, action: &ShowCombination, _, cx| ws
         .show_combination(&action.0, cx));
+    on!(SelectTool, |ws, _, _, cx| ws.set_tool(viewport::Tool::Select, cx));
+    on!(NodeTool, |ws, _, _, cx| ws.set_tool(viewport::Tool::Node, cx));
+    on!(FrameTool, |ws, _, window, cx| ws.use_frame_tool(window, cx));
+    on!(ShellTool, |ws, _, window, cx| ws.use_shell_tool(window, cx));
+    on!(Cancel, |ws, _, window, cx| ws.cancel(window, cx));
+    on!(OpenCommandPalette, |ws, _, window, cx| ws
+        .open_palette(window, cx));
+    on!(ShowProperties, |ws, _, window, cx| ws
+        .show_properties(window, cx));
+    on!(ShowModelBrowser, |ws, _, window, cx| ws
+        .show_model_browser(window, cx));
     on!(About, |ws, _, window, cx| ws.about(window, cx));
     cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
 }
@@ -149,7 +257,11 @@ fn main() {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(|cx| {
+            cx.text_system()
+                .add_fonts(FONTS.iter().map(|f| std::borrow::Cow::Borrowed(*f)).collect())
+                .expect("the embedded fonts load");
             gpui_kit::init(cx);
+            apply_visual_system(cx);
             cx.bind_keys(key_bindings());
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
