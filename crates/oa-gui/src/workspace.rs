@@ -691,6 +691,8 @@ impl Workspace {
                 .title("Load cases")
                 .w(px(760.))
                 .footer(div())
+                // Enter commits a cell and must not confirm the dialog.
+                .on_ok(|_, _, _| false)
                 .child(div().h(px(480.)).child(panel.clone()))
         });
     }
@@ -702,6 +704,7 @@ impl Workspace {
                 .title("Load combinations")
                 .w(px(920.))
                 .footer(div())
+                .on_ok(|_, _, _| false)
                 .child(div().h(px(480.)).child(panel.clone()))
         });
     }

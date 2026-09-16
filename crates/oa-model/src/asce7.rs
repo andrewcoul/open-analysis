@@ -10,8 +10,9 @@
 //! since the model carries no design spectral acceleration to expand `Ev`.
 //! Live load keeps its full factor; the 0.5 exception for light occupancies
 //! is not applied. ASCE 7-22 puts snow at 1.0 and 0.3 in the gravity
-//! combinations and at 0.7 for allowable stress, where 7-16 used 1.6, 0.5,
-//! and 1.0.
+//! combinations, 0.15 in the seismic one, and 0.7 (0.525 as a companion,
+//! 0.1 with earthquake) for allowable stress, where 7-16 used 1.6, 0.5,
+//! 0.2, 1.0, and 0.75.
 use crate::{Combination, EntityId, LoadType, Model};
 use std::collections::BTreeSet;
 
@@ -103,7 +104,7 @@ const STRENGTH_22: &[&[Slot]] = &[
         req(&[(Dead, 1.2)]),
         req(&[(Earthquake, 1.0)]),
         opt(&[(Live, 1.0)]),
-        opt(&[(Snow, 0.2)]),
+        opt(&[(Snow, 0.15)]),
     ],
     &[req(&[(Dead, 0.9)]), req(&[(Earthquake, 1.0)])],
 ];
@@ -165,7 +166,7 @@ const ASD_22: &[&[Slot]] = &[
         req(&[(Dead, 1.0)]),
         req(&[(Earthquake, 0.525)]),
         opt(&[(Live, 0.75)]),
-        opt(&[(Snow, 0.525)]),
+        opt(&[(Snow, 0.1)]),
     ],
     &[req(&[(Dead, 0.6)]), req(&[(Earthquake, 0.7)])],
 ];
@@ -391,6 +392,39 @@ mod tests {
         assert_eq!(
             names(&old),
             ["1.4D", "1.2D + 1.6L + 0.5S", "1.2D + 1.6S + L"]
+        );
+    }
+
+    #[test]
+    fn seismic_snow_factors_follow_the_edition() {
+        let m = model(&[
+            ("Dead", Dead),
+            ("Live", Live),
+            ("Snow", Snow),
+            ("Quake", Earthquake),
+        ]);
+        let seismic = |edition, method| -> Vec<String> {
+            generate(&m, edition, method)
+                .into_iter()
+                .filter(|c| c.name.contains('E'))
+                .map(|c| c.name)
+                .collect()
+        };
+        assert_eq!(
+            seismic(Edition::Asce7_16, Method::Strength),
+            ["1.2D + E + L + 0.2S", "0.9D + E"]
+        );
+        assert_eq!(
+            seismic(Edition::Asce7_22, Method::Strength),
+            ["1.2D + E + L + 0.15S", "0.9D + E"]
+        );
+        assert_eq!(
+            seismic(Edition::Asce7_16, Method::AllowableStress),
+            ["D + 0.7E", "D + 0.525E + 0.75L + 0.75S", "0.6D + 0.7E"]
+        );
+        assert_eq!(
+            seismic(Edition::Asce7_22, Method::AllowableStress),
+            ["D + 0.7E", "D + 0.525E + 0.75L + 0.1S", "0.6D + 0.7E"]
         );
     }
 

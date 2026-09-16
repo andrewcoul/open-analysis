@@ -172,10 +172,12 @@ impl Document {
         cx.notify();
     }
 
-    /// Replaces the whole model, for example after opening a file.
+    /// Replaces the whole model, for example after opening a file. The
+    /// revision keeps counting up so views that cache by it rebuild.
     pub fn replace(&mut self, model: Model, path: Option<PathBuf>, cx: &mut Context<Self>) {
+        let revision = self.revision + 1;
         *self = Self::with_model(model, path);
-        self.revision = 1;
+        self.revision = revision;
         cx.notify();
     }
 

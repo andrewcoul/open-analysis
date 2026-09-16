@@ -20,6 +20,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use oa_model::{Combination, Command, EntityId, LoadCase, LoadType};
+use std::collections::BTreeMap;
 
 type Choice = Entity<SelectState<SearchableVec<SharedString>>>;
 
@@ -29,6 +30,16 @@ pub fn type_label(load_type: LoadType) -> String {
         "" => load_type.label().to_string(),
         symbol => format!("{} ({symbol})", load_type.label()),
     }
+}
+
+/// One factor per case: repeated terms for a case add up, as they do in the
+/// solver, so the matrix shows and commits the effective factor.
+fn aggregated(terms: &[(EntityId, f64)]) -> BTreeMap<EntityId, f64> {
+    let mut out = BTreeMap::new();
+    for (case, factor) in terms {
+        *out.entry(*case).or_insert(0.0) += factor;
+    }
+    out
 }
 
 /// "0, 0, -1" for a self-weight vector.
@@ -121,15 +132,23 @@ impl LoadPanel {
         this
     }
 
-    /// Rebuilds the rows when the model changed.
+    /// Rebuilds the rows when the model changed. Focus survives the rebuild:
+    /// the input asked for by Enter or an add, else whichever input holds
+    /// focus now, since a commit on blur lands while the next cell is
+    /// already focused.
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let revision = self.document.read(cx).revision();
         if self.built_for == revision {
             return;
         }
         self.built_for = revision;
+        let focus = self.pending_focus.take().or_else(|| {
+            self.inputs()
+                .find(|(_, input)| input.read(cx).focus_handle(cx).is_focused(window))
+                .map(|(key, _)| key)
+        });
         self.build(window, cx);
-        if let Some(key) = self.pending_focus.take()
+        if let Some(key) = focus
             && let Some(input) = self.input_for(&key)
         {
             input.update(cx, |input, cx| input.focus(window, cx));
@@ -137,7 +156,8 @@ impl LoadPanel {
         cx.notify();
     }
 
-    fn input_for(&self, key: &str) -> Option<Entity<InputState>> {
+    /// Every text input with its key.
+    fn inputs(&self) -> impl Iterator<Item = (String, &Entity<InputState>)> {
         let case_inputs = self.cases.iter().flat_map(|r| {
             [
                 (format!("case-name-{}", r.id.0), &r.name),
@@ -151,8 +171,11 @@ impl LoadPanel {
                     .map(move |(case, input)| (format!("factor-{}-{}", r.id.0, case.0), input)),
             )
         });
-        case_inputs
-            .chain(combo_inputs)
+        case_inputs.chain(combo_inputs)
+    }
+
+    fn input_for(&self, key: &str) -> Option<Entity<InputState>> {
+        self.inputs()
             .find(|(k, _)| k == key)
             .map(|(_, input)| input.clone())
     }
@@ -285,14 +308,11 @@ impl LoadPanel {
                     cx,
                 );
                 let mut subscriptions = vec![s];
+                let effective = aggregated(terms);
                 let factors = cases
                     .iter()
                     .map(|(case, ..)| {
-                        let factor = terms
-                            .iter()
-                            .find(|(c, _)| c == case)
-                            .map(|(_, f)| fmt_num(*f))
-                            .unwrap_or_default();
+                        let factor = effective.get(case).map(|f| fmt_num(*f)).unwrap_or_default();
                         let (input, s) = self.text_input(
                             format!("factor-{}-{}", id.0, case.0),
                             factor,
@@ -379,13 +399,25 @@ impl LoadPanel {
                 Err(e) => return self.error(e, window, cx),
             }
         }
+        if terms.is_empty() {
+            return self.error(
+                "A combination needs a factor in at least one case",
+                window,
+                cx,
+            );
+        }
         let command = {
             let model = self.document.read(cx).model();
             let Some(current) = model.combinations.get(&id) else {
                 return;
             };
-            let combination = Combination { name, terms };
-            (combination != *current).then_some(Command::UpdateCombination { id, combination })
+            // Compare effective factors, so a row of repeated terms is not
+            // rewritten just by passing through it.
+            let unchanged = current.name == name && aggregated(&current.terms) == aggregated(&terms);
+            (!unchanged).then_some(Command::UpdateCombination {
+                id,
+                combination: Combination { name, terms },
+            })
         };
         if let Some(command) = command {
             self.apply(command, window, cx);
@@ -400,7 +432,9 @@ impl LoadPanel {
         self.apply(Command::AddLoadCase { id, load_case }, window, cx);
     }
 
-    /// Removes a case, dropping it from every combination first.
+    /// Removes a case, dropping it from every combination first. A
+    /// combination with no other term goes too, since the solver rejects an
+    /// empty one.
     fn remove_case(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         let commands = {
             let model = self.document.read(cx).model();
@@ -411,9 +445,13 @@ impl LoadPanel {
                 .map(|(cid, c)| {
                     let mut combination = c.clone();
                     combination.terms.retain(|(case, _)| *case != id);
-                    Command::UpdateCombination {
-                        id: *cid,
-                        combination,
+                    if combination.terms.is_empty() {
+                        Command::RemoveCombination { id: *cid }
+                    } else {
+                        Command::UpdateCombination {
+                            id: *cid,
+                            combination,
+                        }
                     }
                 })
                 .collect();
@@ -580,8 +618,9 @@ impl Render for LoadPanel {
 #[cfg(test)]
 mod tests {
     // Named imports: the gpui glob carries its own `test` attribute macro.
-    use super::{fmt_vec3, parse_vec3, type_label};
-    use oa_model::LoadType;
+    use super::{aggregated, fmt_vec3, parse_vec3, type_label};
+    use oa_model::{EntityId, LoadType};
+    use std::collections::BTreeMap;
 
     #[test]
     fn self_weight_round_trips() {
@@ -590,6 +629,14 @@ mod tests {
         assert_eq!(parse_vec3(" 0 0 -9.81 ").unwrap(), [0.0, 0.0, -9.81]);
         assert!(parse_vec3("0, 0").is_err());
         assert!(parse_vec3("0, 0, x").is_err());
+    }
+
+    #[test]
+    fn repeated_terms_add_up() {
+        let (a, b) = (EntityId(1), EntityId(2));
+        let sum = aggregated(&[(a, 0.6), (b, 1.5), (a, 0.4)]);
+        assert_eq!(sum, BTreeMap::from([(a, 1.0), (b, 1.5)]));
+        assert_eq!(aggregated(&[(a, 1.0)]), aggregated(&[(a, 0.5), (a, 0.5)]));
     }
 
     #[test]
