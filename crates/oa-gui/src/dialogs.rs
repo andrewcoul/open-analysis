@@ -3,6 +3,7 @@
 //! inputs survive re-renders of the overlay.
 use crate::document::{Document, unused_name};
 use crate::text::parse_num;
+use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::form::{Field, Form};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::notification::Notification;
@@ -111,9 +112,16 @@ fn apply(document: &Entity<Document>, command: Command, window: &mut Window, cx:
     }
 }
 
-/// Opens a dialog whose OK button runs `on_ok`; the dialog closes when it returns true.
-fn open<F>(title: &'static str, inputs: Inputs, window: &mut Window, cx: &mut App, on_ok: F)
-where
+/// Opens a dialog whose confirm button, labelled `ok`, runs `on_ok`; Enter
+/// in any field does the same. The dialog closes when `on_ok` returns true.
+fn open<F>(
+    title: &'static str,
+    ok: &'static str,
+    inputs: Inputs,
+    window: &mut Window,
+    cx: &mut App,
+    on_ok: F,
+) where
     F: Fn(&Inputs, &mut Window, &mut App) -> bool + 'static,
 {
     let inputs = std::rc::Rc::new(inputs);
@@ -125,6 +133,7 @@ where
             .title(title)
             .w(px(420.))
             .child(inputs.form())
+            .button_props(DialogButtonProps::default().ok_text(ok))
             .on_ok(move |_, window, cx| on_ok(&inputs_for_ok, window, cx))
     });
 }
@@ -153,7 +162,7 @@ pub fn add_node(document: Entity<Document>, window: &mut Window, cx: &mut App) {
             ("Z (m)", "0"),
         ],
     );
-    open("Add node", inputs, window, cx, move |inputs, window, cx| {
+    open("Add node", "Add node", inputs, window, cx, move |inputs, window, cx| {
         let position = ["X (m)", "Y (m)", "Z (m)"].map(|l| inputs.num(l, cx));
         let mut node = Node::new(inputs.text("Name", cx), [Length::ZERO; 3]);
         for (i, p) in position.into_iter().enumerate() {
@@ -195,6 +204,7 @@ pub fn add_material_from_library(document: Entity<Document>, window: &mut Window
     );
     open(
         "Add material from library",
+        "Add material",
         inputs,
         window,
         cx,
@@ -234,6 +244,7 @@ pub fn add_custom_material(document: Entity<Document>, window: &mut Window, cx: 
         ],
     );
     open(
+        "Add material",
         "Add material",
         inputs,
         window,
@@ -289,6 +300,7 @@ pub fn add_section_from_library(document: Entity<Document>, window: &mut Window,
     );
     open(
         "Add section from library",
+        "Add section",
         inputs,
         window,
         cx,
@@ -329,6 +341,7 @@ pub fn add_custom_section(document: Entity<Document>, window: &mut Window, cx: &
         ],
     );
     open(
+        "Add section",
         "Add section",
         inputs,
         window,
@@ -410,6 +423,7 @@ pub fn add_nodal_load(document: Entity<Document>, window: &mut Window, cx: &mut 
     .with_choice("Load case", cases, selected_case, window, cx);
     open(
         "Add nodal load to selected nodes",
+        "Add load",
         inputs,
         window,
         cx,
@@ -503,6 +517,7 @@ pub fn add_distributed_load(document: Entity<Document>, window: &mut Window, cx:
     );
     open(
         "Add uniform load to selected frames",
+        "Add load",
         inputs,
         window,
         cx,
