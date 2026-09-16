@@ -1,12 +1,111 @@
 //! Transport-independent session behind the MCP tools. Every tool is a
 //! method here that takes plain arguments and returns JSON, so the whole
 //! surface is testable without an agent or a transport.
+//!
+//! Every number an agent sends or receives is in [`UNITS`]. Commands are
+//! converted to SI before they touch the model, entities are converted on
+//! the way out, and the result store is read through views that rescale
+//! each column, so raw SQL sees the same units as the envelope tools.
 use oa_core::StaticOptions;
 use oa_model::{compile::Compiled, *};
 use oa_results::ResultStore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
+
+/// The units of the whole agent surface.
+pub const UNITS: UnitSystem = UnitSystem::UsCustomary;
+
+fn display(role: Role, si: f64) -> f64 {
+    UNITS.to_display(role, si)
+}
+
+/// The role of one component of a result quantity: translations then
+/// rotations for displacements, forces then moments for reactions, and the
+/// six-per-end force pattern for frames.
+fn role_of(quantity: Quantity, component: usize) -> Role {
+    match (quantity, component % 6 < 3) {
+        (Quantity::Displacement, true) => Role::Displacement,
+        (Quantity::Displacement, false) => Role::Rotation,
+        (Quantity::Reaction | Quantity::FrameForce, true) => Role::Force,
+        (Quantity::Reaction | Quantity::FrameForce, false) => Role::Moment,
+    }
+}
+
+/// Views that shadow the stored tables and divide every column by its
+/// unit, so `select ux from displacements` answers in inches. Entity and
+/// combination columns pass through.
+fn unit_views() -> Vec<(String, String)> {
+    let f = |role: Role| UNITS.unit(role).si;
+    let scaled = |names: &[&str], role: Role| -> Vec<String> {
+        names
+            .iter()
+            .map(|c| format!("{c} / {} as {c}", f(role)))
+            .collect()
+    };
+    let node = |table: &str, translation: Role, rotation: Role| {
+        let mut cols = vec!["combination".to_string(), "node".to_string()];
+        cols.extend(scaled(&["ux", "uy", "uz"], translation));
+        cols.extend(scaled(&["rx", "ry", "rz"], rotation));
+        (
+            table.to_string(),
+            format!("select {} from main.{table}", cols.join(", ")),
+        )
+    };
+    let mut frame = vec!["combination".into(), "frame".into(), "active".into()];
+    for end in ["i", "j"] {
+        let forces: Vec<String> = ["n", "vy", "vz"]
+            .iter()
+            .map(|c| format!("{c}_{end}"))
+            .collect();
+        let moments: Vec<String> = ["t", "my", "mz"]
+            .iter()
+            .map(|c| format!("{c}_{end}"))
+            .collect();
+        let forces: Vec<&str> = forces.iter().map(String::as_str).collect();
+        let moments: Vec<&str> = moments.iter().map(String::as_str).collect();
+        frame.extend(scaled(&forces, Role::Force));
+        frame.extend(scaled(&moments, Role::Moment));
+    }
+    for end in ["i", "j"] {
+        let u: Vec<String> = ["ux", "uy", "uz"]
+            .iter()
+            .map(|c| format!("{c}_{end}"))
+            .collect();
+        let r: Vec<String> = ["rx", "ry", "rz"]
+            .iter()
+            .map(|c| format!("{c}_{end}"))
+            .collect();
+        let u: Vec<&str> = u.iter().map(String::as_str).collect();
+        let r: Vec<&str> = r.iter().map(String::as_str).collect();
+        frame.extend(scaled(&u, Role::Displacement));
+        frame.extend(scaled(&r, Role::Rotation));
+    }
+    let mut shell = vec!["combination".to_string(), "shell".to_string()];
+    for i in 1..=24 {
+        let role = if (i - 1) % 6 < 3 {
+            Role::Force
+        } else {
+            Role::Moment
+        };
+        shell.push(format!("f{i} / {} as f{i}", f(role)));
+    }
+    shell.extend(scaled(&["sx", "sy", "sxy"], Role::Stress));
+    shell.extend(scaled(&["mx", "my", "mxy"], Role::MomentPerLength));
+    shell.extend(scaled(&["qx", "qy"], Role::LineLoad));
+    vec![
+        node("displacements", Role::Displacement, Role::Rotation),
+        node("reactions", Role::Force, Role::Moment),
+        (
+            "frame_results".into(),
+            format!("select {} from main.frame_results", frame.join(", ")),
+        ),
+        (
+            "shell_results".into(),
+            format!("select {} from main.shell_results", shell.join(", ")),
+        ),
+    ]
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -91,10 +190,22 @@ impl Session {
     pub fn describe(&self) -> Value {
         let m = self.model();
         let names = |it: Vec<&str>| Value::from(it);
+        let symbols: serde_json::Map<String, Value> = UNITS
+            .symbols()
+            .into_iter()
+            .map(|(role, symbol)| {
+                let key = serde_json::to_value(role)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_default();
+                (key, json!(symbol))
+            })
+            .collect();
         json!({
             "name": m.metadata.name,
             "path": self.path,
-            "gravity": m.gravity.si(),
+            "units": {"system": UNITS.name(), "symbols": symbols},
+            "gravity": display(Role::Acceleration, m.gravity.si()),
             "counts": {
                 "nodes": m.nodes.len(), "materials": m.materials.len(), "sections": m.sections.len(),
                 "frames": m.frames.len(), "shells": m.shells.len(), "diaphragms": m.diaphragms.len(),
@@ -128,15 +239,15 @@ impl Session {
         match kind {
             EntityKind::Node => rows!(
                 m.nodes,
-                |id, n| json!({"id": id, "name": n.name, "position": n.position, "restrained": n.restrained})
+                |id, n| json!({"id": id, "name": n.name, "position": n.position.map(|p| display(Role::Length, p.si())), "restrained": n.restrained})
             ),
             EntityKind::Material => rows!(
                 m.materials,
-                |id, e| json!({"id": id, "name": e.name, "young": e.young.si()})
+                |id, e| json!({"id": id, "name": e.name, "young": display(Role::Stress, e.young.si())})
             ),
             EntityKind::Section => rows!(
                 m.sections,
-                |id, e| json!({"id": id, "name": e.name, "area": e.area.si(), "provenance": e.provenance.as_ref().map(|p| &p.designation)})
+                |id, e| json!({"id": id, "name": e.name, "area": display(Role::Area, e.area.si()), "provenance": e.provenance.as_ref().map(|p| &p.designation)})
             ),
             EntityKind::Frame => rows!(
                 m.frames,
@@ -169,13 +280,13 @@ impl Session {
         let m = self.model();
         let kind = m.kind_of(id).ok_or(ModelError::NotFound(id))?;
         let value = match kind {
-            EntityKind::Node => serde_json::to_value(&m.nodes[&id])?,
-            EntityKind::Material => serde_json::to_value(&m.materials[&id])?,
-            EntityKind::Section => serde_json::to_value(&m.sections[&id])?,
-            EntityKind::Frame => serde_json::to_value(&m.frames[&id])?,
-            EntityKind::Shell => serde_json::to_value(&m.shells[&id])?,
+            EntityKind::Node => serde_json::to_value(UNITS.display(&m.nodes[&id]))?,
+            EntityKind::Material => serde_json::to_value(UNITS.display(&m.materials[&id]))?,
+            EntityKind::Section => serde_json::to_value(UNITS.display(&m.sections[&id]))?,
+            EntityKind::Frame => serde_json::to_value(UNITS.display(&m.frames[&id]))?,
+            EntityKind::Shell => serde_json::to_value(UNITS.display(&m.shells[&id]))?,
             EntityKind::Diaphragm => serde_json::to_value(&m.diaphragms[&id])?,
-            EntityKind::LoadCase => serde_json::to_value(&m.load_cases[&id])?,
+            EntityKind::LoadCase => serde_json::to_value(UNITS.display(&m.load_cases[&id]))?,
             EntityKind::Combination => serde_json::to_value(&m.combinations[&id])?,
             EntityKind::Group => serde_json::to_value(&m.groups[&id])?,
         };
@@ -201,9 +312,13 @@ impl Session {
             .map(|_| self.editor.model.allocate())
             .collect()
     }
-    /// Applies commands atomically. Any change invalidates compilation and results.
-    pub fn apply(&mut self, commands: Vec<Command>) -> Result<Value> {
+    /// Applies commands, given in [`UNITS`], atomically. Any change
+    /// invalidates compilation and results.
+    pub fn apply(&mut self, mut commands: Vec<Command>) -> Result<Value> {
         let count = commands.len();
+        for command in &mut commands {
+            command.map_quantities(&mut |role, v| UNITS.from_display(role, v));
+        }
         self.editor.apply(Command::Batch { commands })?;
         self.invalidate();
         Ok(json!({"applied": count, "counts": self.describe()["counts"]}))
@@ -313,6 +428,9 @@ impl Session {
         };
         oa_core::analyze_static_into(&compiled.solver, &options, &mut store)?;
         oa_model::store::attach(&compiled, &store)?;
+        for (name, select) in unit_views() {
+            store.define_view(&name, &select)?;
+        }
         let combos: Vec<Value> = store
             .combinations()
             .iter()
@@ -355,9 +473,11 @@ impl Session {
             Quantity::Reaction => store.envelope_reaction(index, component)?,
             Quantity::FrameForce => store.envelope_frame_force(index, component)?,
         };
+        let role = role_of(quantity, component);
         Ok(json!({
-            "minimum": {"value": e.minimum.value, "combination": e.minimum.combination},
-            "maximum": {"value": e.maximum.value, "combination": e.maximum.combination},
+            "unit": UNITS.symbol(role),
+            "minimum": {"value": display(role, e.minimum.value), "combination": e.minimum.combination},
+            "maximum": {"value": display(role, e.maximum.value), "combination": e.maximum.combination},
         }))
     }
     /// Envelope over all combinations for one entity, with the governing combination.
@@ -411,11 +531,15 @@ impl Session {
         let height = (self.model().nodes[&upper].position[1].si()
             - self.model().nodes[&lower].position[1].si())
         .abs();
+        // The ratio is dimensionless, so it is formed in SI before the
+        // displacement is shown in inches.
         let ratio = |v: f64| if height > 0.0 { Some(v / height) } else { None };
+        let role = role_of(Quantity::Displacement, c);
         Ok(json!({
             "upper": self.model().name_of(upper), "lower": self.model().name_of(lower),
-            "minimum": {"value": e.minimum.value, "combination": e.minimum.combination, "ratio": ratio(e.minimum.value)},
-            "maximum": {"value": e.maximum.value, "combination": e.maximum.combination, "ratio": ratio(e.maximum.value)},
+            "unit": UNITS.symbol(role),
+            "minimum": {"value": display(role, e.minimum.value), "combination": e.minimum.combination, "ratio": ratio(e.minimum.value)},
+            "maximum": {"value": display(role, e.maximum.value), "combination": e.maximum.combination, "ratio": ratio(e.maximum.value)},
         }))
     }
     /// Read-only SQL over the result store. Node and frame columns hold solver
@@ -448,23 +572,26 @@ impl Session {
 /// Reference text for the `apply_commands` tool: one entry per command with a
 /// minimal JSON example. Kept as data so the agent can read it once.
 pub const COMMAND_REFERENCE: &str = r#"Each command is a JSON object with a "command" field. Ids come from next_ids.
-Units are SI: metres, newtons, kilograms, pascals, radians. Y is up in the examples.
+Units are US customary: coordinates and load positions in ft, shell thickness in in, section area in in² and
+moments of area in in⁴, E in ksi, density in pcf, forces in kip, moments in kip·ft, line loads in kip/ft,
+surface pressure in psf, springs in kip/ft and kip·ft/rad, nodal mass in kip·s²/ft, prescribed displacements
+in in and rad, roll in degrees, gravity in ft/s². Y is up in the examples.
 
 add_node      {"command":"add_node","id":1,"node":{"name":"N1","position":[0,0,0],"restrained":[true,true,true,true,true,true]}}
-              optional node fields: prescribed, mass [kg x3], mass_inertia, spring_translation [N/m x3], spring_rotation
+              optional node fields: prescribed, mass [kip·s²/ft x3], mass_inertia, spring_translation [kip/ft x3], spring_rotation
 update_node   {"command":"update_node","id":1,"node":{...full node...}}
 remove_node   {"command":"remove_node","id":1}     (refused while a frame, shell, diaphragm or load references it)
-add_material  {"command":"add_material","id":2,"material":{"name":"steel","young":2e11,"poisson":0.3,"density":7850}}
-add_section   {"command":"add_section","id":3,"section":{"name":"col","area":0.01,"iy":2e-5,"iz":4e-5,"torsion":1e-5}}
+add_material  {"command":"add_material","id":2,"material":{"name":"steel","young":29000,"poisson":0.3,"density":490}}
+add_section   {"command":"add_section","id":3,"section":{"name":"col","area":26.5,"iy":362,"iz":999,"torsion":4.06}}
 add_frame     {"command":"add_frame","id":4,"frame":{"name":"C1","nodes":[1,5],"material":2,"section":3}}
               optional: releases [12 bools], behavior "tension_only"|"compression_only", roll, local_y
-add_shell     {"command":"add_shell","id":6,"shell":{"name":"S1","nodes":[1,2,3,4],"material":2,"thickness":0.2}}
+add_shell     {"command":"add_shell","id":6,"shell":{"name":"S1","nodes":[1,2,3,4],"material":2,"thickness":8}}
 add_diaphragm {"command":"add_diaphragm","id":7,"diaphragm":{"name":"L1","nodes":[5,6,7],"normal":"y"}}   master optional
-add_load_case {"command":"add_load_case","id":8,"load_case":{"name":"wind","nodal":[{"node":5,"force":[10000,0,0]}],
-               "member":[{"type":"distributed","member":4,"start":0,"end":6,"start_load":[0,-10000,0],"end_load":[0,-10000,0],"axes":"global"}],
+add_load_case {"command":"add_load_case","id":8,"load_case":{"name":"wind","nodal":[{"node":5,"force":[10,0,0]}],
+               "member":[{"type":"distributed","member":4,"start":0,"end":20,"start_load":[0,-1,0],"end_load":[0,-1,0],"axes":"global"}],
                "self_weight":[0,-1,0]}}
 add_combination {"command":"add_combination","id":9,"combination":{"name":"1.2D+1.6W","terms":[[8,1.6]]}}
 add_group     {"command":"add_group","id":10,"group":{"name":"roof","members":[5,6]}}
-update_*, remove_* exist for every kind. set_gravity {"command":"set_gravity","gravity":9.80665}
+update_*, remove_* exist for every kind. set_gravity {"command":"set_gravity","gravity":32.174}
 batch         {"command":"batch","commands":[...]}   all or nothing (apply_commands already wraps its list in a batch)
 "#;

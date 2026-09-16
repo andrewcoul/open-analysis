@@ -4,8 +4,8 @@
 use gpui_kit::Context;
 use oa_core::units::*;
 use oa_model::{
-    Combination, Command, Compiled, Editor, EntityId, EntityKind, Frame, LoadCase, Material,
-    MemberLoad, Model, ModelError, Node, Problem, Section, compile,
+    Combination, Command, Compiled, Editor, EntityId, EntityKind, Frame, LoadCase, MemberLoad,
+    Model, ModelError, Node, Problem, compile,
 };
 use std::path::{Path, PathBuf};
 
@@ -254,46 +254,40 @@ pub fn new_model() -> Model {
     m
 }
 
-/// A two-storey, two-bay steel moment frame with dead and wind cases, so a
+/// A two-storey, two-bay steel moment frame on 20 ft bays and 12 ft
+/// storeys, W14x90 columns and W18x50 beams, with dead and wind cases, so a
 /// new user has something to look at. Z is up.
 pub fn example_frame() -> Model {
     let mut m = Model::default();
     m.metadata.name = "Example frame".into();
-    let steel = m.insert(Material {
-        name: "S355".into(),
-        young: Pressure::from_gpa(210.0),
-        poisson: 0.3,
-        density: MassDensity::from_si(7850.0),
-        provenance: None,
-    });
-    let column = m.insert(Section {
-        name: "HEB300".into(),
-        area: Area::from_si(1.49e-2),
-        iy: SecondMoment::from_si(8.56e-5),
-        iz: SecondMoment::from_si(2.517e-4),
-        torsion: SecondMoment::from_si(1.85e-6),
-        provenance: None,
-    });
-    let beam = m.insert(Section {
-        name: "IPE400".into(),
-        area: Area::from_si(8.45e-3),
-        iy: SecondMoment::from_si(1.318e-5),
-        iz: SecondMoment::from_si(2.313e-4),
-        torsion: SecondMoment::from_si(5.1e-7),
-        provenance: None,
-    });
+    let library = oa_model::Library::starter();
+    let steel = m.insert(
+        library
+            .material("A992", "A992")
+            .expect("in the starter library"),
+    );
+    let column = m.insert(
+        library
+            .section("W14x90", "W14x90")
+            .expect("in the starter library"),
+    );
+    let beam = m.insert(
+        library
+            .section("W18x50", "W18x50")
+            .expect("in the starter library"),
+    );
     let bays_x = 2;
     let bays_y = 1;
     let storeys = 2;
-    let (bay, storey) = (6.0, 3.5);
+    let (bay, storey) = (Length::from_feet(20.0).si(), Length::from_feet(12.0).si());
     let mut nodes = vec![];
     for k in 0..=storeys {
         for j in 0..=bays_y {
             for i in 0..=bays_x {
                 let position = [
-                    Length::from_metres(i as f64 * bay),
-                    Length::from_metres(j as f64 * bay),
-                    Length::from_metres(k as f64 * storey),
+                    Length::from_si(i as f64 * bay),
+                    Length::from_si(j as f64 * bay),
+                    Length::from_si(k as f64 * storey),
                 ];
                 let name = format!("N{}", nodes.len() + 1);
                 let node = if k == 0 {
@@ -344,9 +338,17 @@ pub fn example_frame() -> Model {
         dead.member.push(MemberLoad::Distributed {
             member: *b,
             start: Length::ZERO,
-            end: Length::from_metres(bay),
-            start_load: [LineLoad::ZERO, LineLoad::ZERO, LineLoad::from_si(-12_000.0)],
-            end_load: [LineLoad::ZERO, LineLoad::ZERO, LineLoad::from_si(-12_000.0)],
+            end: Length::from_si(bay),
+            start_load: [
+                LineLoad::ZERO,
+                LineLoad::ZERO,
+                LineLoad::from_kips_per_foot(-1.0),
+            ],
+            end_load: [
+                LineLoad::ZERO,
+                LineLoad::ZERO,
+                LineLoad::from_kips_per_foot(-1.0),
+            ],
             axes: oa_model::Axes::Global,
         });
     }
@@ -355,7 +357,7 @@ pub fn example_frame() -> Model {
         for j in 0..=bays_y {
             wind.nodal.push(oa_model::NodalLoad {
                 node: index(0, j, k),
-                force: [Force::from_kn(15.0 * k as f64), Force::ZERO, Force::ZERO],
+                force: [Force::from_kips(5.0 * k as f64), Force::ZERO, Force::ZERO],
                 moment: [Moment::ZERO; 3],
             });
         }
@@ -363,12 +365,12 @@ pub fn example_frame() -> Model {
     let dead = m.insert(dead);
     let wind = m.insert(wind);
     m.insert(Combination {
-        name: "1.35D".into(),
-        terms: vec![(dead, 1.35)],
+        name: "1.4D".into(),
+        terms: vec![(dead, 1.4)],
     });
     m.insert(Combination {
-        name: "1.0D + 1.5W".into(),
-        terms: vec![(dead, 1.0), (wind, 1.5)],
+        name: "1.2D + 1.0W".into(),
+        terms: vec![(dead, 1.2), (wind, 1.0)],
     });
     m
 }

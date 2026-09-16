@@ -321,7 +321,7 @@ impl Server {
         ))
     }
     #[tool(
-        description = "Read-only SQL over the result store. Entity columns are solver indices; see entity_indices."
+        description = "Read-only SQL over the result store, in US customary units (in, rad, kip, kip·ft, ksi). Entity columns are solver indices; see entity_indices."
     )]
     async fn query_results(
         &self,
@@ -347,7 +347,8 @@ impl ServerHandler for Server {
             .with_instructions(
                 "Structural analysis. Build a model with apply_commands (see command_reference), \
                  compile, analyze, then query envelopes, drifts, or SQL. Names identify entities; \
-                 ids come from next_ids. All units are SI and Y is up by convention.",
+                 ids come from next_ids. Units are US customary (kip, ft, in; describe_model \
+                 lists every symbol) on the way in and out, and Y is up by convention.",
             )
     }
 }

@@ -56,8 +56,8 @@ pub enum ViewportEvent {
     OpenProperties,
 }
 
-/// Grid the Node tool snaps to, in metres.
-const SNAP: f64 = 0.25;
+/// Grid the Node tool snaps to: one foot, held in metres like the model.
+const SNAP: f64 = 0.3048;
 
 /// Screen positions of the last painted frame, used for picking.
 #[derive(Default)]

@@ -4,7 +4,7 @@
 use crate::actions::{AddDistributedLoad, AddNodalLoad, DeleteSelected};
 use crate::document::Document;
 use crate::explorer::rows_of;
-use crate::text::{fmt_num, parse_num};
+use crate::text::{UNITS, fmt_num, fmt_q, label, parse_num, parse_q};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::form::{Field, Form};
@@ -20,7 +20,7 @@ use gpui_kit::*;
 use oa_core::units::Length;
 use oa_core::units::*;
 use oa_model::{
-    AxialBehavior, Axis, Command, EntityId, EntityKind, MemberLoad, Model, ShellFormulation,
+    AxialBehavior, Axis, Command, EntityId, EntityKind, MemberLoad, Model, Role, ShellFormulation,
 };
 use std::collections::HashMap;
 
@@ -55,6 +55,10 @@ fn text(key: &str, label: &str, value: impl Into<String>) -> FieldSpec {
 }
 fn num(key: &str, label: &str, value: f64) -> FieldSpec {
     text(key, label, fmt_num(value))
+}
+/// A quantity field: labelled with its unit, showing the SI value converted.
+fn qty(key: &str, name: &str, role: Role, si: f64) -> FieldSpec {
+    text(key, &label(name, role), fmt_q(role, si))
 }
 fn check(key: String, group: &str, label: &str, value: bool) -> FieldSpec {
     FieldSpec::Check {
@@ -120,20 +124,27 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
         EntityKind::Node => {
             let n = &model.nodes[&id];
             f.push(text("name", "Name", &n.name));
-            for (i, axis) in ["X (m)", "Y (m)", "Z (m)"].iter().enumerate() {
-                f.push(num(&format!("p{i}"), axis, n.position[i].si()));
+            for (i, axis) in ["X", "Y", "Z"].iter().enumerate() {
+                f.push(qty(
+                    &format!("p{i}"),
+                    axis,
+                    Role::Length,
+                    n.position[i].si(),
+                ));
             }
             for (i, dof) in DOF.iter().enumerate() {
                 f.push(check(format!("r{i}"), "Restraints", dof, n.restrained[i]));
             }
-            for (i, axis) in ["kx (N/m)", "ky (N/m)", "kz (N/m)"].iter().enumerate() {
-                f.push(num(&format!("k{i}"), axis, n.spring_translation[i].si()));
+            for (i, axis) in ["kx", "ky", "kz"].iter().enumerate() {
+                f.push(qty(
+                    &format!("k{i}"),
+                    axis,
+                    Role::Stiffness,
+                    n.spring_translation[i].si(),
+                ));
             }
-            for (i, axis) in ["Mass x (kg)", "Mass y (kg)", "Mass z (kg)"]
-                .iter()
-                .enumerate()
-            {
-                f.push(num(&format!("m{i}"), axis, n.mass[i].si()));
+            for (i, axis) in ["Mass x", "Mass y", "Mass z"].iter().enumerate() {
+                f.push(qty(&format!("m{i}"), axis, Role::Mass, n.mass[i].si()));
             }
         }
         EntityKind::Frame => {
@@ -174,7 +185,7 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
                 labels(&BEHAVIORS),
                 behavior,
             ));
-            f.push(num("roll", "Roll (deg)", e.roll.si().to_degrees()));
+            f.push(qty("roll", "Roll", Role::Angle, e.roll.si()));
             for (i, dof) in DOF.iter().enumerate() {
                 f.push(check(
                     format!("rel{i}"),
@@ -211,7 +222,12 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
                 EntityKind::Material,
                 Some(e.material),
             ));
-            f.push(num("thickness", "Thickness (m)", e.thickness.si()));
+            f.push(qty(
+                "thickness",
+                "Thickness",
+                Role::Thickness,
+                e.thickness.si(),
+            ));
             let formulation = FORMULATIONS.iter().position(|(_, x)| *x == e.formulation);
             f.push(choice(
                 "formulation",
@@ -223,17 +239,17 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
         EntityKind::Material => {
             let e = &model.materials[&id];
             f.push(text("name", "Name", &e.name));
-            f.push(num("young", "E (Pa)", e.young.si()));
+            f.push(qty("young", "E", Role::Stress, e.young.si()));
             f.push(num("poisson", "Poisson's ratio", e.poisson));
-            f.push(num("density", "Density (kg/m³)", e.density.si()));
+            f.push(qty("density", "Density", Role::Density, e.density.si()));
         }
         EntityKind::Section => {
             let e = &model.sections[&id];
             f.push(text("name", "Name", &e.name));
-            f.push(num("area", "Area (m²)", e.area.si()));
-            f.push(num("iy", "Iy (m⁴)", e.iy.si()));
-            f.push(num("iz", "Iz (m⁴)", e.iz.si()));
-            f.push(num("torsion", "J (m⁴)", e.torsion.si()));
+            f.push(qty("area", "Area", Role::Area, e.area.si()));
+            f.push(qty("iy", "Iy", Role::SecondMoment, e.iy.si()));
+            f.push(qty("iz", "Iz", Role::SecondMoment, e.iz.si()));
+            f.push(qty("torsion", "J", Role::SecondMoment, e.torsion.si()));
         }
         EntityKind::LoadCase => {
             let e = &model.load_cases[&id];
@@ -304,6 +320,10 @@ impl Values {
     fn num(&self, key: &str, label: &str) -> Result<f64, String> {
         parse_num(label, &self.text(key))
     }
+    /// A quantity typed in display units, as SI.
+    fn qty(&self, key: &str, role: Role, label: &str) -> Result<f64, String> {
+        parse_q(role, label, &self.text(key))
+    }
     fn check(&self, key: &str) -> bool {
         self.checks.get(key).copied().unwrap_or(false)
     }
@@ -345,9 +365,11 @@ fn command_for(
             let mut n = model.nodes[&id].clone();
             n.name = name;
             for i in 0..3 {
-                n.position[i] = Length::from_metres(v.num(&format!("p{i}"), "Position")?);
-                n.spring_translation[i] = Stiffness::from_si(v.num(&format!("k{i}"), "Spring")?);
-                n.mass[i] = Mass::from_si(v.num(&format!("m{i}"), "Mass")?);
+                n.position[i] =
+                    Length::from_si(v.qty(&format!("p{i}"), Role::Length, "Position")?);
+                n.spring_translation[i] =
+                    Stiffness::from_si(v.qty(&format!("k{i}"), Role::Stiffness, "Spring")?);
+                n.mass[i] = Mass::from_si(v.qty(&format!("m{i}"), Role::Mass, "Mass")?);
             }
             for i in 0..6 {
                 n.restrained[i] = v.check(&format!("r{i}"));
@@ -364,7 +386,7 @@ fn command_for(
             e.material = v.entity("material", "Material", model, EntityKind::Material)?;
             e.section = v.entity("section", "Section", model, EntityKind::Section)?;
             e.behavior = v.item("behavior", &BEHAVIORS, e.behavior);
-            e.roll = Angle::from_degrees(v.num("roll", "Roll")?);
+            e.roll = Angle::from_si(v.qty("roll", Role::Angle, "Roll")?);
             for i in 0..12 {
                 e.releases[i] = v.check(&format!("rel{i}"));
             }
@@ -377,25 +399,25 @@ fn command_for(
                 e.nodes[i] = v.entity(&format!("n{i}"), "Node", model, EntityKind::Node)?;
             }
             e.material = v.entity("material", "Material", model, EntityKind::Material)?;
-            e.thickness = Length::from_metres(v.num("thickness", "Thickness")?);
+            e.thickness = Length::from_si(v.qty("thickness", Role::Thickness, "Thickness")?);
             e.formulation = v.item("formulation", &FORMULATIONS, e.formulation);
             (e != model.shells[&id]).then_some(Command::UpdateShell { id, shell: e })
         }
         EntityKind::Material => {
             let mut e = model.materials[&id].clone();
             e.name = name;
-            e.young = Pressure::from_si(v.num("young", "E")?);
+            e.young = Pressure::from_si(v.qty("young", Role::Stress, "E")?);
             e.poisson = v.num("poisson", "Poisson's ratio")?;
-            e.density = MassDensity::from_si(v.num("density", "Density")?);
+            e.density = MassDensity::from_si(v.qty("density", Role::Density, "Density")?);
             (e != model.materials[&id]).then_some(Command::UpdateMaterial { id, material: e })
         }
         EntityKind::Section => {
             let mut e = model.sections[&id].clone();
             e.name = name;
-            e.area = Area::from_si(v.num("area", "Area")?);
-            e.iy = SecondMoment::from_si(v.num("iy", "Iy")?);
-            e.iz = SecondMoment::from_si(v.num("iz", "Iz")?);
-            e.torsion = SecondMoment::from_si(v.num("torsion", "J")?);
+            e.area = Area::from_si(v.qty("area", Role::Area, "Area")?);
+            e.iy = SecondMoment::from_si(v.qty("iy", Role::SecondMoment, "Iy")?);
+            e.iz = SecondMoment::from_si(v.qty("iz", Role::SecondMoment, "Iz")?);
+            e.torsion = SecondMoment::from_si(v.qty("torsion", Role::SecondMoment, "J")?);
             (e != model.sections[&id]).then_some(Command::UpdateSection { id, section: e })
         }
         EntityKind::LoadCase => {
@@ -967,14 +989,16 @@ impl PropertyEditor {
                 let mut list = v_flex().gap_1();
                 for (i, l) in case.nodal.iter().enumerate() {
                     let label = format!(
-                        "{}: F ({}, {}, {}) N  M ({}, {}, {}) N·m",
+                        "{}: F ({}, {}, {}) {}  M ({}, {}, {}) {}",
                         model.name_of(l.node).unwrap_or("?"),
-                        fmt_num(l.force[0].si()),
-                        fmt_num(l.force[1].si()),
-                        fmt_num(l.force[2].si()),
-                        fmt_num(l.moment[0].si()),
-                        fmt_num(l.moment[1].si()),
-                        fmt_num(l.moment[2].si()),
+                        fmt_q(Role::Force, l.force[0].si()),
+                        fmt_q(Role::Force, l.force[1].si()),
+                        fmt_q(Role::Force, l.force[2].si()),
+                        UNITS.symbol(Role::Force),
+                        fmt_q(Role::Moment, l.moment[0].si()),
+                        fmt_q(Role::Moment, l.moment[1].si()),
+                        fmt_q(Role::Moment, l.moment[2].si()),
+                        UNITS.symbol(Role::Moment),
                     );
                     list = list.child(row(
                         label,
@@ -995,12 +1019,14 @@ impl PropertyEditor {
                             axes,
                             ..
                         } => format!(
-                            "{}: point at {} m, F ({}, {}, {}) N, {:?}",
+                            "{}: point at {} {}, F ({}, {}, {}) {}, {:?}",
                             model.name_of(*member).unwrap_or("?"),
-                            fmt_num(position.si()),
-                            fmt_num(force[0].si()),
-                            fmt_num(force[1].si()),
-                            fmt_num(force[2].si()),
+                            fmt_q(Role::Length, position.si()),
+                            UNITS.symbol(Role::Length),
+                            fmt_q(Role::Force, force[0].si()),
+                            fmt_q(Role::Force, force[1].si()),
+                            fmt_q(Role::Force, force[2].si()),
+                            UNITS.symbol(Role::Force),
                             axes
                         ),
                         MemberLoad::Distributed {
@@ -1011,16 +1037,18 @@ impl PropertyEditor {
                             end_load,
                             axes,
                         } => format!(
-                            "{}: distributed {}–{} m, w ({}, {}, {}) → ({}, {}, {}) N/m, {:?}",
+                            "{}: distributed {}–{} {}, w ({}, {}, {}) → ({}, {}, {}) {}, {:?}",
                             model.name_of(*member).unwrap_or("?"),
-                            fmt_num(start.si()),
-                            fmt_num(end.si()),
-                            fmt_num(start_load[0].si()),
-                            fmt_num(start_load[1].si()),
-                            fmt_num(start_load[2].si()),
-                            fmt_num(end_load[0].si()),
-                            fmt_num(end_load[1].si()),
-                            fmt_num(end_load[2].si()),
+                            fmt_q(Role::Length, start.si()),
+                            fmt_q(Role::Length, end.si()),
+                            UNITS.symbol(Role::Length),
+                            fmt_q(Role::LineLoad, start_load[0].si()),
+                            fmt_q(Role::LineLoad, start_load[1].si()),
+                            fmt_q(Role::LineLoad, start_load[2].si()),
+                            fmt_q(Role::LineLoad, end_load[0].si()),
+                            fmt_q(Role::LineLoad, end_load[1].si()),
+                            fmt_q(Role::LineLoad, end_load[2].si()),
+                            UNITS.symbol(Role::LineLoad),
                             axes
                         ),
                     };
@@ -1036,9 +1064,10 @@ impl PropertyEditor {
                 }
                 for (i, l) in case.surface.iter().enumerate() {
                     let label = format!(
-                        "{}: pressure {} Pa",
+                        "{}: pressure {} {}",
                         model.name_of(l.shell).unwrap_or("?"),
-                        fmt_num(l.pressure.si())
+                        fmt_q(Role::Pressure, l.pressure.si()),
+                        UNITS.symbol(Role::Pressure),
                     );
                     list = list.child(row(
                         label,

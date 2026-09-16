@@ -422,12 +422,21 @@ fn m2_format_fixture_loads_round_trips_and_rejects_newer_versions() {
 #[test]
 fn m3_library_copies_carry_provenance_and_survive_updates() {
     let library = Library::starter();
-    assert!(library.section_designations().contains(&"IPE200"));
-    let s = library.section("IPE200", "beam").unwrap();
+    assert!(library.section_designations().contains(&"W12x26"));
+    let s = library.section("W12x26", "beam").unwrap();
     let p = s.provenance.as_ref().unwrap();
     assert_eq!(p.library, "oa-starter");
-    assert_eq!(p.designation, "IPE200");
-    assert!((s.area.si() - 0.002848).abs() < 1e-12);
+    assert_eq!(p.designation, "W12x26");
+    // The library is written in AISC units; the copy is SI (7.65 in²).
+    assert!((s.area.si() - 7.65 * 0.0254_f64.powi(2)).abs() < 1e-12);
+    assert!((s.iz.si() - 204.0 * 0.0254_f64.powi(4)).abs() < 1e-15);
+    let steel = library.material("A992", "steel").unwrap();
+    assert!((steel.young.si() - 29_000.0 * 6.894_757_293_168e6).abs() < 1e3);
+    assert!(
+        (steel.density.si() - 7848.6).abs() < 0.5,
+        "{}",
+        steel.density.si()
+    );
     assert!(library.section("W99x999", "x").is_none());
     let model = from_json(&to_json(&{
         let mut m = Model::default();

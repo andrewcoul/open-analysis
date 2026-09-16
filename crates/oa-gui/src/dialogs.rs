@@ -2,7 +2,7 @@
 //! state in an entity; the dialog builder only renders it, so the same
 //! inputs survive re-renders of the overlay.
 use crate::document::{Document, unused_name};
-use crate::text::parse_num;
+use crate::text::{label, parse_num, parse_q};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::{Cancel, Confirm, DialogFooter};
 use gpui_kit::component::form::{Field, Form};
@@ -16,7 +16,7 @@ use oa_core::units::*;
 use oa_model::asce7::{Edition, Method};
 use oa_model::{
     Axes, Command, EntityId, EntityKind, Frame, Library, LoadCase, LoadType, Material, MemberLoad,
-    Model, NodalLoad, Node, Section,
+    Model, NodalLoad, Node, Role, Section,
 };
 
 type Choice = Entity<SelectState<SearchableVec<SharedString>>>;
@@ -71,6 +71,10 @@ impl Inputs {
     }
     fn num(&self, label: &str, cx: &App) -> Result<f64, String> {
         parse_num(label, &self.text(label, cx))
+    }
+    /// A quantity typed in display units, as SI.
+    fn qty(&self, label: &str, role: Role, cx: &App) -> Result<f64, String> {
+        parse_q(role, label, &self.text(label, cx))
     }
     fn choice(&self, label: &str, cx: &App) -> Option<usize> {
         self.choices
@@ -139,14 +143,19 @@ fn open<F>(
             .child(inputs.form())
             .footer(
                 DialogFooter::new()
-                    .child(Button::new("cancel").label("Cancel").on_click(
-                        |_, window, cx| window.dispatch_action(Box::new(Cancel), cx),
-                    ))
-                    .child(Button::new("ok").primary().label(ok).on_click(
-                        |_, window, cx| {
-                            window.dispatch_action(Box::new(Confirm { secondary: false }), cx)
-                        },
-                    )),
+                    .child(
+                        Button::new("cancel")
+                            .label("Cancel")
+                            .on_click(|_, window, cx| window.dispatch_action(Box::new(Cancel), cx)),
+                    )
+                    .child(
+                        Button::new("ok")
+                            .primary()
+                            .label(ok)
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(Confirm { secondary: false }), cx)
+                            }),
+                    ),
             )
             .on_ok(move |_, window, cx| on_ok(&inputs_for_ok, window, cx))
     });
@@ -166,39 +175,47 @@ fn id_at(model: &Model, kind: EntityKind, ix: Option<usize>) -> Option<EntityId>
 
 pub fn add_node(document: Entity<Document>, window: &mut Window, cx: &mut App) {
     let name = unused_name::<Node>(document.read(cx).model(), "N");
+    let axes = ["X", "Y", "Z"].map(|a| label(a, Role::Length));
     let inputs = Inputs::new(
         window,
         cx,
         &[
             ("Name", &name),
-            ("X (m)", "0"),
-            ("Y (m)", "0"),
-            ("Z (m)", "0"),
+            (&axes[0], "0"),
+            (&axes[1], "0"),
+            (&axes[2], "0"),
         ],
     );
-    open("Add node", "Add node", inputs, window, cx, move |inputs, window, cx| {
-        let position = ["X (m)", "Y (m)", "Z (m)"].map(|l| inputs.num(l, cx));
-        let mut node = Node::new(inputs.text("Name", cx), [Length::ZERO; 3]);
-        for (i, p) in position.into_iter().enumerate() {
-            match p {
-                Ok(v) => node.position[i] = Length::from_metres(v),
-                Err(e) => {
-                    notify_error(window, cx, e);
-                    return false;
+    open(
+        "Add node",
+        "Add node",
+        inputs,
+        window,
+        cx,
+        move |inputs, window, cx| {
+            let position = axes.each_ref().map(|l| inputs.qty(l, Role::Length, cx));
+            let mut node = Node::new(inputs.text("Name", cx), [Length::ZERO; 3]);
+            for (i, p) in position.into_iter().enumerate() {
+                match p {
+                    Ok(v) => node.position[i] = Length::from_si(v),
+                    Err(e) => {
+                        notify_error(window, cx, e);
+                        return false;
+                    }
                 }
             }
-        }
-        let id = document.read(cx).model().next_id;
-        apply(
-            &document,
-            Command::AddNode {
-                id: EntityId(id),
-                node,
-            },
-            window,
-            cx,
-        )
-    });
+            let id = document.read(cx).model().next_id;
+            apply(
+                &document,
+                Command::AddNode {
+                    id: EntityId(id),
+                    node,
+                },
+                window,
+                cx,
+            )
+        },
+    );
 }
 
 pub fn add_material_from_library(document: Entity<Document>, window: &mut Window, cx: &mut App) {
@@ -247,14 +264,15 @@ pub fn add_material_from_library(document: Entity<Document>, window: &mut Window
 
 pub fn add_custom_material(document: Entity<Document>, window: &mut Window, cx: &mut App) {
     let name = unused_name::<Material>(document.read(cx).model(), "MAT");
+    let (young, density) = (label("E", Role::Stress), label("Density", Role::Density));
     let inputs = Inputs::new(
         window,
         cx,
         &[
             ("Name", &name),
-            ("E (Pa)", "2e11"),
+            (&young, "29000"),
             ("Poisson's ratio", "0.3"),
-            ("Density (kg/m³)", "7850"),
+            (&density, "490"),
         ],
     );
     open(
@@ -265,9 +283,9 @@ pub fn add_custom_material(document: Entity<Document>, window: &mut Window, cx: 
         cx,
         move |inputs, window, cx| {
             let values = (
-                inputs.num("E (Pa)", cx),
+                inputs.qty(&young, Role::Stress, cx),
                 inputs.num("Poisson's ratio", cx),
-                inputs.num("Density (kg/m³)", cx),
+                inputs.qty(&density, Role::Density, cx),
             );
             let (young, poisson, density) = match values {
                 (Ok(e), Ok(nu), Ok(rho)) => (e, nu, rho),
@@ -343,15 +361,17 @@ pub fn add_section_from_library(document: Entity<Document>, window: &mut Window,
 
 pub fn add_custom_section(document: Entity<Document>, window: &mut Window, cx: &mut App) {
     let name = unused_name::<Section>(document.read(cx).model(), "SEC");
+    let area = label("Area", Role::Area);
+    let moments = ["Iy", "Iz", "J"].map(|l| label(l, Role::SecondMoment));
     let inputs = Inputs::new(
         window,
         cx,
         &[
             ("Name", &name),
-            ("Area (m²)", "0.01"),
-            ("Iy (m⁴)", "2e-5"),
-            ("Iz (m⁴)", "4e-5"),
-            ("J (m⁴)", "1e-5"),
+            (&area, "10"),
+            (&moments[0], "50"),
+            (&moments[1], "200"),
+            (&moments[2], "1"),
         ],
     );
     open(
@@ -361,7 +381,12 @@ pub fn add_custom_section(document: Entity<Document>, window: &mut Window, cx: &
         window,
         cx,
         move |inputs, window, cx| {
-            let values = ["Area (m²)", "Iy (m⁴)", "Iz (m⁴)", "J (m⁴)"].map(|l| inputs.num(l, cx));
+            let values = [
+                inputs.qty(&area, Role::Area, cx),
+                inputs.qty(&moments[0], Role::SecondMoment, cx),
+                inputs.qty(&moments[1], Role::SecondMoment, cx),
+                inputs.qty(&moments[2], Role::SecondMoment, cx),
+            ];
             let mut v = [0.0; 4];
             for (i, value) in values.into_iter().enumerate() {
                 match value {
@@ -445,7 +470,11 @@ pub fn add_asce_load_case(document: Entity<Document>, window: &mut Window, cx: &
 /// the chosen edition and method, skipping any the model already has.
 pub fn generate_combinations(document: Entity<Document>, window: &mut Window, cx: &mut App) {
     if document.read(cx).model().load_cases.is_empty() {
-        notify_error(window, cx, "Define a load case first (Define > Load cases and combinations)");
+        notify_error(
+            window,
+            cx,
+            "Define a load case first (Define > Load cases and combinations)",
+        );
         return;
     }
     let inputs = Inputs::new(window, cx, &[])
@@ -540,16 +569,18 @@ pub fn add_nodal_load(document: Entity<Document>, window: &mut Window, cx: &mut 
         notify_error(window, cx, "Select the nodes to load first");
         return;
     }
+    let forces = ["Fx", "Fy", "Fz"].map(|l| label(l, Role::Force));
+    let moments = ["Mx", "My", "Mz"].map(|l| label(l, Role::Moment));
     let inputs = Inputs::new(
         window,
         cx,
         &[
-            ("Fx (N)", "0"),
-            ("Fy (N)", "0"),
-            ("Fz (N)", "0"),
-            ("Mx (N·m)", "0"),
-            ("My (N·m)", "0"),
-            ("Mz (N·m)", "0"),
+            (&forces[0], "0"),
+            (&forces[1], "0"),
+            (&forces[2], "0"),
+            (&moments[0], "0"),
+            (&moments[1], "0"),
+            (&moments[2], "0"),
         ],
     )
     .with_choice("Load case", cases, selected_case, window, cx);
@@ -561,14 +592,13 @@ pub fn add_nodal_load(document: Entity<Document>, window: &mut Window, cx: &mut 
         cx,
         move |inputs, window, cx| {
             let values = [
-                "Fx (N)",
-                "Fy (N)",
-                "Fz (N)",
-                "Mx (N·m)",
-                "My (N·m)",
-                "Mz (N·m)",
-            ]
-            .map(|l| inputs.num(l, cx));
+                inputs.qty(&forces[0], Role::Force, cx),
+                inputs.qty(&forces[1], Role::Force, cx),
+                inputs.qty(&forces[2], Role::Force, cx),
+                inputs.qty(&moments[0], Role::Moment, cx),
+                inputs.qty(&moments[1], Role::Moment, cx),
+                inputs.qty(&moments[2], Role::Moment, cx),
+            ];
             let mut v = [0.0; 6];
             for (i, value) in values.into_iter().enumerate() {
                 match value {
@@ -634,10 +664,11 @@ pub fn add_distributed_load(document: Entity<Document>, window: &mut Window, cx:
         notify_error(window, cx, "Select the frames to load first");
         return;
     }
+    let loads = ["wx", "wy", "wz"].map(|l| label(l, Role::LineLoad));
     let inputs = Inputs::new(
         window,
         cx,
-        &[("wx (N/m)", "0"), ("wy (N/m)", "0"), ("wz (N/m)", "-10000")],
+        &[(&loads[0], "0"), (&loads[1], "0"), (&loads[2], "-1")],
     )
     .with_choice("Load case", cases, selected_case, window, cx)
     .with_choice(
@@ -654,7 +685,7 @@ pub fn add_distributed_load(document: Entity<Document>, window: &mut Window, cx:
         window,
         cx,
         move |inputs, window, cx| {
-            let values = ["wx (N/m)", "wy (N/m)", "wz (N/m)"].map(|l| inputs.num(l, cx));
+            let values = loads.each_ref().map(|l| inputs.qty(l, Role::LineLoad, cx));
             let mut w = [LineLoad::ZERO; 3];
             for (i, value) in values.into_iter().enumerate() {
                 match value {
@@ -687,7 +718,7 @@ pub fn add_distributed_load(document: Entity<Document>, window: &mut Window, cx:
                 load_case.member.push(MemberLoad::Distributed {
                     member: *frame,
                     start: Length::ZERO,
-                    end: Length::from_metres(length),
+                    end: Length::from_si(length),
                     start_load: w,
                     end_load: w,
                     axes,

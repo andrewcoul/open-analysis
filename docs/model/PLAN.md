@@ -81,9 +81,16 @@ indices, and carry the display name and library provenance.
 
 ### Units
 
-The solver is SI internally. The model layer is also SI internally. Display
-units are a preference stored in metadata and applied only at the UI boundary.
-The model layer does not convert.
+The solver is SI internally. The model layer is also SI internally, and so is
+the saved file. Display units live in `units.rs`: a `Role` names what a
+number means at the boundary (coordinate, thickness, force, stress, and so
+on, since US practice mixes feet and inches within one dimension), and a
+`UnitSystem` gives each role a symbol and a factor. `MapQuantities` rescales
+every quantity in an entity or a command, so the GUI, the MCP server, and
+the library data all convert through the same table. US customary (kip, ft,
+in) is the only system built; SI is a second table, selected by the
+`display_units` preference in metadata once it exists. A library file states
+its own units so tables can be typed in as published.
 
 ### Compilation
 

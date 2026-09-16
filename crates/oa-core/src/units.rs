@@ -88,6 +88,11 @@ impl Force {
         Self::from_lbf(v * 1000.0)
     }
 }
+impl LineLoad {
+    pub fn from_kips_per_foot(v: f64) -> Self {
+        Self(v * 4.448_221_615_260_5 * 1000.0 / 0.3048)
+    }
+}
 impl Pressure {
     pub fn from_mpa(v: f64) -> Self {
         Self(v * 1e6)

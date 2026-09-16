@@ -1,18 +1,25 @@
 {
   "name": "oa-starter",
-  "version": "2026-09-14",
-  "note": "Sample entries for development and examples. Values are common published figures for these shapes but have not been checked against the current AISC or Eurocode tables. Verify before design use. Full library tables are a separate import.",
+  "version": "2026-09-16",
+  "units": "us_customary",
+  "note": "Sample entries for development and examples, in AISC table units: in² and in⁴ for sections, ksi and pcf for materials. iz is the strong axis (AISC Ix), iy the weak axis (AISC Iy). Values are common published figures but have not been checked against the current AISC tables. Verify before design use. Full library tables are a separate import.",
   "sections": [
-    { "designation": "W14x90", "area": 0.017096736, "iy": 0.000150681, "iz": 0.000415801, "torsion": 0.00000169 },
-    { "designation": "W12x26", "area": 0.004935472, "iy": 0.0000072, "iz": 0.0000849, "torsion": 0.000000125 },
-    { "designation": "W8x31", "area": 0.005890318, "iy": 0.0000154, "iz": 0.0000458, "torsion": 0.000000223 },
-    { "designation": "IPE200", "area": 0.002848, "iy": 0.000001424, "iz": 0.00001943, "torsion": 0.0000000698 },
-    { "designation": "HEB200", "area": 0.00781, "iy": 0.00002003, "iz": 0.00005696, "torsion": 0.000000593 }
+    { "designation": "W8x31", "area": 9.13, "iy": 37.1, "iz": 110, "torsion": 0.536 },
+    { "designation": "W10x33", "area": 9.71, "iy": 36.6, "iz": 171, "torsion": 0.583 },
+    { "designation": "W12x26", "area": 7.65, "iy": 17.3, "iz": 204, "torsion": 0.3 },
+    { "designation": "W14x90", "area": 26.5, "iy": 362, "iz": 999, "torsion": 4.06 },
+    { "designation": "W16x36", "area": 10.6, "iy": 24.5, "iz": 448, "torsion": 0.545 },
+    { "designation": "W18x50", "area": 14.7, "iy": 40.1, "iz": 800, "torsion": 1.24 },
+    { "designation": "W21x62", "area": 18.3, "iy": 57.5, "iz": 1330, "torsion": 1.83 },
+    { "designation": "W24x76", "area": 22.4, "iy": 82.5, "iz": 2100, "torsion": 2.68 },
+    { "designation": "HSS6x6x3/8", "area": 7.58, "iy": 39.5, "iz": 39.5, "torsion": 64.6 },
+    { "designation": "HSS8x8x1/2", "area": 13.5, "iy": 125, "iz": 125, "torsion": 204 }
   ],
   "materials": [
-    { "designation": "A992", "young": 200000000000, "poisson": 0.3, "density": 7850 },
-    { "designation": "A36", "young": 200000000000, "poisson": 0.3, "density": 7850 },
-    { "designation": "S355", "young": 210000000000, "poisson": 0.3, "density": 7850 },
-    { "designation": "C30/37", "young": 33000000000, "poisson": 0.2, "density": 2500 }
+    { "designation": "A992", "young": 29000, "poisson": 0.3, "density": 490 },
+    { "designation": "A36", "young": 29000, "poisson": 0.3, "density": 490 },
+    { "designation": "A500 Gr. C", "young": 29000, "poisson": 0.3, "density": 490 },
+    { "designation": "Concrete 4 ksi", "young": 3605, "poisson": 0.2, "density": 150 },
+    { "designation": "Concrete 5 ksi", "young": 4031, "poisson": 0.2, "density": 150 }
   ]
 }
