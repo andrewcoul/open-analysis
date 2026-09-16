@@ -22,6 +22,8 @@ pub struct Gates {
     pub diaphragm: Option<&'static str>,
     pub nodal_load: Option<&'static str>,
     pub distributed_load: Option<&'static str>,
+    /// Generating ASCE 7 combinations needs cases to build them from.
+    pub generate: Option<&'static str>,
 }
 
 impl Gates {
@@ -57,6 +59,7 @@ impl Gates {
             nodal_load: no_case.or((nodes == 0).then_some("Select the nodes to load first")),
             distributed_load: no_case
                 .or((frames == 0).then_some("Select the frames to load first")),
+            generate: no_case,
         }
     }
 }

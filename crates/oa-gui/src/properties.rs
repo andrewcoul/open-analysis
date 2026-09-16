@@ -1102,7 +1102,8 @@ impl PropertyEditor {
                     .children((0..terms).map(|i| {
                         Button::new(("remove-term", i))
                             .small()
-                            .ghost()
+                            .danger()
+                            .outline()
                             .label(format!("Remove term {}", i + 1))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.remove_term(id, i, window, cx)
@@ -1292,7 +1293,8 @@ fn remove_button(
 ) -> AnyElement {
     Button::new(id)
         .xsmall()
-        .ghost()
+        .danger()
+        .outline()
         .label("Remove")
         .on_click(on_click)
         .into_any_element()

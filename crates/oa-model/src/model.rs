@@ -417,6 +417,7 @@ impl Model {
             .map(|c| {
                 m.insert(LoadCase {
                     name: c.name.clone(),
+                    load_type: LoadType::Other,
                     self_weight: c.self_weight,
                     nodal: c
                         .nodal

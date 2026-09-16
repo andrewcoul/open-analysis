@@ -172,10 +172,12 @@ impl Document {
         cx.notify();
     }
 
-    /// Replaces the whole model, for example after opening a file.
+    /// Replaces the whole model, for example after opening a file. The
+    /// revision keeps counting up so views that cache by it rebuild.
     pub fn replace(&mut self, model: Model, path: Option<PathBuf>, cx: &mut Context<Self>) {
+        let revision = self.revision + 1;
         *self = Self::with_model(model, path);
-        self.revision = 1;
+        self.revision = revision;
         cx.notify();
     }
 
@@ -239,6 +241,17 @@ pub fn read_model(path: &Path) -> Result<Model, String> {
 
 pub fn write_model(model: &Model, path: &Path) -> Result<(), String> {
     oa_model::save_json(model, path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// An empty model with the two load cases every building starts from: dead,
+/// carrying the self weight down Z, and live.
+pub fn new_model() -> Model {
+    let mut m = Model::default();
+    let mut dead = LoadCase::new("Dead").with_type(oa_model::LoadType::Dead);
+    dead.self_weight = [0.0, 0.0, -1.0];
+    m.insert(dead);
+    m.insert(LoadCase::new("Live").with_type(oa_model::LoadType::Live));
+    m
 }
 
 /// A two-storey, two-bay steel moment frame with dead and wind cases, so a
@@ -325,7 +338,7 @@ pub fn example_frame() -> Model {
             }
         }
     }
-    let mut dead = LoadCase::new("Dead");
+    let mut dead = LoadCase::new("Dead").with_type(oa_model::LoadType::Dead);
     dead.self_weight = [0.0, 0.0, -1.0];
     for b in &beams {
         dead.member.push(MemberLoad::Distributed {
@@ -337,7 +350,7 @@ pub fn example_frame() -> Model {
             axes: oa_model::Axes::Global,
         });
     }
-    let mut wind = LoadCase::new("Wind");
+    let mut wind = LoadCase::new("Wind").with_type(oa_model::LoadType::Wind);
     for k in 1..=storeys {
         for j in 0..=bays_y {
             wind.nodal.push(oa_model::NodalLoad {
@@ -372,6 +385,14 @@ mod tests {
         assert_eq!(compiled.solver.combinations.len(), 2);
         let results = oa_core::analyze_static(&compiled.solver, &Default::default()).unwrap();
         assert_eq!(results.combinations.len(), 2);
+    }
+
+    #[test]
+    fn new_model_starts_with_dead_and_live() {
+        let model = new_model();
+        let types: Vec<_> = model.load_cases.values().map(|c| c.load_type).collect();
+        assert_eq!(types, [oa_model::LoadType::Dead, oa_model::LoadType::Live]);
+        assert!(model.combinations.is_empty());
     }
 
     #[test]

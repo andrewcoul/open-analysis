@@ -152,7 +152,7 @@ impl Session {
             ),
             EntityKind::LoadCase => rows!(
                 m.load_cases,
-                |id, e| json!({"id": id, "name": e.name, "nodal": e.nodal.len(), "member": e.member.len(), "self_weight": e.self_weight})
+                |id, e| json!({"id": id, "name": e.name, "load_type": e.load_type, "nodal": e.nodal.len(), "member": e.member.len(), "self_weight": e.self_weight})
             ),
             EntityKind::Combination => rows!(
                 m.combinations,
