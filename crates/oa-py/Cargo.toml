@@ -12,5 +12,5 @@ doctest = false
 
 [dependencies]
 oa-core = { workspace = true, features = ["parallel"] }
-pyo3 = { version = "0.27", features = ["extension-module", "abi3-py310", "generate-import-lib"] }
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py310", "generate-import-lib"] }
 
