@@ -117,6 +117,9 @@ pub struct ResultStore {
     combos: BTreeMap<String, i64>,
     /// Set by `open_partial`: the caller asked to read an unfinished run.
     allow_partial: bool,
+    /// Stored tables a caller's view shadows; `sql` refuses to read them
+    /// directly by `main.<table>` so the view is the only way in.
+    shadowed: Vec<String>,
 }
 
 impl ResultStore {
@@ -175,6 +178,7 @@ impl ResultStore {
             info,
             combos: BTreeMap::new(),
             allow_partial: false,
+            shadowed: vec![],
         })
     }
     pub fn create_in_memory(model: &Model, options: &StaticOptions) -> Result<Self> {
@@ -237,6 +241,7 @@ impl ResultStore {
             info,
             combos,
             allow_partial: true,
+            shadowed: vec![],
         })
     }
     pub fn info(&self) -> &RunInfo {
@@ -385,7 +390,7 @@ impl ResultStore {
         )?;
         let node_table = |table: &str| -> Result<Option<Vec<[f64; 6]>>> {
             let mut stmt = self.conn.prepare_cached(&format!(
-                "select node, ux, uy, uz, rx, ry, rz from {table} where combination = ?1 order by node"
+                "select node, ux, uy, uz, rx, ry, rz from main.{table} where combination = ?1 order by node"
             ))?;
             let rows: Vec<[f64; 6]> = stmt
                 .query_map([id], |r| {
@@ -404,7 +409,7 @@ impl ResultStore {
         let displacements = node_table("displacements")?;
         let reactions = node_table("reactions")?;
         let mut stmt = self.conn.prepare_cached(&format!(
-            "select frame, active, {}, {} from frame_results where combination = ?1 order by frame",
+            "select frame, active, {}, {} from main.frame_results where combination = ?1 order by frame",
             FRAME_FORCE_COLUMNS.join(", "),
             FRAME_DISPLACEMENT_COLUMNS.join(", ")
         ))?;
@@ -418,7 +423,7 @@ impl ResultStore {
             })?
             .collect::<std::result::Result<_, _>>()?;
         let mut stmt = self.conn.prepare_cached(&format!(
-            "select shell, {}, {} from shell_results where combination = ?1 order by shell",
+            "select shell, {}, {} from main.shell_results where combination = ?1 order by shell",
             (1..=24)
                 .map(|i| format!("f{i}"))
                 .collect::<Vec<_>>()
@@ -458,7 +463,7 @@ impl ResultStore {
         self.require_complete()?;
         let id = self.combo_id(combination)?;
         let mut stmt = self.conn.prepare_cached(&format!(
-            "select active, {}, {} from frame_results where combination = ?1 and frame = ?2",
+            "select active, {}, {} from main.frame_results where combination = ?1 and frame = ?2",
             FRAME_FORCE_COLUMNS.join(", "),
             FRAME_DISPLACEMENT_COLUMNS.join(", ")
         ))?;
@@ -482,7 +487,7 @@ impl ResultStore {
     ) -> Result<Envelope> {
         self.require_complete()?;
         let mut stmt = self.conn.prepare_cached(&format!(
-            "select c.name, t.{column} from {table} t join combinations c on c.id = t.combination where t.{key} = ?1"
+            "select c.name, t.{column} from main.{table} t join combinations c on c.id = t.combination where t.{key} = ?1"
         ))?;
         let values: Vec<(String, f64)> = stmt
             .query_map([entity as i64], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -522,7 +527,7 @@ impl ResultStore {
         self.require_complete()?;
         let col = column(&DISPLACEMENT_COLUMNS, component)?;
         let mut stmt = self.conn.prepare_cached(&format!(
-            "select c.name, u.{col} - l.{col} from displacements u join displacements l on l.combination = u.combination join combinations c on c.id = u.combination where u.node = ?1 and l.node = ?2"
+            "select c.name, u.{col} - l.{col} from main.displacements u join main.displacements l on l.combination = u.combination join combinations c on c.id = u.combination where u.node = ?1 and l.node = ?2"
         ))?;
         let values: Vec<(String, f64)> = stmt
             .query_map(params![upper as i64, lower as i64], |r| {
@@ -557,6 +562,23 @@ impl ResultStore {
 
     /// Runs a read-only SQL statement and returns at most `limit` rows.
     ///
+    /// Defines a temporary view on this connection only; the file is not
+    /// touched. A view named like a stored table shadows it for `sql`, which
+    /// is how a caller presents the store in other units: the view's own
+    /// query must then name the table as `main.<table>`, and `sql` refuses
+    /// a statement that reads the shadowed table directly that way, so the
+    /// view is the only route to it. The store's own reads always say
+    /// `main.` so they see the stored values whatever views a caller has
+    /// defined.
+    pub fn define_view(&mut self, name: &str, select: &str) -> Result<()> {
+        self.conn.execute_batch(&format!(
+            "create temp view if not exists \"{name}\" as {select};"
+        ))?;
+        if !self.shadowed.iter().any(|t| t == name) {
+            self.shadowed.push(name.to_string());
+        }
+        Ok(())
+    }
     /// SQLite's own read-only classification lets `ATTACH`, `DETACH`, and
     /// pragmas through because they change no database content, yet they can
     /// create files and alter the connection. An authorizer restricts the
@@ -564,7 +586,25 @@ impl ResultStore {
     /// stays as a second guard.
     pub fn sql(&self, sql: &str, limit: usize) -> Result<Table> {
         self.require_complete()?;
-        self.conn.authorizer(Some(read_only_authorizer))?;
+        let shadowed = self.shadowed.clone();
+        self.conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+            // Top-level SQL may not read a column of a shadowed table by
+            // `main.<table>`; only the shadowing view (the `accessor`) may.
+            // The column-less read SQLite reports for a flattened
+            // `count(*)` names the table at top level but carries no value.
+            if let AuthAction::Read {
+                table_name,
+                column_name,
+            } = ctx.action
+                && !column_name.is_empty()
+                && ctx.database_name == Some("main")
+                && ctx.accessor.is_none()
+                && shadowed.iter().any(|t| t == table_name)
+            {
+                return Authorization::Deny;
+            }
+            read_only_authorizer(ctx)
+        }))?;
         let prepared = self.conn.prepare(sql);
         self.conn
             .authorizer::<fn(AuthContext<'_>) -> Authorization>(None)?;

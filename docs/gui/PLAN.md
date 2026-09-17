@@ -72,7 +72,7 @@ size off the grid. The Paper file "open-analysis GUI", page "v2 · Menus and
 keybinds", holds the design.
 
 Drawing is by tool. Node places a node where you click, on the ground plane
-snapped to 0.25 m (or in the view plane through the centre when the ground
+snapped to 1 ft (or in the view plane through the centre when the ground
 is edge-on in an elevation). Frame takes node I then node J and carries on
 from J; Shell takes four nodes in order. With nodes already selected, the
 Frame and Shell buttons draw on them at once. Esc drops the shape being
@@ -133,15 +133,21 @@ Actions are routed to `Workspace` methods in `main.rs`.
   shape drawn for a chosen combination and auto-scaled to 5% of the model
   extent. Results are dropped on any edit so a stale shape cannot be shown.
 - Validation problems from `compile` in the status bar.
+- US customary units everywhere a number is shown or typed: coordinates in
+  ft, section properties and shell thickness in in, forces in kip, moments
+  in kip·ft, line loads in kip/ft, pressures in psf, E and stresses in ksi,
+  density in pcf, springs in kip/ft, nodal mass in kip·s²/ft. The model and
+  the file stay SI; `text.rs` converts by `Role` through `oa_model::units`.
 
 ## Not yet done
 
-- Snapping the Node tool to anything but the 0.25 m grid: no snapping to
+- Snapping the Node tool to anything but the 1 ft grid: no snapping to
   existing nodes, frame ends, or a story level, and no box selection.
 - Grids and stories. There is no story or grid system, which ETABS relies on
   for plan views and level selection.
-- Display units. The model is SI and every field is labelled in SI. The
-  `display_units` preference in metadata is not applied.
+- SI display. Every field shows US customary units through
+  `oa_model::units` (see `text.rs`); adding SI is a second factor table
+  there plus a selector wired to the `display_units` preference in metadata.
 - Result display beyond the deformed shape: force diagrams, reactions,
   tables, and envelopes. The result store and envelopes exist in
   `oa-results` and are exposed to agents but not to the GUI.

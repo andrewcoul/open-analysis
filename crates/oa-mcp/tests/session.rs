@@ -17,16 +17,16 @@ fn agent_scenario_two_storey_frame_to_governing_drift() {
     let column = s.add_section_from_library("W14x90", "column").unwrap();
     let beam = s.add_section_from_library("W12x26", "beam").unwrap();
 
-    // Six nodes: two fixed at grade, two per floor.
+    // Six nodes: two fixed at grade, two per floor. A 20 ft bay, 12 ft storeys.
     let ids = s.next_ids(6);
     let mut commands = vec![];
     for (i, (x, y)) in [
         (0.0, 0.0),
-        (6.0, 0.0),
-        (0.0, 4.0),
-        (6.0, 4.0),
-        (0.0, 8.0),
-        (6.0, 8.0),
+        (20.0, 0.0),
+        (0.0, 12.0),
+        (20.0, 12.0),
+        (0.0, 24.0),
+        (20.0, 24.0),
     ]
     .into_iter()
     .enumerate()
@@ -57,13 +57,13 @@ fn agent_scenario_two_storey_frame_to_governing_drift() {
     commands.push(cmd(
         json!({"command": "add_load_case", "id": dead, "load_case": {
         "name": "dead", "self_weight": [0, -1, 0],
-        "member": [{"type": "distributed", "member": frames[4], "start": 0, "end": 6,
-                    "start_load": [0, -15000, 0], "end_load": [0, -15000, 0], "axes": "global"},
-                   {"type": "distributed", "member": frames[5], "start": 0, "end": 6,
-                    "start_load": [0, -10000, 0], "end_load": [0, -10000, 0], "axes": "global"}]}}),
+        "member": [{"type": "distributed", "member": frames[4], "start": 0, "end": 20,
+                    "start_load": [0, -1.5, 0], "end_load": [0, -1.5, 0], "axes": "global"},
+                   {"type": "distributed", "member": frames[5], "start": 0, "end": 20,
+                    "start_load": [0, -1.0, 0], "end_load": [0, -1.0, 0], "axes": "global"}]}}),
     ));
     commands.push(cmd(json!({"command": "add_load_case", "id": wind, "load_case": {
-        "name": "wind", "nodal": [{"node": ids[2], "force": [12000, 0, 0]}, {"node": ids[4], "force": [8000, 0, 0]}]}})));
+        "name": "wind", "nodal": [{"node": ids[2], "force": [12, 0, 0]}, {"node": ids[4], "force": [8, 0, 0]}]}})));
     commands.push(cmd(
         json!({"command": "add_combination", "id": combo, "combination": {
         "name": "1.2D+1.0W", "terms": [[dead, 1.2], [wind, 1.0]]}}),
@@ -100,6 +100,58 @@ fn agent_scenario_two_storey_frame_to_governing_drift() {
         .query("select count(*) as n from frame_results", 10)
         .unwrap();
     assert_eq!(table["rows"][0][0], 6);
+
+    // Everything the agent sees is in US units: the model went in as typed,
+    // and results come out in inches and kips whether asked through an
+    // envelope or through SQL.
+    let described = s.describe();
+    assert_eq!(described["units"]["symbols"]["length"], "ft");
+    assert!((described["gravity"].as_f64().unwrap() - 32.174).abs() < 1e-3);
+    let material = s.get(steel).unwrap();
+    assert!((material["entity"]["young"].as_f64().unwrap() - 29_000.0).abs() < 1e-6);
+    assert!((material["entity"]["density"].as_f64().unwrap() - 490.0).abs() < 1e-6);
+    let top = s.get(ids[4]).unwrap();
+    assert!((top["entity"]["position"][1].as_f64().unwrap() - 24.0).abs() < 1e-9);
+    let listed = s.list(EntityKind::Node, Some("N5"), 1);
+    assert!((listed["rows"][0]["position"][0].as_f64().unwrap() - 20.0).abs() < 1e-9);
+    assert_eq!(roof_drift["unit"], "in");
+    let sway = s.envelope(ids[4], Quantity::Displacement, "ux").unwrap();
+    assert_eq!(sway["unit"], "in");
+    let index = s.entity_indices(&[ids[4]]).unwrap()[0]["node"]
+        .as_u64()
+        .unwrap();
+    let via_sql = s
+        .query(
+            &format!("select ux from displacements where node = {index}"),
+            1,
+        )
+        .unwrap();
+    let sql_ux = via_sql["rows"][0][0].as_f64().unwrap();
+    let envelope_ux = sway["maximum"]["value"].as_f64().unwrap();
+    assert!(
+        (sql_ux - envelope_ux).abs() < 1e-9 * envelope_ux.abs().max(1.0),
+        "sql {sql_ux} vs envelope {envelope_ux}"
+    );
+    let reaction = s
+        .query("select uy from reactions where node = 0", 1)
+        .unwrap();
+    let base_kip = reaction["rows"][0][0].as_f64().unwrap();
+    let base_env = base["maximum"]["value"].as_f64().unwrap();
+    assert!((base_kip - base_env).abs() < 1e-9 * base_env.abs().max(1.0));
+    // Two beams at 1.5 and 1.0 kip/ft over 20 ft carry 50 kip, self weight
+    // adds about 5 kip, and 1.2D puts about 66 kip on the two bases.
+    let total = s.query("select sum(uy) from reactions", 1).unwrap()["rows"][0][0]
+        .as_f64()
+        .unwrap();
+    assert!(
+        total > 60.0 && total < 70.0,
+        "total base reaction {total} kip"
+    );
+    // Naming the stored table directly would hand back newtons, so it is
+    // refused rather than answered in the wrong units.
+    let refused = s.query("select uy from main.reactions where node = 0", 1);
+    let message = refused.unwrap_err().to_string();
+    assert!(message.contains("US customary"), "{message}");
     let indices = s.entity_indices(&[ids[4], frames[5]]).unwrap();
     assert!(indices[0]["node"].is_number() && indices[1]["frame"].is_number());
 
@@ -133,7 +185,7 @@ fn save_and_load_round_trip_through_the_session() {
     let path = dir.join("model.json");
     let mut s = Session::default();
     s.new_model("saved");
-    let steel = s.add_material_from_library("S355", "steel").unwrap();
+    let steel = s.add_material_from_library("A36", "steel").unwrap();
     assert!(steel.0 > 0);
     let saved = s.save(Some(path.clone())).unwrap();
     assert_eq!(saved, path);

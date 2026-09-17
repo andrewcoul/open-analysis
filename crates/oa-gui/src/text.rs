@@ -1,6 +1,26 @@
-//! Number display and parsing at the UI boundary. The model stays SI.
+//! Number display and parsing at the UI boundary. The model stays SI; every
+//! field shows and reads [`UNITS`], converting by the quantity's [`Role`].
+use oa_model::{Role, UnitSystem};
 
-/// Short, round-trippable text for an SI value.
+/// The units every label, field, and list in the GUI uses.
+pub const UNITS: UnitSystem = UnitSystem::UsCustomary;
+
+/// "Name (unit)" for a field label.
+pub fn label(name: &str, role: Role) -> String {
+    UNITS.label(name, role)
+}
+
+/// Short text for an SI value, shown in display units.
+pub fn fmt_q(role: Role, si: f64) -> String {
+    fmt_num(UNITS.to_display(role, si))
+}
+
+/// Parses text typed in display units into an SI value.
+pub fn parse_q(role: Role, label: &str, text: &str) -> Result<f64, String> {
+    parse_num(label, text).map(|v| UNITS.from_display(role, v))
+}
+
+/// Short, round-trippable text for a plain number.
 pub fn fmt_num(v: f64) -> String {
     if v == 0.0 {
         return "0".into();
@@ -25,7 +45,8 @@ pub fn parse_num(label: &str, text: &str) -> Result<f64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{fmt_num, fmt_q, label, parse_num, parse_q};
+    use oa_model::Role;
 
     #[test]
     fn formats_compactly() {
@@ -42,5 +63,15 @@ mod tests {
         assert_eq!(parse_num("E", "1,000").unwrap(), 1000.0);
         assert!(parse_num("E", "abc").is_err());
         assert!(parse_num("E", "inf").is_err());
+    }
+
+    #[test]
+    fn fields_show_and_read_us_units() {
+        assert_eq!(label("X", Role::Length), "X (ft)");
+        assert_eq!(fmt_q(Role::Length, 3.048), "10");
+        assert_eq!(fmt_q(Role::Area, 26.5 * 0.0254_f64.powi(2)), "26.5");
+        assert!((parse_q(Role::Length, "X", "10").unwrap() - 3.048).abs() < 1e-12);
+        assert!((parse_q(Role::Force, "F", "1").unwrap() - 4_448.221_615_260_5).abs() < 1e-9);
+        assert!(parse_q(Role::Force, "F", "ten").is_err());
     }
 }

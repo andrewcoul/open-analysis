@@ -14,6 +14,7 @@ pub mod library;
 pub mod model;
 #[cfg(feature = "store")]
 pub mod store;
+pub mod units;
 
 pub use command::{Command, ModelError};
 pub use compile::{Compiled, GroupIndices, Mapping, Problem, compile};
@@ -22,3 +23,4 @@ pub use entity::*;
 pub use format::{FORMAT_VERSION, from_json, save_json, to_json};
 pub use library::Library;
 pub use model::{EntityKind, Metadata, Model};
+pub use units::{MapQuantities, Role, UnitSystem};

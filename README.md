@@ -8,8 +8,11 @@ shells, diaphragms, load cases, and combinations. Nodes can carry restraints,
 prescribed displacements, lumped mass, and grounded springs. Load cases can
 include self-weight. It runs linear static, nonlinear (tension-only /
 compression-only), P-Delta, modal, and response-spectrum analyses. All
-quantities are SI internally. Load combinations are solved in parallel and
-streamed through a result consumer so memory use stays bounded.
+quantities are SI internally; the desktop GUI, the MCP server, and the
+bundled library present US customary units (kip, ft, in) and convert at
+that boundary, with SI display planned as a second unit table. Load
+combinations are solved in parallel and streamed through a result consumer
+so memory use stays bounded.
 
 The solver design and its rationale are in
 [docs/solver/PLAN.md](docs/solver/PLAN.md). The editable model layer that will

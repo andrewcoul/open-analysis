@@ -419,15 +419,69 @@ fn m2_format_fixture_loads_round_trips_and_rejects_newer_versions() {
     assert!(from_json(&missing.to_string()).is_err());
 }
 
+/// Coordinates and load positions are converted from display units one by
+/// one, so a full-span load on a member away from the origin can land a few
+/// ulps past the length the solver computes. Compilation snaps it back.
+#[test]
+fn full_span_loads_converted_from_feet_compile() {
+    let us = UnitSystem::UsCustomary;
+    let ft = |v: f64| Length::from_si(us.from_display(Role::Length, v));
+    let mut m = Model::default();
+    let mat = m.insert(steel());
+    let sec = m.insert(section());
+    let a = m.insert(Node::fixed("A", [ft(48.0), Length::ZERO, Length::ZERO]));
+    let b = m.insert(Node::new("B", [ft(60.0), Length::ZERO, Length::ZERO]));
+    let beam = m.insert(Frame::new("B1", [a, b], mat, sec));
+    let mut case = LoadCase::new("D");
+    let w = LineLoad::from_kips_per_foot(-1.0);
+    case.member.push(MemberLoad::Distributed {
+        member: beam,
+        start: Length::ZERO,
+        end: ft(12.0),
+        start_load: [LineLoad::ZERO, w, LineLoad::ZERO],
+        end_load: [LineLoad::ZERO, w, LineLoad::ZERO],
+        axes: Axes::Global,
+    });
+    case.member.push(MemberLoad::Point {
+        member: beam,
+        position: ft(12.0),
+        force: [Force::ZERO, Force::from_kips(-1.0), Force::ZERO],
+        moment: [Moment::ZERO; 3],
+        axes: Axes::Global,
+    });
+    m.insert(case);
+    let span = (ft(60.0).si() - ft(48.0).si()).abs();
+    assert_ne!(
+        ft(12.0).si(),
+        span,
+        "the case only matters when they differ"
+    );
+    let compiled = compile(&m).expect("a 12 ft load fits a 12 ft member");
+    let oa_core::MemberLoad::Distributed { end, .. } = compiled.solver.load_cases[0].member[0]
+    else {
+        panic!()
+    };
+    assert_eq!(end.si(), span);
+}
+
 #[test]
 fn m3_library_copies_carry_provenance_and_survive_updates() {
     let library = Library::starter();
-    assert!(library.section_designations().contains(&"IPE200"));
-    let s = library.section("IPE200", "beam").unwrap();
+    assert!(library.section_designations().contains(&"W12x26"));
+    let s = library.section("W12x26", "beam").unwrap();
     let p = s.provenance.as_ref().unwrap();
     assert_eq!(p.library, "oa-starter");
-    assert_eq!(p.designation, "IPE200");
-    assert!((s.area.si() - 0.002848).abs() < 1e-12);
+    assert_eq!(p.designation, "W12x26");
+    // The library is written in AISC units; the copy is SI (7.65 in²).
+    assert!((s.area.si() - 7.65 * 0.0254_f64.powi(2)).abs() < 1e-12);
+    assert!((s.iz.si() - 204.0 * 0.0254_f64.powi(4)).abs() < 1e-15);
+    let steel = library.material("A992", "steel").unwrap();
+    assert!((steel.young.si() - 29_000.0 * 6.894_757_293_168e6).abs() < 1e3);
+    assert!(
+        (steel.density.si() - 7848.6).abs() < 0.5,
+        "{}",
+        steel.density.si()
+    );
     assert!(library.section("W99x999", "x").is_none());
     let model = from_json(&to_json(&{
         let mut m = Model::default();

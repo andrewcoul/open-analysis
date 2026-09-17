@@ -588,7 +588,7 @@ impl Workspace {
             self.select(vec![id], cx);
         }
     }
-    /// A 200 mm shell on four nodes with the first material.
+    /// An 8 in shell on four nodes with the first material.
     fn add_shell(&mut self, nodes: [EntityId; 4], window: &mut Window, cx: &mut Context<Self>) {
         let material = match self.first_material_and_section(cx) {
             Ok((material, _)) => material,
@@ -599,7 +599,7 @@ impl Workspace {
             name: unused_name::<Shell>(model, "SH"),
             nodes,
             material,
-            thickness: Length::from_metres(0.2),
+            thickness: Length::from_inches(8.0),
             formulation: Default::default(),
             drilling_ratio: 1e-3,
         };
@@ -1060,7 +1060,7 @@ impl Workspace {
                         .gap_1()
                         .text_sm()
                         .child("The menus read left to right in the order a model is built: define a material and section, draw nodes and frames, assign loads, run. Every menu item shows its key. Single letters and digits work while the view has focus; everything else holds Ctrl. The strip above the view says what the current tool wants next.")
-                        .child("Models are SI: metres, newtons, pascals, kilograms.")
+                        .child("Units are US customary: coordinates in feet, section properties and shell thickness in inches, forces in kips, moments in kip·ft, line loads in kip/ft, pressures in psf, stresses and E in ksi, density in pcf. Files are stored in SI and converted on the way in and out.")
                         .child(heading("Mouse"))
                         .child(row("Click", "Select; shift+click adds; double-click edits"))
                         .child(row("Right-drag", "Orbit"))
@@ -1179,7 +1179,7 @@ impl Workspace {
                     .child(div().size(px(7.)).rounded_full().bg(results_color))
                     .child(results),
             )
-            .right(div().text_xs().text_color(muted).child("SI: m, N, Pa"))
+            .right(div().text_xs().text_color(muted).child("kip, ft, in"))
             .right(div().text_xs().text_color(muted).child(
                 match viewport.up_axis() {
                     UpAxis::Y => "Y up",
