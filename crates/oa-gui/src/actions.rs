@@ -68,3 +68,8 @@ pub struct ShowCombination(pub SharedString);
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = oa_gui, no_json)]
 pub struct ShowDiagram(pub Option<crate::results::Diagram>);
+
+/// Shows every number with this many decimals.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = oa_gui, no_json)]
+pub struct SetPrecision(pub usize);

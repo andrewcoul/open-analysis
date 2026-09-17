@@ -42,7 +42,7 @@ fn aggregated(terms: &[(EntityId, f64)]) -> BTreeMap<EntityId, f64> {
     out
 }
 
-/// "0, 0, -1" for a self-weight vector.
+/// "0.00, 0.00, -1.00" for a self-weight vector, at the display precision.
 fn fmt_vec3(v: [f64; 3]) -> String {
     v.map(fmt_num).join(", ")
 }
@@ -619,12 +619,14 @@ impl Render for LoadPanel {
 mod tests {
     // Named imports: the gpui glob carries its own `test` attribute macro.
     use super::{aggregated, fmt_vec3, parse_vec3, type_label};
+    use crate::text::{DEFAULT_PRECISION, TestPrecision};
     use oa_model::{EntityId, LoadType};
     use std::collections::BTreeMap;
 
     #[test]
     fn self_weight_round_trips() {
-        assert_eq!(fmt_vec3([0.0, 0.0, -1.0]), "0, 0, -1");
+        let _p = TestPrecision::of(DEFAULT_PRECISION);
+        assert_eq!(fmt_vec3([0.0, 0.0, -1.0]), "0.00, 0.00, -1.00");
         assert_eq!(parse_vec3("0, 0, -1").unwrap(), [0.0, 0.0, -1.0]);
         assert_eq!(parse_vec3(" 0 0 -9.81 ").unwrap(), [0.0, 0.0, -9.81]);
         assert!(parse_vec3("0, 0").is_err());
