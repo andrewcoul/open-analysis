@@ -10,7 +10,8 @@ use crate::document::{
 use crate::explorer::Explorer;
 use crate::loads::{LoadPanel, Section};
 use crate::prompt::{AnalysisSummary, Gates, PromptState, render_prompt, selection_summary};
-use crate::properties::PropertyEditor;
+use crate::properties::{EditorTab, PropertyEditor};
+use crate::results::Diagram;
 use crate::viewport::{Tool, Viewport, ViewportEvent};
 use gpui_kit::component::command::{
     Command as CommandPalette, CommandGroup, CommandItem, CommandState,
@@ -189,10 +190,6 @@ impl Workspace {
                         .checked(options.frame_labels),
                     MenuItem::action("Z is up", ToggleUpAxis)
                         .checked(viewport.up_axis() == UpAxis::Z),
-                    MenuItem::separator(),
-                    MenuItem::action("Deformed shape", ToggleDeformedShape)
-                        .checked(options.deformed)
-                        .disabled(document.analysis().is_none()),
                 ],
                 disabled: false,
             },
@@ -252,20 +249,41 @@ impl Workspace {
             },
             Menu {
                 name: "Analyze".into(),
-                items: vec![
-                    MenuItem::action("Run static analysis", RunStaticAnalysis),
-                    MenuItem::separator(),
-                    MenuItem::action("Next combination", NextCombination)
-                        .disabled(combinations.len() < 2),
-                    MenuItem::action("Previous combination", PreviousCombination)
-                        .disabled(combinations.len() < 2),
-                    MenuItem::submenu(Menu {
-                        name: "Show combination".into(),
-                        disabled: combinations.is_empty(),
-                        items: combinations,
-                    }),
-                ],
+                items: vec![MenuItem::action("Run static analysis", RunStaticAnalysis)],
                 disabled: false,
+            },
+            Menu {
+                name: "Results".into(),
+                items: {
+                    let mut items = vec![
+                        MenuItem::action("Deformed shape", ToggleDeformedShape)
+                            .checked(options.deformed),
+                        MenuItem::separator(),
+                        MenuItem::action("No diagram", ShowDiagram(None))
+                            .checked(options.diagram.is_none()),
+                    ];
+                    items.extend(Diagram::ALL.iter().map(|d| {
+                        MenuItem::action(d.label(), ShowDiagram(Some(*d)))
+                            .checked(options.diagram == Some(*d))
+                    }));
+                    items.extend([
+                        MenuItem::separator(),
+                        MenuItem::action("Member results…", ShowMemberResults)
+                            .disabled(gates.member_results.is_some()),
+                        MenuItem::separator(),
+                        MenuItem::action("Next combination", NextCombination)
+                            .disabled(combinations.len() < 2),
+                        MenuItem::action("Previous combination", PreviousCombination)
+                            .disabled(combinations.len() < 2),
+                        MenuItem::submenu(Menu {
+                            name: "Show combination".into(),
+                            disabled: combinations.is_empty(),
+                            items: combinations,
+                        }),
+                    ]);
+                    items
+                },
+                disabled: document.analysis().is_none(),
             },
             Menu {
                 name: "Help".into(),
@@ -776,18 +794,43 @@ impl Workspace {
                 label.to_string()
             }
         };
-        let mut analyze = vec![item("Run static analysis", Box::new(RunStaticAnalysis), None)];
+        let analyze = vec![item("Run static analysis", Box::new(RunStaticAnalysis), None)];
+        let not_solved = (!solved).then_some("run the analysis first");
+        let mut results = vec![
+            item(
+                &on("Deformed shape", options.deformed),
+                Box::new(ToggleDeformedShape),
+                not_solved,
+            ),
+            item(
+                &on("No diagram", options.diagram.is_none()),
+                Box::new(ShowDiagram(None)),
+                not_solved,
+            ),
+        ];
+        results.extend(Diagram::ALL.iter().map(|d| {
+            item(
+                &on(d.label(), options.diagram == Some(*d)),
+                Box::new(ShowDiagram(Some(*d))),
+                not_solved,
+            )
+        }));
+        results.push(item(
+            "Member results…",
+            Box::new(ShowMemberResults),
+            gates.member_results,
+        ));
         if let Some(analysis) = document.analysis() {
             let several = (analysis.results.combinations.len() < 2)
                 .then_some("only one combination");
-            analyze.push(item("Next combination", Box::new(NextCombination), several));
-            analyze.push(item(
+            results.push(item("Next combination", Box::new(NextCombination), several));
+            results.push(item(
                 "Previous combination",
                 Box::new(PreviousCombination),
                 several,
             ));
             for c in &analysis.results.combinations {
-                analyze.push(item(
+                results.push(item(
                     &format!("Show combination: {}", c.combination),
                     Box::new(ShowCombination(c.combination.clone().into())),
                     None,
@@ -895,14 +938,10 @@ impl Workspace {
                         Box::new(ToggleUpAxis),
                         None,
                     ),
-                    item(
-                        &on("Deformed shape", options.deformed),
-                        Box::new(ToggleDeformedShape),
-                        (!solved).then_some("run the analysis first"),
-                    ),
                 ],
             ),
             ("Analyze", analyze),
+            ("Results", results),
             ("Help", vec![item("Guide and shortcuts…", Box::new(About), None)]),
         ]
     }
@@ -993,6 +1032,22 @@ impl Workspace {
             which(&mut options);
             viewport.set_options(options, cx);
         });
+    }
+    pub fn show_diagram(&mut self, diagram: Option<Diagram>, cx: &mut Context<Self>) {
+        self.viewport.update(cx, |viewport, cx| {
+            let mut options = viewport.options();
+            options.diagram = diagram;
+            viewport.set_options(options, cx);
+        });
+    }
+    /// The property editor on its Results tab, for the one selected frame.
+    pub fn show_member_results(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(reason) = Gates::of(self.document.read(cx)).member_results {
+            return self.info(reason, window, cx);
+        }
+        self.properties
+            .update(cx, |properties, cx| properties.set_tab(EditorTab::Results, cx));
+        self.show_properties(window, cx);
     }
     pub fn run_static(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self

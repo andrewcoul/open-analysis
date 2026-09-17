@@ -113,6 +113,55 @@ fn distributed_cantilever_and_exact_diagram() {
     close(f.values[5], -2000.0, 1e-10);
 }
 #[test]
+fn frame_diagram_integrates_the_deflection_in_both_planes() {
+    let mut m = cantilever(1);
+    m.add_load_case(LoadCase {
+        name: "udl".into(),
+        member: vec![MemberLoad::Distributed {
+            member: FrameId(0),
+            start: Length::ZERO,
+            end: Length::from_si(3.0),
+            start_load: [
+                LineLoad::ZERO,
+                LineLoad::from_si(-1000.0),
+                LineLoad::from_si(-500.0),
+            ],
+            end_load: [
+                LineLoad::ZERO,
+                LineLoad::from_si(-1000.0),
+                LineLoad::from_si(-500.0),
+            ],
+            axes: Axes::Local,
+        }],
+        ..Default::default()
+    });
+    let r = analyze_static(&m, &StaticOptions::default()).unwrap();
+    let c = &r.combinations[0];
+    let f = &c.frames.as_ref().unwrap()[0];
+    let d = frame_diagram(&m, &m.effective_combinations()[0], FrameId(0), f, 401).unwrap();
+    assert_eq!(d.axes, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+    close(d.length, 3.0, 1e-12);
+    assert_eq!(d.stations.len(), 401);
+    close(d.stations[400], 3.0, 1e-12);
+    let exact = frame_section_forces(
+        &m,
+        &m.effective_combinations()[0],
+        FrameId(0),
+        f,
+        Length::from_si(1.5),
+    )
+    .unwrap();
+    assert_eq!(d.forces[200], exact.values);
+    // The integrated curve lands on the tip displacements the solver found,
+    // which are the closed-form qL^4 / 8EI in each plane.
+    close(d.deflections[0][0], 0.0, 1e-12);
+    close(d.deflections[400][0], f.local_displacements[7], 1e-5);
+    close(d.deflections[400][1], f.local_displacements[8], 1e-5);
+    close(d.deflections[400][0], -1000.0 * 81.0 / (8.0 * 200e9 * 4e-5), 1e-5);
+    close(d.deflections[400][1], -500.0 * 81.0 / (8.0 * 200e9 * 2e-5), 1e-5);
+    assert!(frame_diagram(&m, &m.effective_combinations()[0], FrameId(0), f, 1).is_err());
+}
+#[test]
 fn released_fixed_fixed_beam_becomes_simply_supported() {
     let mut m = cantilever(1);
     m.nodes[1].restrained = [true; 6];

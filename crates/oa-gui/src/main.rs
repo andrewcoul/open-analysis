@@ -11,6 +11,7 @@ mod explorer;
 mod loads;
 mod properties;
 mod prompt;
+mod results;
 mod text;
 mod viewport;
 mod workspace;
@@ -260,6 +261,10 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
         .show_properties(window, cx));
     on!(ShowModelBrowser, |ws, _, window, cx| ws
         .show_model_browser(window, cx));
+    on!(ShowMemberResults, |ws, _, window, cx| ws
+        .show_member_results(window, cx));
+    on!(ShowDiagram, |ws, action: &ShowDiagram, _, cx| ws
+        .show_diagram(action.0, cx));
     on!(About, |ws, _, window, cx| ws.about(window, cx));
     cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
 }

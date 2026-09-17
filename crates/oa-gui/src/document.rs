@@ -3,18 +3,69 @@
 //! observes this entity and re-renders when it notifies.
 use gpui_kit::Context;
 use oa_core::units::*;
+use oa_core::{FrameDiagram, InMemoryResults};
 use oa_model::{
     Combination, Command, Compiled, Editor, EntityId, EntityKind, Frame, LoadCase, MemberLoad,
     Model, ModelError, Node, Problem, compile,
 };
 use std::path::{Path, PathBuf};
 
+/// Stations along each member in the diagrams the view and the Results tab draw.
+pub const STATIONS: usize = 65;
+
 /// Results of the last static analysis, kept only while the model is unchanged.
 pub struct Analysis {
     pub compiled: Compiled,
-    pub results: oa_core::InMemoryResults,
+    pub results: InMemoryResults,
     /// Index into `results.combinations` shown by the viewport.
     pub combination: usize,
+    /// Section forces and deflections along every frame, by combination and
+    /// then solver frame index; None where recovery failed.
+    pub diagrams: Vec<Vec<Option<FrameDiagram>>>,
+}
+
+impl Analysis {
+    /// The shown combination's diagrams, by solver frame index.
+    pub fn shown_diagrams(&self) -> &[Option<FrameDiagram>] {
+        self.diagrams
+            .get(self.combination)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+    /// The shown combination's diagram for the frame with this entity id.
+    pub fn member_diagram(&self, id: EntityId) -> Option<&FrameDiagram> {
+        let ix = *self.compiled.mapping.frame_index.get(&id)?;
+        self.shown_diagrams().get(ix)?.as_ref()
+    }
+}
+
+/// Diagrams for every combination the analysis solved, in result order.
+fn compute_diagrams(compiled: &Compiled, results: &InMemoryResults) -> Vec<Vec<Option<FrameDiagram>>> {
+    let combinations = compiled.solver.effective_combinations();
+    results
+        .combinations
+        .iter()
+        .map(|result| {
+            let combination = combinations.iter().find(|c| c.name == result.combination);
+            result
+                .frames
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .enumerate()
+                .map(|(ix, frame)| {
+                    oa_core::frame_diagram(
+                        &compiled.solver,
+                        combination?,
+                        oa_core::FrameId(ix),
+                        frame,
+                        STATIONS,
+                    )
+                    .ok()
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// Whether the last analysis still describes the model.
@@ -202,10 +253,12 @@ impl Document {
         let results = oa_core::analyze_static(&compiled.solver, &oa_core::StaticOptions::default())
             .map_err(|e| e.to_string())?;
         let count = results.combinations.len();
+        let diagrams = compute_diagrams(&compiled, &results);
         self.analysis = Some(Analysis {
             compiled,
             results,
             combination: 0,
+            diagrams,
         });
         self.results_stale = false;
         cx.notify();
@@ -387,6 +440,31 @@ mod tests {
         assert_eq!(compiled.solver.combinations.len(), 2);
         let results = oa_core::analyze_static(&compiled.solver, &Default::default()).unwrap();
         assert_eq!(results.combinations.len(), 2);
+    }
+
+    #[test]
+    fn diagrams_cover_every_frame_of_every_combination() {
+        let model = example_frame();
+        let compiled = compile(&model).expect("example compiles");
+        let results = oa_core::analyze_static(&compiled.solver, &Default::default()).unwrap();
+        let diagrams = compute_diagrams(&compiled, &results);
+        assert_eq!(diagrams.len(), 2);
+        for per_frame in &diagrams {
+            assert_eq!(per_frame.len(), model.frames.len());
+            assert!(per_frame
+                .iter()
+                .all(|d| d.as_ref().is_some_and(|d| d.stations.len() == STATIONS)));
+        }
+        // Gravity on the beams bends them about local y, so My is the moment
+        // that shows in the 1.4D combination.
+        let peak = |column: usize| {
+            diagrams[0]
+                .iter()
+                .flatten()
+                .flat_map(|d| d.forces.iter().map(|f| f[column].abs()))
+                .fold(0.0, f64::max)
+        };
+        assert!(peak(4) > 0.0);
     }
 
     #[test]

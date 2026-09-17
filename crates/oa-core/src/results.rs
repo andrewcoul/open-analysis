@@ -108,7 +108,18 @@ pub fn frame_section_forces(
         return Err(Error::Request("invalid member ID".into()));
     }
     let e = FrameElement::new(model, member.0)?;
-    let x = x.si();
+    section_forces(&e, model, combination, member, result, x.si())
+}
+
+/// `frame_section_forces` on a member already checked and built.
+fn section_forces(
+    e: &FrameElement,
+    model: &Model,
+    combination: &LoadCombination,
+    member: FrameId,
+    result: &FrameResult,
+    x: f64,
+) -> Result<SectionForces> {
     if !x.is_finite() || x < 0.0 || x > e.length {
         return Err(Error::Request("section position outside member".into()));
     }
@@ -178,5 +189,78 @@ pub fn frame_section_forces(
         values: [
             -force.x, -force.y, -force.z, -moment.x, -moment.y, -moment.z,
         ],
+    })
+}
+
+/// Section forces and transverse deflections at evenly spaced stations along
+/// a member, for drawing its diagrams.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrameDiagram {
+    /// Local axes as unit vectors in global coordinates: x from I to J, then y and z.
+    pub axes: [[f64; 3]; 3],
+    /// Member length, metres.
+    pub length: f64,
+    /// Distance from end I of each station, metres, from 0 to the length.
+    pub stations: Vec<f64>,
+    /// N, Vy, Vz, T, My, Mz at each station, as `frame_section_forces` reports them.
+    pub forces: Vec<[f64; 6]>,
+    /// Deflection along local y and z at each station, metres: the end
+    /// displacements carried along the member by integrating its curvature.
+    pub deflections: Vec<[f64; 2]>,
+}
+
+/// Exact first-order section forces at `stations` evenly spaced points (at
+/// least two), and the Euler-Bernoulli deflection integrated from them. At a
+/// point load the station takes the right-hand limit.
+pub fn frame_diagram(
+    model: &Model,
+    combination: &LoadCombination,
+    member: FrameId,
+    result: &FrameResult,
+    stations: usize,
+) -> Result<FrameDiagram> {
+    model.validate()?;
+    if member.0 >= model.frames.len() {
+        return Err(Error::Request("invalid member ID".into()));
+    }
+    if stations < 2 {
+        return Err(Error::Request("a diagram needs at least two stations".into()));
+    }
+    let e = FrameElement::new(model, member.0)?;
+    let frame = &model.frames[member.0];
+    let young = model.materials[frame.material.0].young.si();
+    let section = &model.sections[frame.section.0];
+    let (ei_y, ei_z) = (young * section.iy.si(), young * section.iz.si());
+    let xs: Vec<f64> = (0..stations)
+        .map(|k| e.length * k as f64 / (stations - 1) as f64)
+        .collect();
+    let mut forces = Vec::with_capacity(stations);
+    for &x in &xs {
+        forces.push(section_forces(&e, model, combination, member, result, x)?.values);
+    }
+    // Sagging in the x-y plane is +Mz, so v'' = Mz / EIz; sagging in the x-z
+    // plane is -My, so w'' = -My / EIy. The slopes start from the end
+    // rotations: v' = rz and w' = -ry. Curvature is taken as linear between
+    // stations, which is exact under point loads.
+    let d = result.local_displacements;
+    let (mut v, mut dv, mut w, mut dw) = (d[1], d[5], d[2], -d[4]);
+    let mut deflections = Vec::with_capacity(stations);
+    deflections.push([v, w]);
+    for k in 1..stations {
+        let h = xs[k] - xs[k - 1];
+        let (kz0, kz1) = (forces[k - 1][5] / ei_z, forces[k][5] / ei_z);
+        let (ky0, ky1) = (-forces[k - 1][4] / ei_y, -forces[k][4] / ei_y);
+        v += dv * h + h * h * (kz0 / 3.0 + kz1 / 6.0);
+        dv += h * (kz0 + kz1) / 2.0;
+        w += dw * h + h * h * (ky0 / 3.0 + ky1 / 6.0);
+        dw += h * (ky0 + ky1) / 2.0;
+        deflections.push([v, w]);
+    }
+    Ok(FrameDiagram {
+        axes: std::array::from_fn(|i| [e.r[(i, 0)], e.r[(i, 1)], e.r[(i, 2)]]),
+        length: e.length,
+        stations: xs,
+        forces,
+        deflections,
     })
 }

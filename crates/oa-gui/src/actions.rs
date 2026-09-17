@@ -54,6 +54,7 @@ actions!(
         OpenCommandPalette,
         ShowProperties,
         ShowModelBrowser,
+        ShowMemberResults,
         About,
     ]
 );
@@ -62,3 +63,8 @@ actions!(
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = oa_gui, no_json)]
 pub struct ShowCombination(pub SharedString);
+
+/// Draws this section force along every member, or none of them.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = oa_gui, no_json)]
+pub struct ShowDiagram(pub Option<crate::results::Diagram>);
