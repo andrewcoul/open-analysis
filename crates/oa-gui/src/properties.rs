@@ -555,8 +555,8 @@ pub struct PropertyEditor {
     shown: Shown,
     /// Kept across selections, so browsing results from frame to frame stays on the tab.
     tab: EditorTab,
-    /// Selection and revision the widgets were built for.
-    built_for: (Vec<EntityId>, u64),
+    /// Selection, revision, and display precision the widgets were built for.
+    built_for: (Vec<EntityId>, u64, usize),
     /// Field to focus after the next rebuild, so Enter keeps the caret in place.
     pending_focus: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -571,7 +571,7 @@ impl PropertyEditor {
             document,
             shown: Shown::Nothing,
             tab: EditorTab::Properties,
-            built_for: (vec![], u64::MAX),
+            built_for: (vec![], u64::MAX, 0),
             pending_focus: None,
             _subscriptions: vec![subscription],
         };
@@ -585,10 +585,11 @@ impl PropertyEditor {
             let document = self.document.read(cx);
             (document.selection().to_vec(), document.revision())
         };
-        if self.built_for == (selection.clone(), revision) {
+        let built_for = (selection.clone(), revision, crate::text::precision());
+        if self.built_for == built_for {
             return;
         }
-        self.built_for = (selection.clone(), revision);
+        self.built_for = built_for;
         self.shown = match selection.as_slice() {
             [] => Shown::Nothing,
             [id] => self
@@ -789,6 +790,12 @@ impl PropertyEditor {
             }
         };
         self.report(result, window, cx);
+    }
+
+    /// Rebuilds the fields after the display precision changed, so their text
+    /// is written afresh.
+    pub fn reformat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync(window, cx);
     }
 
     pub fn set_tab(&mut self, tab: EditorTab, cx: &mut Context<Self>) {
@@ -1511,6 +1518,7 @@ fn capitalize(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{FieldSpec, Values, command_for, specs};
+    use crate::text::{DEFAULT_PRECISION, TestPrecision};
     use oa_core::units::Length;
     use oa_model::{Command, EntityKind, Model, Node};
 
@@ -1529,7 +1537,8 @@ mod tests {
 
     #[test]
     fn untouched_fields_keep_their_stored_value() {
-        // 6 m shows as 19.685039 ft, which is not 6 m when parsed back.
+        let _p = TestPrecision::of(DEFAULT_PRECISION);
+        // 6 m shows as 19.69 ft, which is not 6 m when parsed back.
         let mut model = Model::default();
         let id = model.insert(Node::new("N1", [Length::from_metres(6.0); 3]));
         let v = values_for(&model, id);

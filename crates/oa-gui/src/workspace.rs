@@ -12,6 +12,7 @@ use crate::loads::{LoadPanel, Section};
 use crate::prompt::{AnalysisSummary, Gates, PromptState, render_prompt, selection_summary};
 use crate::properties::{EditorTab, PropertyEditor};
 use crate::results::Diagram;
+use crate::text;
 use crate::viewport::{Tool, Viewport, ViewportEvent};
 use gpui_kit::component::command::{
     Command as CommandPalette, CommandGroup, CommandItem, CommandState,
@@ -168,6 +169,18 @@ impl Workspace {
                     MenuItem::separator(),
                     MenuItem::action("Properties…", ShowProperties)
                         .disabled(document.selection().is_empty()),
+                    MenuItem::separator(),
+                    MenuItem::submenu(Menu {
+                        name: "Precision".into(),
+                        items: text::PRECISIONS
+                            .iter()
+                            .map(|&decimals| {
+                                MenuItem::action(decimals.to_string(), SetPrecision(decimals))
+                                    .checked(decimals == text::precision())
+                            })
+                            .collect(),
+                        disabled: false,
+                    }),
                 ],
                 disabled: false,
             },
@@ -462,6 +475,17 @@ impl Workspace {
     pub fn deselect_all(&mut self, cx: &mut Context<Self>) {
         self.document
             .update(cx, |document, cx| document.clear_selection(cx));
+    }
+
+    /// Shows every number with this many decimals. The property fields hold
+    /// their text in widgets, so they are rebuilt; everything else formats as
+    /// it draws and only needs a redraw.
+    pub fn set_precision(&mut self, decimals: usize, window: &mut Window, cx: &mut Context<Self>) {
+        text::set_precision(decimals);
+        self.properties
+            .update(cx, |properties, cx| properties.reformat(window, cx));
+        self.refresh_menus(cx);
+        cx.refresh_windows();
     }
 
     /// Deletes the selection. Frames and shells on deleted nodes go too, and

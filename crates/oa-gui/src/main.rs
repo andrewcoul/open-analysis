@@ -265,6 +265,8 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
         .show_member_results(window, cx));
     on!(ShowDiagram, |ws, action: &ShowDiagram, _, cx| ws
         .show_diagram(action.0, cx));
+    on!(SetPrecision, |ws, action: &SetPrecision, window, cx| ws
+        .set_precision(action.0, window, cx));
     on!(About, |ws, _, window, cx| ws.about(window, cx));
     cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
 }
