@@ -115,10 +115,9 @@ impl Plane {
 }
 
 /// Largest magnitude of one column across every member's diagram.
-pub fn peak(diagrams: &[Option<FrameDiagram>], column: usize) -> f64 {
+pub fn peak(diagrams: &[FrameDiagram], column: usize) -> f64 {
     diagrams
         .iter()
-        .flatten()
         .flat_map(|d| d.forces.iter().map(|f| f[column].abs()))
         .fold(0.0, f64::max)
 }

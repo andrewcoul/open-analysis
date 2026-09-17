@@ -638,7 +638,7 @@ impl Viewport {
                     .mapping
                     .frame_index
                     .get(id)
-                    .and_then(|ix| shown.get(*ix)?.as_ref())
+                    .and_then(|ix| shown.get(*ix))
                 else {
                     continue;
                 };

@@ -160,6 +160,68 @@ fn frame_diagram_integrates_the_deflection_in_both_planes() {
     close(d.deflections[400][0], -1000.0 * 81.0 / (8.0 * 200e9 * 4e-5), 1e-5);
     close(d.deflections[400][1], -500.0 * 81.0 / (8.0 * 200e9 * 2e-5), 1e-5);
     assert!(frame_diagram(&m, &m.effective_combinations()[0], FrameId(0), f, 1).is_err());
+    let batch = frame_diagrams(&m, &m.effective_combinations()[0], c.frames.as_ref().unwrap(), 401).unwrap();
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0].forces, d.forces);
+    assert_eq!(batch[0].deflections, d.deflections);
+}
+#[test]
+fn frame_diagram_is_exact_across_concentrated_loads() {
+    // A point force between the GUI's 65 stations and a point moment on one.
+    let (young, iz) = (200e9, 4e-5);
+    let mut m = cantilever(1);
+    m.add_load_case(LoadCase {
+        name: "point".into(),
+        member: vec![
+            MemberLoad::Point {
+                member: FrameId(0),
+                position: Length::from_si(3.0 / 256.0),
+                force: [Force::ZERO, Force::from_si(-1000.0), Force::ZERO],
+                moment: [Moment::ZERO; 3],
+                axes: Axes::Local,
+            },
+            MemberLoad::Point {
+                member: FrameId(0),
+                position: Length::from_si(1.5),
+                force: [Force::ZERO; 3],
+                moment: [Moment::ZERO, Moment::ZERO, Moment::from_si(1000.0)],
+                axes: Axes::Local,
+            },
+        ],
+        ..Default::default()
+    });
+    let r = analyze_static(&m, &StaticOptions::default()).unwrap();
+    let c = &r.combinations[0];
+    let f = &c.frames.as_ref().unwrap()[0];
+    let d = frame_diagram(&m, &m.effective_combinations()[0], FrameId(0), f, 65).unwrap();
+    let a = 3.0 / 256.0;
+    let tip = -1000.0 * a * a * (9.0 - a) / (6.0 * young * iz) + 1000.0 * 1.5 * 4.5 / (2.0 * young * iz);
+    close(d.deflections[64][0], tip, 1e-9);
+    close(d.deflections[64][0], f.local_displacements[7], 1e-9);
+    // Midspan, where the moment is applied: the force from the left, the
+    // moment as M x^2 / 2EI up to its own position.
+    let mid = -1000.0 * a * a * (4.5 - a) / (6.0 * young * iz) + 1000.0 * 1.5 * 1.5 / (2.0 * young * iz);
+    close(d.deflections[32][0], mid, 1e-9);
+}
+#[test]
+fn frame_diagram_puts_the_last_station_on_the_member_end() {
+    let mut m = base();
+    m.add_node(Node::fixed([Length::ZERO; 3]));
+    m.add_node(Node::new([Length::from_si(0.1), Length::ZERO, Length::ZERO]));
+    m.add_frame(Frame::new([NodeId(0), NodeId(1)], MaterialId(0), SectionId(0)));
+    m.add_load_case(LoadCase {
+        name: "tip".into(),
+        nodal: vec![NodalLoad::force(
+            NodeId(1),
+            [Force::ZERO, Force::from_si(-1000.0), Force::ZERO],
+        )],
+        ..Default::default()
+    });
+    let r = analyze_static(&m, &StaticOptions::default()).unwrap();
+    let f = &r.combinations[0].frames.as_ref().unwrap()[0];
+    let d = frame_diagram(&m, &m.effective_combinations()[0], FrameId(0), f, 4).unwrap();
+    assert_eq!(d.stations[3], 0.1);
+    close(d.deflections[3][0], f.local_displacements[7], 1e-9);
 }
 #[test]
 fn released_fixed_fixed_beam_becomes_simply_supported() {
