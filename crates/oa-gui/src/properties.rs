@@ -310,6 +310,10 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
 #[derive(Default)]
 struct Values {
     texts: HashMap<String, String>,
+    /// What each text field showed when it was built. Display text is
+    /// rounded, so a field the user did not touch keeps its stored value
+    /// rather than the rounded text parsed back.
+    committed: HashMap<String, String>,
     checks: HashMap<String, bool>,
     choices: HashMap<String, Option<usize>>,
 }
@@ -317,11 +321,22 @@ impl Values {
     fn text(&self, key: &str) -> String {
         self.texts.get(key).cloned().unwrap_or_default()
     }
-    fn num(&self, key: &str, label: &str) -> Result<f64, String> {
+    fn changed(&self, key: &str) -> bool {
+        self.texts.get(key) != self.committed.get(key)
+    }
+    /// A plain number, or `current` when the field was not edited.
+    fn num(&self, key: &str, label: &str, current: f64) -> Result<f64, String> {
+        if !self.changed(key) {
+            return Ok(current);
+        }
         parse_num(label, &self.text(key))
     }
-    /// A quantity typed in display units, as SI.
-    fn qty(&self, key: &str, role: Role, label: &str) -> Result<f64, String> {
+    /// A quantity typed in display units, as SI, or `current` (SI) when the
+    /// field was not edited.
+    fn qty(&self, key: &str, role: Role, label: &str, current: f64) -> Result<f64, String> {
+        if !self.changed(key) {
+            return Ok(current);
+        }
         parse_q(role, label, &self.text(key))
     }
     fn check(&self, key: &str) -> bool {
@@ -365,11 +380,20 @@ fn command_for(
             let mut n = model.nodes[&id].clone();
             n.name = name;
             for i in 0..3 {
-                n.position[i] =
-                    Length::from_si(v.qty(&format!("p{i}"), Role::Length, "Position")?);
-                n.spring_translation[i] =
-                    Stiffness::from_si(v.qty(&format!("k{i}"), Role::Stiffness, "Spring")?);
-                n.mass[i] = Mass::from_si(v.qty(&format!("m{i}"), Role::Mass, "Mass")?);
+                n.position[i] = Length::from_si(v.qty(
+                    &format!("p{i}"),
+                    Role::Length,
+                    "Position",
+                    n.position[i].si(),
+                )?);
+                n.spring_translation[i] = Stiffness::from_si(v.qty(
+                    &format!("k{i}"),
+                    Role::Stiffness,
+                    "Spring",
+                    n.spring_translation[i].si(),
+                )?);
+                n.mass[i] =
+                    Mass::from_si(v.qty(&format!("m{i}"), Role::Mass, "Mass", n.mass[i].si())?);
             }
             for i in 0..6 {
                 n.restrained[i] = v.check(&format!("r{i}"));
@@ -386,7 +410,7 @@ fn command_for(
             e.material = v.entity("material", "Material", model, EntityKind::Material)?;
             e.section = v.entity("section", "Section", model, EntityKind::Section)?;
             e.behavior = v.item("behavior", &BEHAVIORS, e.behavior);
-            e.roll = Angle::from_si(v.qty("roll", Role::Angle, "Roll")?);
+            e.roll = Angle::from_si(v.qty("roll", Role::Angle, "Roll", e.roll.si())?);
             for i in 0..12 {
                 e.releases[i] = v.check(&format!("rel{i}"));
             }
@@ -399,32 +423,39 @@ fn command_for(
                 e.nodes[i] = v.entity(&format!("n{i}"), "Node", model, EntityKind::Node)?;
             }
             e.material = v.entity("material", "Material", model, EntityKind::Material)?;
-            e.thickness = Length::from_si(v.qty("thickness", Role::Thickness, "Thickness")?);
+            e.thickness = Length::from_si(v.qty(
+                "thickness",
+                Role::Thickness,
+                "Thickness",
+                e.thickness.si(),
+            )?);
             e.formulation = v.item("formulation", &FORMULATIONS, e.formulation);
             (e != model.shells[&id]).then_some(Command::UpdateShell { id, shell: e })
         }
         EntityKind::Material => {
             let mut e = model.materials[&id].clone();
             e.name = name;
-            e.young = Pressure::from_si(v.qty("young", Role::Stress, "E")?);
-            e.poisson = v.num("poisson", "Poisson's ratio")?;
-            e.density = MassDensity::from_si(v.qty("density", Role::Density, "Density")?);
+            e.young = Pressure::from_si(v.qty("young", Role::Stress, "E", e.young.si())?);
+            e.poisson = v.num("poisson", "Poisson's ratio", e.poisson)?;
+            e.density =
+                MassDensity::from_si(v.qty("density", Role::Density, "Density", e.density.si())?);
             (e != model.materials[&id]).then_some(Command::UpdateMaterial { id, material: e })
         }
         EntityKind::Section => {
             let mut e = model.sections[&id].clone();
             e.name = name;
-            e.area = Area::from_si(v.qty("area", Role::Area, "Area")?);
-            e.iy = SecondMoment::from_si(v.qty("iy", Role::SecondMoment, "Iy")?);
-            e.iz = SecondMoment::from_si(v.qty("iz", Role::SecondMoment, "Iz")?);
-            e.torsion = SecondMoment::from_si(v.qty("torsion", Role::SecondMoment, "J")?);
+            e.area = Area::from_si(v.qty("area", Role::Area, "Area", e.area.si())?);
+            e.iy = SecondMoment::from_si(v.qty("iy", Role::SecondMoment, "Iy", e.iy.si())?);
+            e.iz = SecondMoment::from_si(v.qty("iz", Role::SecondMoment, "Iz", e.iz.si())?);
+            e.torsion =
+                SecondMoment::from_si(v.qty("torsion", Role::SecondMoment, "J", e.torsion.si())?);
             (e != model.sections[&id]).then_some(Command::UpdateSection { id, section: e })
         }
         EntityKind::LoadCase => {
             let mut e = model.load_cases[&id].clone();
             e.name = name;
             for i in 0..3 {
-                e.self_weight[i] = v.num(&format!("sw{i}"), "Self weight")?;
+                e.self_weight[i] = v.num(&format!("sw{i}"), "Self weight", e.self_weight[i])?;
             }
             (e != model.load_cases[&id]).then_some(Command::UpdateLoadCase { id, load_case: e })
         }
@@ -439,7 +470,7 @@ fn command_for(
                         model,
                         EntityKind::LoadCase,
                     )?,
-                    v.num(&format!("term_factor_{i}"), "Factor")?,
+                    v.num(&format!("term_factor_{i}"), "Factor", e.terms[i].1)?,
                 );
             }
             (e != model.combinations[&id])
@@ -700,6 +731,7 @@ impl PropertyEditor {
             values
                 .texts
                 .insert(t.key.clone(), t.input.read(cx).value().to_string());
+            values.committed.insert(t.key.clone(), t.committed.clone());
         }
         for c in &single.checks {
             values.checks.insert(c.key.clone(), c.value);
@@ -1389,5 +1421,44 @@ fn capitalize(s: &str) -> String {
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FieldSpec, Values, command_for, specs};
+    use oa_core::units::Length;
+    use oa_model::{Command, EntityKind, Model, Node};
+
+    /// The panel as just built: every text field shows its committed text.
+    fn values_for(model: &Model, id: oa_model::EntityId) -> Values {
+        let (_, fields) = specs(model, id).unwrap();
+        let mut v = Values::default();
+        for f in fields {
+            if let FieldSpec::Text { key, value, .. } = f {
+                v.texts.insert(key.clone(), value.clone());
+                v.committed.insert(key, value);
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn untouched_fields_keep_their_stored_value() {
+        // 6 m shows as 19.685039 ft, which is not 6 m when parsed back.
+        let mut model = Model::default();
+        let id = model.insert(Node::new("N1", [Length::from_metres(6.0); 3]));
+        let v = values_for(&model, id);
+        assert_eq!(command_for(&model, id, EntityKind::Node, &v).unwrap(), None);
+
+        let mut v = values_for(&model, id);
+        v.texts.insert("p0".into(), "20".into());
+        let Some(Command::UpdateNode { node, .. }) =
+            command_for(&model, id, EntityKind::Node, &v).unwrap()
+        else {
+            panic!("an edited coordinate is a command");
+        };
+        assert!((node.position[0].si() - 6.096).abs() < 1e-12);
+        assert_eq!(node.position[1].si(), 6.0);
     }
 }

@@ -546,7 +546,24 @@ impl Session {
     /// indices; `entity_indices` translates.
     pub fn query(&self, sql: &str, limit: usize) -> Result<Value> {
         let (_, store) = self.store()?;
-        Ok(serde_json::to_value(store.sql(sql, limit.clamp(1, 1000))?)?)
+        let table = store.sql(sql, limit.clamp(1, 1000)).map_err(|e| match e {
+            // SQLite says "not authorized" for a denied statement and
+            // "access to <column> is prohibited" for a denied column read.
+            oa_results::Error::Sqlite(ref inner)
+                if inner.to_string().contains("not authorized")
+                    || inner.to_string().contains("is prohibited") =>
+            {
+                SessionError::Invalid(
+                    "only read-only statements over the plain table names (displacements, \
+                     reactions, frame_results, shell_results, combinations, run) are allowed; \
+                     those answer in US customary units, and main.<table> is refused because it \
+                     would return SI"
+                        .into(),
+                )
+            }
+            other => other.into(),
+        })?;
+        Ok(serde_json::to_value(table)?)
     }
     pub fn entity_indices(&mut self, ids: &[EntityId]) -> Result<Value> {
         let model_names: Vec<Option<String>> = ids

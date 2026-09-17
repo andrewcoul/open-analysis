@@ -147,6 +147,11 @@ fn agent_scenario_two_storey_frame_to_governing_drift() {
         total > 60.0 && total < 70.0,
         "total base reaction {total} kip"
     );
+    // Naming the stored table directly would hand back newtons, so it is
+    // refused rather than answered in the wrong units.
+    let refused = s.query("select uy from main.reactions where node = 0", 1);
+    let message = refused.unwrap_err().to_string();
+    assert!(message.contains("US customary"), "{message}");
     let indices = s.entity_indices(&[ids[4], frames[5]]).unwrap();
     assert!(indices[0]["node"].is_number() && indices[1]["frame"].is_number());
 

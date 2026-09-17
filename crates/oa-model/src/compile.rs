@@ -117,6 +117,38 @@ fn check_references<T: Entity>(model: &Model, problems: &mut Vec<Problem>) {
 
 /// Validates the model and produces solver input. Returns every problem
 /// found rather than stopping at the first.
+/// Length of a frame from its nodes' positions, as the solver computes it;
+/// zero when a node is missing, which validation reports separately.
+fn frame_length(model: &Model, frame: EntityId) -> f64 {
+    let Some(f) = model.frames.get(&frame) else {
+        return 0.0;
+    };
+    let (Some(a), Some(b)) = (model.nodes.get(&f.nodes[0]), model.nodes.get(&f.nodes[1])) else {
+        return 0.0;
+    };
+    (0..3)
+        .map(|i| (b.position[i].si() - a.position[i].si()).powi(2))
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// A position along a member, moved onto the member's end (or start) when
+/// it lies within roundoff of it. Coordinates and load positions are
+/// converted from display units independently, so a full-span load can
+/// land a few ulps past the length the solver computes and fail its exact
+/// range check.
+fn snap_to_span(x: oa_core::units::Length, span: f64) -> oa_core::units::Length {
+    let tolerance = 1e-9 * span.abs().max(1e-3);
+    let v = x.si();
+    if (v - span).abs() <= tolerance {
+        oa_core::units::Length::from_si(span)
+    } else if v.abs() <= tolerance {
+        oa_core::units::Length::ZERO
+    } else {
+        x
+    }
+}
+
 pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
     let mut problems = vec![];
     check_names::<Node>(model, &mut problems);
@@ -258,35 +290,39 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
             member: c
                 .member
                 .iter()
-                .map(|l| match l {
-                    MemberLoad::Point {
-                        member,
-                        position,
-                        force,
-                        moment,
-                        axes,
-                    } => oa_core::MemberLoad::Point {
-                        member: oa_core::FrameId(mapping.frame_index[member]),
-                        position: *position,
-                        force: *force,
-                        moment: *moment,
-                        axes: *axes,
-                    },
-                    MemberLoad::Distributed {
-                        member,
-                        start,
-                        end,
-                        start_load,
-                        end_load,
-                        axes,
-                    } => oa_core::MemberLoad::Distributed {
-                        member: oa_core::FrameId(mapping.frame_index[member]),
-                        start: *start,
-                        end: *end,
-                        start_load: *start_load,
-                        end_load: *end_load,
-                        axes: *axes,
-                    },
+                .map(|l| {
+                    let span = frame_length(model, l.member());
+                    let along = |x: &oa_core::units::Length| snap_to_span(*x, span);
+                    match l {
+                        MemberLoad::Point {
+                            member,
+                            position,
+                            force,
+                            moment,
+                            axes,
+                        } => oa_core::MemberLoad::Point {
+                            member: oa_core::FrameId(mapping.frame_index[member]),
+                            position: along(position),
+                            force: *force,
+                            moment: *moment,
+                            axes: *axes,
+                        },
+                        MemberLoad::Distributed {
+                            member,
+                            start,
+                            end,
+                            start_load,
+                            end_load,
+                            axes,
+                        } => oa_core::MemberLoad::Distributed {
+                            member: oa_core::FrameId(mapping.frame_index[member]),
+                            start: along(start),
+                            end: along(end),
+                            start_load: *start_load,
+                            end_load: *end_load,
+                            axes: *axes,
+                        },
+                    }
                 })
                 .collect(),
             surface: c

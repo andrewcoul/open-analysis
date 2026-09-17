@@ -117,6 +117,9 @@ pub struct ResultStore {
     combos: BTreeMap<String, i64>,
     /// Set by `open_partial`: the caller asked to read an unfinished run.
     allow_partial: bool,
+    /// Stored tables a caller's view shadows; `sql` refuses to read them
+    /// directly by `main.<table>` so the view is the only way in.
+    shadowed: Vec<String>,
 }
 
 impl ResultStore {
@@ -175,6 +178,7 @@ impl ResultStore {
             info,
             combos: BTreeMap::new(),
             allow_partial: false,
+            shadowed: vec![],
         })
     }
     pub fn create_in_memory(model: &Model, options: &StaticOptions) -> Result<Self> {
@@ -237,6 +241,7 @@ impl ResultStore {
             info,
             combos,
             allow_partial: true,
+            shadowed: vec![],
         })
     }
     pub fn info(&self) -> &RunInfo {
@@ -560,13 +565,18 @@ impl ResultStore {
     /// Defines a temporary view on this connection only; the file is not
     /// touched. A view named like a stored table shadows it for `sql`, which
     /// is how a caller presents the store in other units: the view's own
-    /// query must then name the table as `main.<table>`. The store's own
-    /// reads always say `main.` so they see the stored values whatever views
-    /// a caller has defined.
-    pub fn define_view(&self, name: &str, select: &str) -> Result<()> {
+    /// query must then name the table as `main.<table>`, and `sql` refuses
+    /// a statement that reads the shadowed table directly that way, so the
+    /// view is the only route to it. The store's own reads always say
+    /// `main.` so they see the stored values whatever views a caller has
+    /// defined.
+    pub fn define_view(&mut self, name: &str, select: &str) -> Result<()> {
         self.conn.execute_batch(&format!(
             "create temp view if not exists \"{name}\" as {select};"
         ))?;
+        if !self.shadowed.iter().any(|t| t == name) {
+            self.shadowed.push(name.to_string());
+        }
         Ok(())
     }
     /// SQLite's own read-only classification lets `ATTACH`, `DETACH`, and
@@ -576,7 +586,25 @@ impl ResultStore {
     /// stays as a second guard.
     pub fn sql(&self, sql: &str, limit: usize) -> Result<Table> {
         self.require_complete()?;
-        self.conn.authorizer(Some(read_only_authorizer))?;
+        let shadowed = self.shadowed.clone();
+        self.conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+            // Top-level SQL may not read a column of a shadowed table by
+            // `main.<table>`; only the shadowing view (the `accessor`) may.
+            // The column-less read SQLite reports for a flattened
+            // `count(*)` names the table at top level but carries no value.
+            if let AuthAction::Read {
+                table_name,
+                column_name,
+            } = ctx.action
+                && !column_name.is_empty()
+                && ctx.database_name == Some("main")
+                && ctx.accessor.is_none()
+                && shadowed.iter().any(|t| t == table_name)
+            {
+                return Authorization::Deny;
+            }
+            read_only_authorizer(ctx)
+        }))?;
         let prepared = self.conn.prepare(sql);
         self.conn
             .authorizer::<fn(AuthContext<'_>) -> Authorization>(None)?;
