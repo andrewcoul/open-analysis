@@ -24,6 +24,8 @@ pub struct Gates {
     pub distributed_load: Option<&'static str>,
     /// Generating ASCE 7 combinations needs cases to build them from.
     pub generate: Option<&'static str>,
+    /// The Results tab of one frame needs results and that frame selected.
+    pub member_results: Option<&'static str>,
 }
 
 impl Gates {
@@ -60,6 +62,12 @@ impl Gates {
             distributed_load: no_case
                 .or((frames == 0).then_some("Select the frames to load first")),
             generate: no_case,
+            member_results: document
+                .analysis()
+                .is_none()
+                .then_some("Run the analysis first")
+                .or((document.selection().len() != 1 || frames != 1)
+                    .then_some("Select one frame first")),
         }
     }
 }

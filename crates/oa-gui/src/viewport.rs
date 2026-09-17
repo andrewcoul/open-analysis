@@ -8,6 +8,8 @@
 use crate::actions::*;
 use crate::camera::{Camera, UpAxis, ViewPreset};
 use crate::document::Document;
+use crate::results::{Diagram, labelled_stations, peak};
+use crate::text::{UNITS, fmt_q};
 use gpui_kit::component::button::{Button, ButtonGroup};
 use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, Theme, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -21,6 +23,8 @@ pub struct DisplayOptions {
     pub node_labels: bool,
     pub frame_labels: bool,
     pub deformed: bool,
+    /// The section force drawn along every member, if any.
+    pub diagram: Option<Diagram>,
 }
 
 /// What a click in the view does.
@@ -432,6 +436,7 @@ struct Palette {
     restraint: Hsla,
     selected: Hsla,
     deformed: Hsla,
+    diagram: Hsla,
     label: Hsla,
     axes: [Hsla; 3],
 }
@@ -453,6 +458,14 @@ struct Quad {
     depth: f64,
     selected: bool,
 }
+/// One member's section-force diagram, offset from it in its plane of bending.
+struct DiagramShape {
+    /// The member from I to J, then the curve back from J to I, for the fill.
+    outline: Vec<Point<Pixels>>,
+    curve: Vec<Point<Pixels>>,
+    /// Values at the ends and the peak, in display units.
+    labels: Vec<(Point<Pixels>, SharedString)>,
+}
 
 /// Everything the paint closure needs, computed once per frame in prepaint.
 struct Scene {
@@ -461,9 +474,12 @@ struct Scene {
     frames: Vec<Segment>,
     shells: Vec<Quad>,
     deformed_frames: Vec<(Point<Pixels>, Point<Pixels>)>,
+    diagrams: Vec<DiagramShape>,
     axes: [(Point<Pixels>, &'static str); 3],
     axes_origin: Point<Pixels>,
     combination: Option<SharedString>,
+    /// What the diagrams show and for which combination.
+    diagram_legend: Option<SharedString>,
     /// Nodes the draw tool has taken, ringed in the accent colour.
     picked: Vec<Point<Pixels>>,
     /// The node under the pointer while a draw tool is active.
@@ -597,6 +613,71 @@ impl Viewport {
             }
         }
 
+        // Section-force diagrams, scaled so the largest value in the model
+        // stands 8% of its extent off the member.
+        let mut diagram_legend = None;
+        let mut diagrams = vec![];
+        if let Some(which) = self.options.diagram
+            && let Some(analysis) = document.analysis()
+            && let Some(result) = analysis.results.combinations.get(analysis.combination)
+        {
+            let shown = analysis.shown_diagrams();
+            let column = which.index();
+            let max = peak(shown, column);
+            let extent = model_extent(positions.values().copied());
+            let factor = if max > 0.0 { 0.08 * extent / max } else { 0.0 };
+            diagram_legend = Some(SharedString::from(format!(
+                "{} ({}): {}",
+                which.label(),
+                UNITS.symbol(which.role()),
+                result.combination
+            )));
+            for (id, frame) in &model.frames {
+                let Some(diagram) = analysis
+                    .compiled
+                    .mapping
+                    .frame_index
+                    .get(id)
+                    .and_then(|ix| shown.get(*ix))
+                else {
+                    continue;
+                };
+                let Some(origin) = positions.get(&frame.nodes[0]) else {
+                    continue;
+                };
+                let (along, normal) = (diagram.axes[0], diagram.axes[which.axis()]);
+                let values: Vec<f64> = diagram.forces.iter().map(|f| f[column]).collect();
+                let world = |x: f64, value: f64| {
+                    let d = value * factor;
+                    [
+                        origin[0] + along[0] * x + normal[0] * d,
+                        origin[1] + along[1] * x + normal[1] * d,
+                        origin[2] + along[2] * x + normal[2] * d,
+                    ]
+                };
+                let curve: Vec<Point<Pixels>> = diagram
+                    .stations
+                    .iter()
+                    .zip(&values)
+                    .map(|(x, v)| project(world(*x, *v)).0)
+                    .collect();
+                let mut outline = vec![
+                    project(*origin).0,
+                    project(world(diagram.length, 0.0)).0,
+                ];
+                outline.extend(curve.iter().rev().copied());
+                let labels = labelled_stations(&values, max)
+                    .into_iter()
+                    .map(|k| (curve[k], SharedString::from(fmt_q(which.role(), values[k]))))
+                    .collect();
+                diagrams.push(DiagramShape {
+                    outline,
+                    curve,
+                    labels,
+                });
+            }
+        }
+
         // Draw-tool feedback.
         let picked: Vec<Point<Pixels>> = self
             .picked
@@ -640,9 +721,11 @@ impl Viewport {
             frames,
             shells,
             deformed_frames,
+            diagrams,
             axes,
             axes_origin,
             combination,
+            diagram_legend,
             picked,
             hover_node,
             rubber,
@@ -668,7 +751,7 @@ fn model_extent(points: impl Iterator<Item = [f64; 3]>) -> f64 {
     }
 }
 
-fn stroke_segments(
+pub(crate) fn stroke_segments(
     segments: impl Iterator<Item = (Point<Pixels>, Point<Pixels>)>,
     width: Pixels,
     color: Hsla,
@@ -699,7 +782,7 @@ fn paint_ring(centre: Point<Pixels>, diameter: f32, width: f32, color: Hsla, win
     ));
 }
 
-fn paint_label(
+pub(crate) fn paint_label(
     text: &SharedString,
     origin: Point<Pixels>,
     color: Hsla,
@@ -779,6 +862,19 @@ fn paint_scene(
                 palette.deformed,
                 window,
             );
+            for shape in &scene.diagrams {
+                let mut builder = PathBuilder::fill();
+                builder.add_polygon(&shape.outline, true);
+                if let Ok(path) = builder.build() {
+                    window.paint_path(path, palette.diagram.opacity(0.2));
+                }
+                stroke_segments(
+                    shape.curve.windows(2).map(|w| (w[0], w[1])),
+                    px(1.5),
+                    palette.diagram,
+                    window,
+                );
+            }
             // The shape being drawn: picked nodes joined, then a line to the pointer.
             stroke_segments(
                 scene.picked.windows(2).map(|w| (w[0], w[1])),
@@ -839,6 +935,12 @@ fn paint_scene(
                     paint_label(label, mid, palette.label, &style, window, cx);
                 }
             }
+            for shape in &scene.diagrams {
+                for (p, text) in &shape.labels {
+                    let origin = point(p.x + px(3.), p.y - px(14.));
+                    paint_label(text, origin, palette.diagram, &style, window, cx);
+                }
+            }
             for (i, (end, name)) in scene.axes.iter().enumerate() {
                 stroke_segments(
                     std::iter::once((scene.axes_origin, *end)),
@@ -850,10 +952,16 @@ fn paint_scene(
                 let origin = point(end.x + px(3.), end.y - px(8.));
                 paint_label(&label, origin, palette.axes[i], &style, window, cx);
             }
+            let mut legend_top = scene.bounds.top() + px(8.);
             if let Some(combination) = &scene.combination {
                 let text: SharedString = format!("Deformed shape: {combination}").into();
-                let origin = point(scene.bounds.left() + px(12.), scene.bounds.top() + px(8.));
+                let origin = point(scene.bounds.left() + px(12.), legend_top);
                 paint_label(&text, origin, palette.deformed, &style, window, cx);
+                legend_top += px(16.);
+            }
+            if let Some(legend) = &scene.diagram_legend {
+                let origin = point(scene.bounds.left() + px(12.), legend_top);
+                paint_label(legend, origin, palette.diagram, &style, window, cx);
             }
         },
     );
@@ -1067,6 +1175,7 @@ impl Render for Viewport {
             restraint: theme.chart_3,
             selected: theme.primary,
             deformed: theme.chart_1,
+            diagram: theme.warning,
             label: theme.muted_foreground,
             axes: [theme.red, theme.green, theme.blue],
         };

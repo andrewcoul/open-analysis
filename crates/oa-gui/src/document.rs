@@ -3,18 +3,60 @@
 //! observes this entity and re-renders when it notifies.
 use gpui_kit::Context;
 use oa_core::units::*;
+use oa_core::{FrameDiagram, InMemoryResults};
 use oa_model::{
     Combination, Command, Compiled, Editor, EntityId, EntityKind, Frame, LoadCase, MemberLoad,
     Model, ModelError, Node, Problem, compile,
 };
+use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
+
+/// Stations along each member in the diagrams the view and the Results tab draw.
+pub const STATIONS: usize = 65;
 
 /// Results of the last static analysis, kept only while the model is unchanged.
 pub struct Analysis {
     pub compiled: Compiled,
-    pub results: oa_core::InMemoryResults,
+    pub results: InMemoryResults,
     /// Index into `results.combinations` shown by the viewport.
     pub combination: usize,
+    /// Section forces and deflections along every frame, by combination and
+    /// then solver frame index, computed the first time a combination's
+    /// diagrams are shown. Empty where recovery failed.
+    diagrams: Vec<OnceCell<Vec<FrameDiagram>>>,
+}
+
+impl Analysis {
+    /// The shown combination's diagrams, by solver frame index.
+    pub fn shown_diagrams(&self) -> &[FrameDiagram] {
+        match self.diagrams.get(self.combination) {
+            Some(cell) => {
+                cell.get_or_init(|| compute_diagrams(&self.compiled, &self.results, self.combination))
+            }
+            None => &[],
+        }
+    }
+    /// The shown combination's diagram for the frame with this entity id.
+    pub fn member_diagram(&self, id: EntityId) -> Option<&FrameDiagram> {
+        let ix = *self.compiled.mapping.frame_index.get(&id)?;
+        self.shown_diagrams().get(ix)
+    }
+}
+
+/// Diagrams of every frame under one solved combination, in solver frame
+/// order; empty when the combination has no frame results.
+fn compute_diagrams(compiled: &Compiled, results: &InMemoryResults, ix: usize) -> Vec<FrameDiagram> {
+    let Some(result) = results.combinations.get(ix) else {
+        return vec![];
+    };
+    let Some(frames) = result.frames.as_deref() else {
+        return vec![];
+    };
+    let combinations = compiled.solver.effective_combinations();
+    let Some(combination) = combinations.iter().find(|c| c.name == result.combination) else {
+        return vec![];
+    };
+    oa_core::frame_diagrams(&compiled.solver, combination, frames, STATIONS).unwrap_or_default()
 }
 
 /// Whether the last analysis still describes the model.
@@ -206,6 +248,7 @@ impl Document {
             compiled,
             results,
             combination: 0,
+            diagrams: (0..count).map(|_| OnceCell::new()).collect(),
         });
         self.results_stale = false;
         cx.notify();
@@ -387,6 +430,28 @@ mod tests {
         assert_eq!(compiled.solver.combinations.len(), 2);
         let results = oa_core::analyze_static(&compiled.solver, &Default::default()).unwrap();
         assert_eq!(results.combinations.len(), 2);
+    }
+
+    #[test]
+    fn diagrams_cover_every_frame_of_every_combination() {
+        let model = example_frame();
+        let compiled = compile(&model).expect("example compiles");
+        let results = oa_core::analyze_static(&compiled.solver, &Default::default()).unwrap();
+        for ix in 0..2 {
+            let diagrams = compute_diagrams(&compiled, &results, ix);
+            assert_eq!(diagrams.len(), model.frames.len());
+            assert!(diagrams.iter().all(|d| d.stations.len() == STATIONS));
+        }
+        assert!(compute_diagrams(&compiled, &results, 2).is_empty());
+        // Gravity on the beams bends them about local y, so My is the moment
+        // that shows in the 1.4D combination.
+        let peak = |column: usize| {
+            compute_diagrams(&compiled, &results, 0)
+                .iter()
+                .flat_map(|d| d.forces.iter().map(|f| f[column].abs()))
+                .fold(0.0, f64::max)
+        };
+        assert!(peak(4) > 0.0);
     }
 
     #[test]

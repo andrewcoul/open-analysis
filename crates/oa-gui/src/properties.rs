@@ -4,6 +4,7 @@
 use crate::actions::{AddDistributedLoad, AddNodalLoad, DeleteSelected};
 use crate::document::Document;
 use crate::explorer::rows_of;
+use crate::results::{Plane, render_member_results};
 use crate::text::{UNITS, fmt_num, fmt_q, label, parse_num, parse_q};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -12,6 +13,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
+use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IndexPath, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
@@ -25,6 +27,14 @@ use oa_model::{
 use std::collections::HashMap;
 
 type Choice = Entity<SelectState<SearchableVec<SharedString>>>;
+
+/// The two tabs a frame shows once it has results.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum EditorTab {
+    #[default]
+    Properties,
+    Results,
+}
 
 /// What one field shows, independent of the widget that edits it.
 enum FieldSpec {
@@ -522,6 +532,8 @@ struct Single {
     texts: Vec<TextField>,
     checks: Vec<CheckField>,
     choices: Vec<ChoiceField>,
+    /// The plane of bending the Results tab plots, for a frame.
+    plane: Plane,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -541,6 +553,8 @@ enum Shown {
 pub struct PropertyEditor {
     document: Entity<Document>,
     shown: Shown,
+    /// Kept across selections, so browsing results from frame to frame stays on the tab.
+    tab: EditorTab,
     /// Selection and revision the widgets were built for.
     built_for: (Vec<EntityId>, u64),
     /// Field to focus after the next rebuild, so Enter keeps the caret in place.
@@ -556,6 +570,7 @@ impl PropertyEditor {
         let mut this = Self {
             document,
             shown: Shown::Nothing,
+            tab: EditorTab::Properties,
             built_for: (vec![], u64::MAX),
             pending_focus: None,
             _subscriptions: vec![subscription],
@@ -596,13 +611,20 @@ impl PropertyEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Single> {
-        let (kind, specs) = specs(self.document.read(cx).model(), id)?;
+        let document = self.document.read(cx);
+        let (kind, specs) = specs(document.model(), id)?;
+        let plane = document
+            .analysis()
+            .and_then(|analysis| analysis.member_diagram(id))
+            .map(Plane::dominant)
+            .unwrap_or(Plane::XY);
         let mut single = Single {
             id,
             kind,
             texts: vec![],
             checks: vec![],
             choices: vec![],
+            plane,
             _subscriptions: vec![],
         };
         for spec in specs {
@@ -767,6 +789,18 @@ impl PropertyEditor {
             }
         };
         self.report(result, window, cx);
+    }
+
+    pub fn set_tab(&mut self, tab: EditorTab, cx: &mut Context<Self>) {
+        self.tab = tab;
+        cx.notify();
+    }
+
+    fn set_plane(&mut self, plane: Plane, cx: &mut Context<Self>) {
+        if let Shown::Single(single) = &mut self.shown {
+            single.plane = plane;
+            cx.notify();
+        }
     }
 
     fn set_check(&mut self, key: String, value: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -1382,14 +1416,63 @@ impl Render for PropertyEditor {
             }
             Shown::Multi(_) => "Selection".into(),
         };
-        let body = match &self.shown {
-            Shown::Nothing => div()
+        // A frame with results gets a Results tab: its diagram for the shown combination.
+        let results = match &self.shown {
+            Shown::Single(single) if single.kind == EntityKind::Frame => {
+                self.document.read(cx).analysis().and_then(|analysis| {
+                    let diagram = analysis.member_diagram(single.id)?.clone();
+                    let combination = analysis
+                        .results
+                        .combinations
+                        .get(analysis.combination)?
+                        .combination
+                        .clone();
+                    Some((diagram, combination, single.plane))
+                })
+            }
+            _ => None,
+        };
+        let tabs = results.is_some().then(|| {
+            div().px_3().child(
+                TabBar::new("property-tabs")
+                    .underline()
+                    .small()
+                    .selected_index(match self.tab {
+                        EditorTab::Properties => 0,
+                        EditorTab::Results => 1,
+                    })
+                    .child(Tab::new().label("Properties"))
+                    .child(Tab::new().label("Results"))
+                    .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                        let tab = if *ix == 1 {
+                            EditorTab::Results
+                        } else {
+                            EditorTab::Properties
+                        };
+                        this.set_tab(tab, cx)
+                    })),
+            )
+        });
+        let body = match (&self.shown, results) {
+            (Shown::Single(_), Some((diagram, combination, plane)))
+                if self.tab == EditorTab::Results =>
+            {
+                render_member_results(
+                    &diagram,
+                    &combination,
+                    plane,
+                    cx.listener(|this, plane: &Plane, _, cx| this.set_plane(*plane, cx)),
+                    window,
+                    cx,
+                )
+            }
+            (Shown::Nothing, _) => div()
                 .text_sm()
                 .text_color(muted)
                 .child("Select an entity in the view or the model tree to edit it.")
                 .into_any_element(),
-            Shown::Single(single) => self.render_single(single, window, cx),
-            Shown::Multi(multi) => self.render_multi(multi, cx),
+            (Shown::Single(single), _) => self.render_single(single, window, cx),
+            (Shown::Multi(multi), _) => self.render_multi(multi, cx),
         };
         v_flex()
             .size_full()
@@ -1403,6 +1486,7 @@ impl Render for PropertyEditor {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(title),
             )
+            .children(tabs)
             .child(
                 v_flex()
                     .id("properties-scroll")
