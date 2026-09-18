@@ -225,7 +225,7 @@ pub fn plan_set_elevation(
         commands: commands.clone(),
     }
     .apply(&mut after)?;
-    let newly_invalid = newly_invalid(model, &after);
+    let newly_invalid = newly_invalid(model, &after, &nodes.iter().copied().collect());
     if !newly_invalid.is_empty() {
         return Err(ModelError::Invalid(format!(
             "the move would make geometry invalid: {}",
@@ -281,14 +281,18 @@ pub fn plan_remove(model: &Model, id: EntityId, target: EntityId) -> Result<Vec<
     Ok(commands)
 }
 
-/// Compile problems `after` has that `before` did not. A model that was
-/// already incomplete is not asked to become solvable by a level edit.
-fn newly_invalid(before: &Model, after: &Model) -> Vec<String> {
+/// Problems `after` has that `before` did not. A model that was already
+/// incomplete is not asked to become solvable by a level edit. The elements
+/// on the moved `nodes` are also checked one by one, because `compile`
+/// reports only the first kind of problem it meets and an old one would
+/// otherwise hide a new one.
+fn newly_invalid(before: &Model, after: &Model, nodes: &BTreeSet<EntityId>) -> Vec<String> {
     let texts = |m: &Model| -> BTreeSet<String> {
         crate::compile::compile(m)
             .err()
             .unwrap_or_default()
             .iter()
+            .chain(&crate::compile::geometry_problems(m, nodes))
             .map(|p| p.to_string())
             .collect()
     };

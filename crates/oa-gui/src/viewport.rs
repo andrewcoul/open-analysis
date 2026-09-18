@@ -290,6 +290,27 @@ impl Viewport {
             (_, Some(level)) => Some(levels::membership(model, level)),
         }
     }
+    /// Everything Select All takes: the whole model, or in a level view only
+    /// the floor objects the view lets the user pick, so a hidden storey
+    /// never rides along into a delete or an assignment.
+    pub fn selectable(&self, model: &Model) -> Vec<EntityId> {
+        match self.shown(model) {
+            None => model
+                .nodes
+                .keys()
+                .chain(model.frames.keys())
+                .chain(model.shells.keys())
+                .copied()
+                .collect(),
+            Some(shown) => shown
+                .nodes
+                .iter()
+                .chain(&shown.frames)
+                .chain(&shown.shells)
+                .copied()
+                .collect(),
+        }
+    }
     fn prune_selection(&self, cx: &mut Context<Self>) {
         let Some(shown) = self.shown(self.document.read(cx).model()) else {
             return;
@@ -564,6 +585,25 @@ fn plane_crossing(a: [f64; 3], b: [f64; 3], elevation: f64) -> Option<[f64; 3]> 
     Some([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), elevation])
 }
 
+/// Where a quadrilateral meets a plane of constant Z: the two edge crossings
+/// furthest apart, or none when the plane misses it or only touches a corner.
+fn shell_trace(corners: [[f64; 3]; 4], elevation: f64) -> Option<([f64; 3], [f64; 3])> {
+    let cuts: Vec<[f64; 3]> = (0..4)
+        .filter_map(|i| plane_crossing(corners[i], corners[(i + 1) % 4], elevation))
+        .collect();
+    let apart = |p: &[f64; 3], q: &[f64; 3]| (p[0] - q[0]).hypot(p[1] - q[1]);
+    let mut best: Option<(&[f64; 3], &[f64; 3])> = None;
+    for (i, p) in cuts.iter().enumerate() {
+        for q in &cuts[i + 1..] {
+            if best.is_none_or(|(a, b)| apart(p, q) > apart(a, b)) {
+                best = Some((p, q));
+            }
+        }
+    }
+    best.filter(|(p, q)| apart(p, q) > 1e-9)
+        .map(|(p, q)| (*p, *q))
+}
+
 pub fn preset_action(preset: ViewPreset) -> Box<dyn Action> {
     match preset {
         ViewPreset::ThreeD => Box::new(ViewThreeD),
@@ -833,6 +873,7 @@ impl Viewport {
                 let Some(shell) = model.shells.get(id) else {
                     continue;
                 };
+                let mut bound = false;
                 for i in 0..4 {
                     let (a, b) = (shell.nodes[i], shell.nodes[(i + 1) % 4]);
                     if m.nodes.contains(&a)
@@ -840,7 +881,17 @@ impl Viewport {
                         && let Some(s) = segment(&[a, b])
                     {
                         traces.push(s);
+                        bound = true;
                     }
+                }
+                // A wall passing through with no edge on this level is cut
+                // by the plane instead; no nodes are made for the cut.
+                if !bound
+                    && let [Some(a), Some(b), Some(c), Some(d)] =
+                        shell.nodes.map(|n| positions.get(&n).copied())
+                    && let Some((p, q)) = shell_trace([a, b, c, d], elevation)
+                {
+                    traces.push((project(p).0, project(q).0));
                 }
             }
         }
@@ -1646,7 +1697,32 @@ impl Render for Viewport {
 #[cfg(test)]
 mod tests {
     // Named imports: the gpui glob carries its own `test` attribute macro.
-    use super::plane_crossing;
+    use super::{plane_crossing, shell_trace};
+
+    #[test]
+    fn a_wall_through_an_intermediate_level_leaves_a_trace() {
+        // Base to roof, 0 to 8 m, cut at a 4 m level none of its nodes bind to.
+        let wall = [
+            [0.0, 0.0, 0.0],
+            [6.0, 0.0, 0.0],
+            [6.0, 0.0, 8.0],
+            [0.0, 0.0, 8.0],
+        ];
+        let (p, q) = shell_trace(wall, 4.0).unwrap();
+        let mut xs = [p[0], q[0]];
+        xs.sort_by(f64::total_cmp);
+        assert_eq!(xs, [0.0, 6.0]);
+        assert!(p[2] == 4.0 && q[2] == 4.0);
+        assert!(shell_trace(wall, 9.0).is_none(), "the plane misses the wall");
+        // A plane through one corner of a tilted panel touches it at a point.
+        let tilted = [
+            [0.0, 0.0, 0.0],
+            [4.0, 0.0, 2.0],
+            [4.0, 0.0, 6.0],
+            [0.0, 0.0, 4.0],
+        ];
+        assert!(shell_trace(tilted, 0.0).is_none());
+    }
 
     #[test]
     fn crossing_interpolates_only_between_the_ends() {

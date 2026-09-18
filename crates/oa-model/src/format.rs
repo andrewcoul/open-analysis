@@ -37,7 +37,7 @@ pub fn from_json(text: &str) -> Result<Model, FormatError> {
         return Err(FormatError::TooNew(version));
     }
     while version < FORMAT_VERSION {
-        value = migrate(version, value);
+        value = migrate(version, value)?;
         version += 1;
         value["format_version"] = serde_json::json!(version);
     }
@@ -116,7 +116,7 @@ pub fn temporary_path(path: &Path) -> PathBuf {
 
 /// One step: a document at `from` becomes a document at `from + 1`.
 /// Each version bump adds an arm here and a fixture under tests/fixtures.
-fn migrate(from: u32, mut value: serde_json::Value) -> serde_json::Value {
+fn migrate(from: u32, mut value: serde_json::Value) -> Result<serde_json::Value, FormatError> {
     debug_assert!(from < FORMAT_VERSION);
     match from {
         // Version 2 binds every node to a level. A version 1 document has
@@ -125,7 +125,9 @@ fn migrate(from: u32, mut value: serde_json::Value) -> serde_json::Value {
         // model are unchanged, and no floors are invented: the user adds
         // levels and rebinds nodes explicitly.
         1 => {
-            let id = fresh_id(&value);
+            let exhausted = || FormatError::Corrupt("entity id space is exhausted".into());
+            let id = fresh_id(&value).ok_or_else(exhausted)?;
+            let next = id.checked_add(1).ok_or_else(exhausted)?;
             value["levels"] = serde_json::json!({
                 id.to_string(): {"name": "Base", "elevation": 0.0}
             });
@@ -134,16 +136,16 @@ fn migrate(from: u32, mut value: serde_json::Value) -> serde_json::Value {
                     node["level"] = serde_json::json!(id);
                 }
             }
-            value["next_id"] = serde_json::json!(id + 1);
-            value
+            value["next_id"] = serde_json::json!(next);
+            Ok(value)
         }
-        _ => value,
+        _ => Ok(value),
     }
 }
 
 /// An id no table of a version 1 document uses and the allocator has not
-/// handed out.
-fn fresh_id(value: &serde_json::Value) -> u64 {
+/// handed out; none when the id space is exhausted.
+fn fresh_id(value: &serde_json::Value) -> Option<u64> {
     const TABLES: [&str; 9] = [
         "nodes",
         "materials",
@@ -163,5 +165,5 @@ fn fresh_id(value: &serde_json::Value) -> u64 {
         .max()
         .unwrap_or(0);
     let next = value.get("next_id").and_then(|v| v.as_u64()).unwrap_or(0);
-    next.max(highest + 1)
+    Some(next.max(highest.checked_add(1)?))
 }

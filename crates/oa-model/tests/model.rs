@@ -466,6 +466,21 @@ fn m2_format_fixture_loads_round_trips_and_rejects_newer_versions() {
         from_json(&no_levels.to_string()),
         Err(oa_model::format::FormatError::Corrupt(_))
     ));
+    // A version 1 document with no id left for the base level is corrupt,
+    // not a panic, whether the allocator or a table key is exhausted.
+    let mut spent: serde_json::Value = serde_json::from_str(text).unwrap();
+    spent["next_id"] = serde_json::json!(u64::MAX);
+    assert!(matches!(
+        from_json(&spent.to_string()),
+        Err(oa_model::format::FormatError::Corrupt(_))
+    ));
+    let mut spent: serde_json::Value = serde_json::from_str(text).unwrap();
+    let node = spent["nodes"]["1"].clone();
+    spent["nodes"][u64::MAX.to_string()] = node;
+    assert!(matches!(
+        from_json(&spent.to_string()),
+        Err(oa_model::format::FormatError::Corrupt(_))
+    ));
     let mut newer: serde_json::Value = serde_json::from_str(text).unwrap();
     newer["format_version"] = serde_json::json!(FORMAT_VERSION + 1);
     assert!(from_json(&newer.to_string()).is_err());
@@ -1069,6 +1084,30 @@ fn level_moves_reject_newly_invalid_geometry_but_tolerate_old_problems() {
             scope: ElevationScope::ThisAndAbove,
         })
         .unwrap();
+    assert!(editor.undo().unwrap());
+    // An unrelated problem does not mask the check: with a zero modulus the
+    // model fails to compile both before and after, and the move is still
+    // refused for the station it would strand.
+    let steel_id = editor.model.find::<Material>("steel").unwrap();
+    let mut soft = editor.model.materials[&steel_id].clone();
+    soft.young = Pressure::ZERO;
+    editor
+        .apply(Command::UpdateMaterial {
+            id: steel_id,
+            material: soft,
+        })
+        .unwrap();
+    assert!(compile(&editor.model).is_err());
+    let masked = editor.model.clone();
+    let err = editor
+        .apply(Command::SetLevelElevation {
+            id: l1,
+            elevation: Length::from_si(2.0),
+            scope: ElevationScope::ThisAndAbove,
+        })
+        .unwrap_err();
+    assert!(err.to_string().contains("outside its length"), "{err}");
+    assert_eq!(editor.model, masked);
     assert!(editor.undo().unwrap());
     // A model that already has a problem can still have its levels edited.
     let dangling = Frame::new(

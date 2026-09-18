@@ -497,16 +497,10 @@ impl Workspace {
         }
     }
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
-        let ids = {
-            let model = self.document.read(cx).model();
-            model
-                .nodes
-                .keys()
-                .chain(model.frames.keys())
-                .chain(model.shells.keys())
-                .copied()
-                .collect()
-        };
+        let ids = self
+            .viewport
+            .read(cx)
+            .selectable(self.document.read(cx).model());
         self.select(ids, cx);
     }
     pub fn deselect_all(&mut self, cx: &mut Context<Self>) {
