@@ -114,8 +114,11 @@ pub struct PromptState {
     pub empty: bool,
     /// The material and section a drawn frame gets, when both exist.
     pub defaults: Option<(String, String)>,
-    /// Looking at an elevation, where the ground plane is edge-on.
-    pub in_elevation: bool,
+    /// The active level the Node tool places on, as "Level 2 (12.00 ft)".
+    pub level: Option<String>,
+    /// The active level's plane is edge-on to the camera, so a click cannot
+    /// land on it.
+    pub plane_hidden: bool,
 }
 
 struct Prompt {
@@ -174,12 +177,16 @@ fn prompt(state: &PromptState) -> Prompt {
         }
         Tool::Node => Prompt {
             title: "Node".into(),
-            text: if state.in_elevation {
-                "Click to place a node in the view plane through the centre, snapped to 0.25 m. Esc returns to Select.".into()
-            } else {
-                "Click empty space to place a node on the ground plane, snapped to 0.25 m. Click a node to select it. Esc returns to Select.".into()
+            text: match (&state.level, state.plane_hidden) {
+                (None, _) => "Define a level first (Define > Levels) to place nodes on.".into(),
+                (Some(level), true) => format!(
+                    "{level} is edge-on here. Use the 3D or plan view to place nodes on it. Esc returns to Select."
+                ),
+                (Some(level), false) => format!(
+                    "Click empty space to place a node on {level}, snapped to 1 ft in plan. Click a node to select it. Esc returns to Select."
+                ),
             },
-            aside: None,
+            aside: state.level.as_ref().map(|_| "PgUp / PgDn change level".into()),
             active: true,
         },
         Tool::Frame => Prompt {

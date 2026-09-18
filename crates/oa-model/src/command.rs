@@ -1,8 +1,9 @@
 //! Every edit is a command that returns its inverse. Undo and redo are a
 //! stack of commands and nothing else. A GUI, an agent, and a file import
 //! all issue the same commands.
+use crate::levels::{ElevationScope, TOLERANCE};
 use crate::{entity::*, model::*};
-use oa_core::units::Acceleration;
+use oa_core::units::{Acceleration, Length};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error, Serialize, Deserialize)]
@@ -40,6 +41,29 @@ pub type Result<T> = std::result::Result<T, ModelError>;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    AddLevel {
+        id: EntityId,
+        level: Level,
+    },
+    /// Renames a level or re-datums it in place: its nodes keep their world
+    /// coordinates, so their offsets change. To move a floor use
+    /// `SetLevelElevation`.
+    UpdateLevel {
+        id: EntityId,
+        level: Level,
+    },
+    /// Refused while any node binds to the level, and for the last level.
+    RemoveLevel {
+        id: EntityId,
+    },
+    /// Moves a datum with the nodes bound to it, and with the levels above
+    /// when the scope says so, keeping every node's offset. Applied as a
+    /// batch of level and node updates, so undo restores the stored values.
+    SetLevelElevation {
+        id: EntityId,
+        elevation: Length,
+        scope: ElevationScope,
+    },
     AddNode {
         id: EntityId,
         node: Node,
@@ -256,6 +280,21 @@ fn removal_inverse(add: Command, groups: Vec<(EntityId, Group)>) -> Command {
     );
     Command::Batch { commands }
 }
+/// A level needs a finite elevation that no other level already sits at.
+fn check_level(model: &Model, id: EntityId, level: &Level) -> Result<()> {
+    if !level.elevation.si().is_finite() {
+        return Err(ModelError::Invalid("level elevation must be finite".into()));
+    }
+    if let Some((other, _)) = model.levels.iter().find(|(other, l)| {
+        **other != id && (l.elevation.si() - level.elevation.si()).abs() <= TOLERANCE
+    }) {
+        return Err(ModelError::Invalid(format!(
+            "{} already sits at that elevation",
+            model.describe(*other)
+        )));
+    }
+    Ok(())
+}
 fn check_group_members<T: Entity>(model: &Model, e: &T) -> Result<()> {
     let json = serde_json::to_value(e).map_err(|x| ModelError::Invalid(x.to_string()))?;
     if let Some(members) = json.get("members").and_then(|m| m.as_array()) {
@@ -278,6 +317,38 @@ impl Command {
     pub fn apply(self, model: &mut Model) -> Result<Command> {
         use Command::*;
         Ok(match self {
+            AddLevel { id, level } => {
+                check_level(model, id, &level)?;
+                add(model, id, level)?;
+                RemoveLevel { id }
+            }
+            UpdateLevel { id, level } => {
+                check_level(model, id, &level)?;
+                UpdateLevel {
+                    id,
+                    level: update(model, id, level)?,
+                }
+            }
+            RemoveLevel { id } => {
+                if model.levels.contains_key(&id) && model.levels.len() == 1 {
+                    return Err(ModelError::Invalid(
+                        "a model keeps at least one level".into(),
+                    ));
+                }
+                let (entity, groups) = remove(model, id)?;
+                removal_inverse(AddLevel { id, level: entity }, groups)
+            }
+            SetLevelElevation {
+                id,
+                elevation,
+                scope,
+            } => {
+                let plan = crate::levels::plan_set_elevation(model, id, elevation, scope)?;
+                Batch {
+                    commands: plan.commands,
+                }
+                .apply(model)?
+            }
             AddNode { id, node } => {
                 add(model, id, node)?;
                 RemoveNode { id }

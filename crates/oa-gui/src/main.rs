@@ -8,6 +8,7 @@ mod camera;
 mod dialogs;
 mod document;
 mod explorer;
+mod levels;
 mod loads;
 mod properties;
 mod prompt;
@@ -105,6 +106,11 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("3", ViewElevationX, VIEW),
         KeyBinding::new("4", ViewElevationY, VIEW),
         KeyBinding::new("z", ZoomExtents, VIEW),
+        KeyBinding::new("5", ViewWholeModel, VIEW),
+        KeyBinding::new("6", ViewActiveLevel, VIEW),
+        KeyBinding::new("7", ViewActiveLevelContext, VIEW),
+        KeyBinding::new("pageup", LevelUp, VIEW),
+        KeyBinding::new("pagedown", LevelDown, VIEW),
         KeyBinding::new("shift-n", ToggleNodeLabels, VIEW),
         KeyBinding::new("shift-f", ToggleFrameLabels, VIEW),
         KeyBinding::new("shift-z", ToggleUpAxis, VIEW),
@@ -181,11 +187,21 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
     on!(DeselectAll, |ws, _, _, cx| ws.deselect_all(cx));
     on!(DeleteSelected, |ws, _, window, cx| ws
         .delete_selected(window, cx));
-    on!(AddNode, |ws, _, window, cx| dialogs::add_node(
-        ws.document().clone(),
-        window,
-        cx
-    ));
+    on!(AddNode, |ws, _, window, cx| {
+        let active = ws.active_level(cx);
+        dialogs::add_node(ws.document().clone(), active, window, cx)
+    });
+    on!(ShowLevels, |ws, _, window, cx| ws.show_levels(window, cx));
+    on!(LevelUp, |ws, _, _, cx| ws.step_level(1, cx));
+    on!(LevelDown, |ws, _, _, cx| ws.step_level(-1, cx));
+    on!(SetActiveLevel, |ws, action: &SetActiveLevel, _, cx| ws
+        .set_active_level(oa_model::EntityId(action.0), cx));
+    on!(ViewWholeModel, |ws, _, _, cx| ws
+        .set_view_mode(viewport::ViewMode::Whole, cx));
+    on!(ViewActiveLevel, |ws, _, _, cx| ws
+        .set_view_mode(viewport::ViewMode::Level, cx));
+    on!(ViewActiveLevelContext, |ws, _, _, cx| ws
+        .set_view_mode(viewport::ViewMode::LevelContext, cx));
     on!(AddFrameBetweenSelected, |ws, _, window, cx| ws
         .add_frame_between_selected(window, cx));
     on!(AddShellFromSelected, |ws, _, window, cx| ws

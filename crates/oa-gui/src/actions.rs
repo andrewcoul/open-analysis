@@ -39,6 +39,12 @@ actions!(
         ViewElevationX,
         ViewElevationY,
         ZoomExtents,
+        ViewWholeModel,
+        ViewActiveLevel,
+        ViewActiveLevelContext,
+        LevelUp,
+        LevelDown,
+        ShowLevels,
         ToggleNodeLabels,
         ToggleFrameLabels,
         ToggleUpAxis,
@@ -73,3 +79,9 @@ pub struct ShowDiagram(pub Option<crate::results::Diagram>);
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = oa_gui, no_json)]
 pub struct SetPrecision(pub usize);
+
+/// Makes the level with this entity id the active one: where the Node tool
+/// places nodes and what the level views show.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = oa_gui, no_json)]
+pub struct SetActiveLevel(pub u64);

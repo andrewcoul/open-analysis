@@ -173,18 +173,47 @@ fn id_at(model: &Model, kind: EntityKind, ix: Option<usize>) -> Option<EntityId>
         .map(|(id, _)| *id)
 }
 
-pub fn add_node(document: Entity<Document>, window: &mut Window, cx: &mut App) {
-    let name = unused_name::<Node>(document.read(cx).model(), "N");
-    let axes = ["X", "Y", "Z"].map(|a| label(a, Role::Length));
+/// A node by plan coordinates on a level, at an offset above its datum.
+/// The level list is lowest first and defaults to `active`.
+pub fn add_node(
+    document: Entity<Document>,
+    active: Option<EntityId>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let (name, levels, selected) = {
+        let model = document.read(cx).model();
+        let levels: Vec<(EntityId, SharedString)> = model
+            .levels_by_elevation()
+            .into_iter()
+            .map(|id| {
+                let l = &model.levels[&id];
+                let elevation = crate::text::fmt_q(Role::Length, l.elevation.si());
+                (id, format!("{} ({elevation} ft)", l.name).into())
+            })
+            .collect();
+        let selected = active
+            .and_then(|a| levels.iter().position(|(id, _)| *id == a))
+            .or_else(|| (!levels.is_empty()).then_some(0));
+        (unused_name::<Node>(model, "N"), levels, selected)
+    };
+    let fields = ["X", "Y", "Offset above level"].map(|a| label(a, Role::Length));
     let inputs = Inputs::new(
         window,
         cx,
         &[
             ("Name", &name),
-            (&axes[0], "0"),
-            (&axes[1], "0"),
-            (&axes[2], "0"),
+            (&fields[0], "0"),
+            (&fields[1], "0"),
+            (&fields[2], "0"),
         ],
+    )
+    .with_choice(
+        "Level",
+        levels.iter().map(|(_, l)| l.clone()).collect(),
+        selected,
+        window,
+        cx,
     );
     open(
         "Add node",
@@ -193,18 +222,36 @@ pub fn add_node(document: Entity<Document>, window: &mut Window, cx: &mut App) {
         window,
         cx,
         move |inputs, window, cx| {
-            let position = axes.each_ref().map(|l| inputs.qty(l, Role::Length, cx));
-            let mut node = Node::new(inputs.text("Name", cx), [Length::ZERO; 3]);
-            for (i, p) in position.into_iter().enumerate() {
-                match p {
-                    Ok(v) => node.position[i] = Length::from_si(v),
+            let Some(level) = inputs.choice("Level", cx).and_then(|ix| levels.get(ix)) else {
+                notify_error(window, cx, "Choose a level");
+                return false;
+            };
+            let values = fields.each_ref().map(|l| inputs.qty(l, Role::Length, cx));
+            let mut v = [0.0; 3];
+            for (i, value) in values.into_iter().enumerate() {
+                match value {
+                    Ok(x) => v[i] = x,
                     Err(e) => {
                         notify_error(window, cx, e);
                         return false;
                     }
                 }
             }
-            let id = document.read(cx).model().next_id;
+            let model = document.read(cx).model();
+            let Some(datum) = model.levels.get(&level.0) else {
+                notify_error(window, cx, "That level no longer exists");
+                return false;
+            };
+            let node = Node::new(
+                inputs.text("Name", cx),
+                level.0,
+                [
+                    Length::from_si(v[0]),
+                    Length::from_si(v[1]),
+                    Length::from_si(datum.elevation.si() + v[2]),
+                ],
+            );
+            let id = model.next_id;
             apply(
                 &document,
                 Command::AddNode {

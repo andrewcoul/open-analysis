@@ -167,6 +167,11 @@ impl Camera {
             40.0
         };
     }
+    /// Whether a plane of constant `axis` is seen face-on enough for a
+    /// click to land on it; false when it is edge-on, as in an elevation.
+    pub fn plane_visible(&self, axis: usize) -> bool {
+        self.axes().2[axis].abs() > 1e-6
+    }
     /// World point under a screen position. With `plane` as `(axis, value)`
     /// the point is where the view ray meets that plane; when the plane is
     /// edge-on, or no plane is given, the point lies in the view plane through
@@ -280,6 +285,22 @@ mod tests {
             close(back[0], 5.0) && close(back[1], 2.0) && close(back[2], 7.0),
             "{back:?}"
         );
+    }
+
+    #[test]
+    fn unproject_lands_on_a_raised_level_plane_exactly() {
+        let camera = Camera::default();
+        // 12.5 ft: a plane the whole-foot grid would never contain.
+        let z = 12.5 * 0.3048;
+        let p = [3.0, 4.0, z];
+        let (x, y, _) = camera.project(p, (400.0, 300.0));
+        let back = camera.unproject((x, y), (400.0, 300.0), Some((2, z)));
+        assert!(close(back[0], 3.0) && close(back[1], 4.0), "{back:?}");
+        assert_eq!(back[2], z, "the plane's value is returned as given");
+        assert!(camera.plane_visible(2));
+        let mut edge_on = Camera::default();
+        edge_on.set_preset(ViewPreset::ElevationX);
+        assert!(!edge_on.plane_visible(2));
     }
 
     #[test]

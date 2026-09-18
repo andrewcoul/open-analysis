@@ -109,6 +109,20 @@ Actions are routed to `Workspace` methods in `main.rs`.
   once. Every commit is an undoable command.
 - Multi-selection: assign a section or material to all selected frames, set
   restraints on all selected nodes, delete.
+- Levels (Define > Levels, Ctrl+K "Levels"): a table of named datums at
+  absolute Z elevations, lowest first, with the storey height below each.
+  Every node binds to a level; its offset is derived from its Z. Editing an
+  elevation moves that level with its nodes and holds the others; editing a
+  height moves it with every level above. A move that carries nodes is
+  previewed first, and a level with nodes is removed only after they are
+  moved to the level beside it. The active level (PgUp/PgDn, View > Active
+  level) is where the Node tool places nodes, on the level plane with X and
+  Y snapped to 1 ft and Z exactly the elevation. View modes 5/6/7 show the
+  whole model, the active level alone with rings where spanning members
+  cross its plane, or the level with the storeys beside it as unpickable
+  context; switching drops hidden geometry from the selection. Node
+  properties show and edit the level and offset; a multi-selection of nodes
+  can be rebound at once. The design is in docs/model/LEVEL_SYSTEMS.md.
 - Delete cascades: frames and shells on deleted nodes go too, and loads and
   diaphragm entries that reference deleted entities are trimmed first, all
   in one batch that rolls back on failure.
@@ -143,8 +157,8 @@ Actions are routed to `Workspace` methods in `main.rs`.
 
 - Snapping the Node tool to anything but the 1 ft grid: no snapping to
   existing nodes, frame ends, or a story level, and no box selection.
-- Grids and stories. There is no story or grid system, which ETABS relies on
-  for plan views and level selection.
+- Grids. There is no grid system yet; levels exist (see below) but no plan
+  grid lines to snap to.
 - SI display. Every field shows US customary units through
   `oa_model::units` (see `text.rs`); adding SI is a second factor table
   there plus a selector wired to the `display_units` preference in metadata.

@@ -149,8 +149,42 @@ fn snap_to_span(x: oa_core::units::Length, span: f64) -> oa_core::units::Length 
     }
 }
 
+/// Levels are not solver input, but every node binds to one, so the datums
+/// must exist, be finite, and be distinct.
+fn check_levels(model: &Model, problems: &mut Vec<Problem>) {
+    if model.levels.is_empty() {
+        problems.push(Problem {
+            entity: None,
+            name: None,
+            message: "model has no levels".into(),
+        });
+    }
+    for (id, l) in &model.levels {
+        if !l.elevation.si().is_finite() {
+            problems.push(Problem {
+                entity: Some(*id),
+                name: Some(l.name.clone()),
+                message: "elevation is not finite".into(),
+            });
+        }
+    }
+    let order = model.levels_by_elevation();
+    for pair in order.windows(2) {
+        let (a, b) = (&model.levels[&pair[0]], &model.levels[&pair[1]]);
+        if (b.elevation.si() - a.elevation.si()).abs() <= crate::levels::TOLERANCE {
+            problems.push(Problem {
+                entity: Some(pair[1]),
+                name: Some(b.name.clone()),
+                message: format!("sits at the same elevation as {}", model.describe(pair[0])),
+            });
+        }
+    }
+}
+
 pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
     let mut problems = vec![];
+    check_names::<Level>(model, &mut problems);
+    check_levels(model, &mut problems);
     check_names::<Node>(model, &mut problems);
     check_names::<Material>(model, &mut problems);
     check_names::<Section>(model, &mut problems);
@@ -160,6 +194,7 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
     check_names::<LoadCase>(model, &mut problems);
     check_names::<Combination>(model, &mut problems);
     check_names::<Group>(model, &mut problems);
+    check_references::<Node>(model, &mut problems);
     check_references::<Frame>(model, &mut problems);
     check_references::<Shell>(model, &mut problems);
     check_references::<Diaphragm>(model, &mut problems);

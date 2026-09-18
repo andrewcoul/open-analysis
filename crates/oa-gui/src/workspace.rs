@@ -8,12 +8,13 @@ use crate::document::{
     Document, ResultsState, example_frame, new_model, read_model, unused_name, write_model,
 };
 use crate::explorer::Explorer;
+use crate::levels::LevelPanel;
 use crate::loads::{LoadPanel, Section};
 use crate::prompt::{AnalysisSummary, Gates, PromptState, render_prompt, selection_summary};
 use crate::properties::{EditorTab, PropertyEditor};
 use crate::results::Diagram;
 use crate::text;
-use crate::viewport::{Tool, Viewport, ViewportEvent};
+use crate::viewport::{Tool, ViewMode, Viewport, ViewportEvent};
 use gpui_kit::component::command::{
     Command as CommandPalette, CommandGroup, CommandItem, CommandState,
 };
@@ -29,7 +30,7 @@ use gpui_kit::*;
 use oa_core::units::Length;
 use oa_model::{
     Axis, Combination, Command, Diaphragm, EntityId, EntityKind, Frame, Group, LoadCase, Model,
-    Node, Shell,
+    Node, Role, Shell,
 };
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -41,6 +42,7 @@ pub struct Workspace {
     properties: Entity<PropertyEditor>,
     load_cases: Entity<LoadPanel>,
     combinations: Entity<LoadPanel>,
+    levels: Entity<LevelPanel>,
     menu_bar: Entity<AppMenuBar>,
     /// The command palette's search state, made on first use.
     palette: Option<Entity<CommandState>>,
@@ -57,6 +59,7 @@ impl Workspace {
             cx.new(|cx| LoadPanel::new(document.clone(), Section::Cases, window, cx));
         let combinations =
             cx.new(|cx| LoadPanel::new(document.clone(), Section::Combinations, window, cx));
+        let levels = cx.new(|cx| LevelPanel::new(document.clone(), window, cx));
         let menu_bar = AppMenuBar::new(cx);
         let subscriptions = vec![
             cx.observe_in(&document, window, |this, _, window, cx| {
@@ -82,6 +85,7 @@ impl Workspace {
             properties,
             load_cases,
             combinations,
+            levels,
             menu_bar,
             palette: None,
             _subscriptions: subscriptions,
@@ -99,6 +103,10 @@ impl Workspace {
 
     pub fn document(&self) -> &Entity<Document> {
         &self.document
+    }
+    /// The level the Node tool places on.
+    pub fn active_level(&self, cx: &App) -> Option<EntityId> {
+        self.viewport.read(cx).active_level()
     }
 
     // MARK: Menus
@@ -120,8 +128,22 @@ impl Workspace {
         let viewport = self.viewport.read(cx);
         let options = viewport.options();
         let preset = viewport.preset();
+        let mode = viewport.mode();
+        let active_level = viewport.active_level();
         let tool = viewport.tool();
         let gates = Gates::of(document);
+        let model = document.model();
+        let levels: Vec<MenuItem> = model
+            .levels_by_elevation()
+            .into_iter()
+            .map(|id| {
+                MenuItem::action(
+                    model.name_of(id).unwrap_or("?").to_string(),
+                    SetActiveLevel(id.0),
+                )
+                .checked(active_level == Some(id))
+            })
+            .collect();
         let combinations: Vec<MenuItem> = document
             .analysis()
             .map(|analysis| {
@@ -198,6 +220,19 @@ impl Workspace {
                         .checked(preset == Some(ViewPreset::ElevationY)),
                     MenuItem::action("Zoom extents", ZoomExtents),
                     MenuItem::separator(),
+                    MenuItem::action("Whole model", ViewWholeModel).checked(mode == ViewMode::Whole),
+                    MenuItem::action("Active level", ViewActiveLevel)
+                        .checked(mode == ViewMode::Level),
+                    MenuItem::action("Active level with context", ViewActiveLevelContext)
+                        .checked(mode == ViewMode::LevelContext),
+                    MenuItem::submenu(Menu {
+                        name: "Active level".into(),
+                        disabled: levels.is_empty(),
+                        items: levels,
+                    }),
+                    MenuItem::action("Level up", LevelUp),
+                    MenuItem::action("Level down", LevelDown),
+                    MenuItem::separator(),
                     MenuItem::action("Node labels", ToggleNodeLabels).checked(options.node_labels),
                     MenuItem::action("Frame labels", ToggleFrameLabels)
                         .checked(options.frame_labels),
@@ -209,6 +244,8 @@ impl Workspace {
             Menu {
                 name: "Define".into(),
                 items: vec![
+                    MenuItem::action("Levels…", ShowLevels),
+                    MenuItem::separator(),
                     MenuItem::action("Material from library…", AddMaterialFromLibrary),
                     MenuItem::action("Custom material…", AddCustomMaterial),
                     MenuItem::action("Section from library…", AddSectionFromLibrary),
@@ -551,6 +588,9 @@ impl Workspace {
                 EntityKind::Section,
                 EntityKind::Material,
                 EntityKind::Node,
+                // Last, and refused while any node still binds to it: a
+                // level never takes structure down with it.
+                EntityKind::Level,
             ];
             for kind in order {
                 for id in &doomed {
@@ -568,6 +608,7 @@ impl Workspace {
                         EntityKind::Section => Command::RemoveSection { id },
                         EntityKind::Material => Command::RemoveMaterial { id },
                         EntityKind::Node => Command::RemoveNode { id },
+                        EntityKind::Level => Command::RemoveLevel { id },
                     });
                 }
             }
@@ -650,11 +691,18 @@ impl Workspace {
             self.select(vec![id], cx);
         }
     }
-    /// A node at a point the Node tool clicked.
-    fn place_node(&mut self, position: [f64; 3], window: &mut Window, cx: &mut Context<Self>) {
+    /// A node at a point the Node tool clicked, on the active level.
+    fn place_node(
+        &mut self,
+        position: [f64; 3],
+        level: EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let model = self.document.read(cx).model();
         let node = Node::new(
             unused_name::<Node>(model, "N"),
+            level,
             position.map(Length::from_metres),
         );
         let id = EntityId(model.next_id);
@@ -672,7 +720,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         match event {
-            ViewportEvent::PlaceNode(position) => self.place_node(*position, window, cx),
+            ViewportEvent::PlaceNode { position, level } => {
+                self.place_node(*position, *level, window, cx)
+            }
             ViewportEvent::DrawFrame(nodes) => self.add_frame(*nodes, window, cx),
             ViewportEvent::DrawShell(nodes) => self.add_shell(*nodes, window, cx),
             ViewportEvent::OpenProperties => self.show_properties(window, cx),
@@ -736,6 +786,18 @@ impl Workspace {
                 // Enter commits a cell and must not confirm the dialog.
                 .on_ok(|_, _, _| false)
                 .child(div().h(px(480.)).child(panel.clone()))
+        });
+    }
+    /// The levels table, in a dialog.
+    pub fn show_levels(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = self.levels.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title("Levels")
+                .w(px(960.))
+                .footer(div())
+                .on_ok(|_, _, _| false)
+                .child(div().h(px(420.)).child(panel.clone()))
         });
     }
     /// The load combinations matrix, in a dialog.
@@ -803,6 +865,7 @@ impl Workspace {
         let viewport = self.viewport.read(cx);
         let gates = Gates::of(document);
         let options = viewport.options();
+        let mode = viewport.mode();
         let solved = document.analysis().is_some();
         fn item(label: &str, action: Box<dyn Action>, gate: Option<&str>) -> CommandItem {
             let item = CommandItem::new().action(action);
@@ -914,6 +977,7 @@ impl Workspace {
             (
                 "Define",
                 vec![
+                    item("Levels…", Box::new(ShowLevels), None),
                     item("Material from library…", Box::new(AddMaterialFromLibrary), None),
                     item("Custom material…", Box::new(AddCustomMaterial), None),
                     item("Section from library…", Box::new(AddSectionFromLibrary), None),
@@ -952,6 +1016,15 @@ impl Workspace {
                     item("Elevation, X across", Box::new(ViewElevationX), None),
                     item("Elevation, Y across", Box::new(ViewElevationY), None),
                     item("Zoom extents", Box::new(ZoomExtents), None),
+                    item(&on("Whole model", mode == ViewMode::Whole), Box::new(ViewWholeModel), None),
+                    item(&on("Active level", mode == ViewMode::Level), Box::new(ViewActiveLevel), None),
+                    item(
+                        &on("Active level with context", mode == ViewMode::LevelContext),
+                        Box::new(ViewActiveLevelContext),
+                        None,
+                    ),
+                    item("Level up", Box::new(LevelUp), None),
+                    item("Level down", Box::new(LevelDown), None),
                     item(&on("Node labels", options.node_labels), Box::new(ToggleNodeLabels), None),
                     item(&on("Frame labels", options.frame_labels), Box::new(ToggleFrameLabels), None),
                     item(
@@ -1017,14 +1090,12 @@ impl Workspace {
             );
         }
         let model = document.model();
+        // Z is the structural vertical, so a floor diaphragm is normal to it.
         let diaphragm = Diaphragm {
             name: unused_name::<Diaphragm>(model, "DIAPH"),
             master: None,
             nodes,
-            normal: match self.viewport.read(cx).up_axis() {
-                UpAxis::Y => Axis::Y,
-                UpAxis::Z => Axis::Z,
-            },
+            normal: Axis::Z,
         };
         let id = EntityId(model.next_id);
         if self.apply(Command::AddDiaphragm { id, diaphragm }, window, cx) {
@@ -1045,6 +1116,18 @@ impl Workspace {
     pub fn toggle_up_axis(&mut self, cx: &mut Context<Self>) {
         self.viewport
             .update(cx, |viewport, cx| viewport.toggle_up_axis(cx));
+    }
+    pub fn set_view_mode(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
+        self.viewport
+            .update(cx, |viewport, cx| viewport.set_mode(mode, cx));
+    }
+    pub fn step_level(&mut self, step: isize, cx: &mut Context<Self>) {
+        self.viewport
+            .update(cx, |viewport, cx| viewport.step_level(step, cx));
+    }
+    pub fn set_active_level(&mut self, level: EntityId, cx: &mut Context<Self>) {
+        self.viewport
+            .update(cx, |viewport, cx| viewport.set_active_level(level, cx));
     }
     pub fn toggle_option(
         &mut self,
@@ -1149,6 +1232,7 @@ impl Workspace {
                         .child(row("V N F S", "Select, Node, Frame, Shell tools"))
                         .child(row("L U G D", "Nodal load, uniform load, group, diaphragm"))
                         .child(row("1 2 3 4 · Z", "3D, plan, elevation X, elevation Y · fit"))
+                        .child(row("5 6 7 · PgUp PgDn", "Whole model, active level, level with context · level up, down"))
                         .child(row("Shift+N / F / Z / D", "Node labels, frame labels, up axis, deformed shape"))
                         .child(heading("Keys anywhere"))
                         .child(row("Ctrl+E · Ctrl+B · Ctrl+K", "Properties · model browser · search commands"))
@@ -1156,8 +1240,10 @@ impl Workspace {
                         .child(row("Ctrl+L · Ctrl+Shift+L", "Load cases · load combinations"))
                         .child(row("Ctrl+R · Ctrl+] · Ctrl+[", "Run · next · previous combination"))
                         .child(row("Esc", "Stop drawing, then back to Select, then deselect"))
+                        .child(heading("Levels"))
+                        .child("Z is up. Every node belongs to a level, at an offset above its elevation; Define > Levels adds, moves, and removes levels. The active level is where the Node tool places nodes and what the level views show; moving a level carries its nodes with it.")
                         .child(heading("Drawing"))
-                        .child("Node places a node where you click, on the ground plane. Frame joins node I to node J and carries on from J. Shell takes four nodes in order around it. With nodes already selected, Frame and Shell draw on them at once. Loads go on the selected nodes or frames."),
+                        .child("Node places a node where you click, on the active level. Frame joins node I to node J and carries on from J. Shell takes four nodes in order around it. With nodes already selected, Frame and Shell draw on them at once. Loads go on the selected nodes or frames."),
                 )
         });
     }
@@ -1195,10 +1281,18 @@ impl Workspace {
                 .next()
                 .zip(model.sections.values().next())
                 .map(|(material, section)| (material.name.clone(), section.name.clone())),
-            in_elevation: matches!(
-                viewport.preset(),
-                Some(ViewPreset::ElevationX | ViewPreset::ElevationY)
-            ),
+            level: viewport
+                .active_level()
+                .and_then(|id| model.levels.get(&id))
+                .map(|l| {
+                    format!(
+                        "{} ({} {})",
+                        l.name,
+                        text::fmt_q(Role::Length, l.elevation.si()),
+                        text::UNITS.symbol(Role::Length)
+                    )
+                }),
+            plane_hidden: !viewport.plane_visible(),
         }
     }
 
@@ -1227,6 +1321,23 @@ impl Workspace {
             Some(ViewPreset::ElevationY) => "Elevation, Y across",
             None => "Free orbit",
         };
+        let shown = match viewport.mode() {
+            ViewMode::Whole => "Whole model",
+            ViewMode::Level => "Active level",
+            ViewMode::LevelContext => "Level with context",
+        };
+        let level = viewport
+            .active_level()
+            .and_then(|id| model.levels.get(&id))
+            .map(|l| {
+                format!(
+                    "{} · {} {}",
+                    l.name,
+                    text::fmt_q(Role::Length, l.elevation.si()),
+                    text::UNITS.symbol(Role::Length)
+                )
+            })
+            .unwrap_or_else(|| "No level".into());
         StatusBar::new()
             .left(
                 h_flex()
@@ -1265,6 +1376,8 @@ impl Workspace {
                     UpAxis::Z => "Z up",
                 },
             ))
+            .right(div().text_xs().text_color(muted).child(level))
+            .right(div().text_xs().text_color(muted).child(shown))
             .right(div().text_xs().text_color(muted).child(view))
     }
 }

@@ -1,7 +1,7 @@
 //! The property panel: edits the selected entity through inverse-returning
 //! commands. Text fields commit on Enter or blur, checkboxes and choices
 //! commit at once. With several entities selected it offers bulk assignment.
-use crate::actions::{AddDistributedLoad, AddNodalLoad, DeleteSelected};
+use crate::actions::{AddDistributedLoad, AddNodalLoad, DeleteSelected, SetActiveLevel};
 use crate::document::Document;
 use crate::explorer::rows_of;
 use crate::results::{Plane, render_member_results};
@@ -22,7 +22,8 @@ use gpui_kit::*;
 use oa_core::units::Length;
 use oa_core::units::*;
 use oa_model::{
-    AxialBehavior, Axis, Command, EntityId, EntityKind, MemberLoad, Model, Role, ShellFormulation,
+    AxialBehavior, Axis, Command, ElevationScope, EntityId, EntityKind, Level, MemberLoad, Model,
+    Role, ShellFormulation,
 };
 use std::collections::HashMap;
 
@@ -131,6 +132,11 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
     let kind = model.kind_of(id)?;
     let mut f = vec![];
     match kind {
+        EntityKind::Level => {
+            let l = &model.levels[&id];
+            f.push(text("name", "Name", &l.name));
+            f.push(qty("elevation", "Elevation", Role::Length, l.elevation.si()));
+        }
         EntityKind::Node => {
             let n = &model.nodes[&id];
             f.push(text("name", "Name", &n.name));
@@ -142,6 +148,18 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
                     n.position[i].si(),
                 ));
             }
+            f.push(entity_choice(
+                "level",
+                "Level",
+                model,
+                EntityKind::Level,
+                Some(n.level),
+            ));
+            let offset = model
+                .levels
+                .get(&n.level)
+                .map_or(0.0, |l| oa_model::levels::offset(n, l));
+            f.push(qty("offset", "Offset above level", Role::Length, offset));
             for (i, dof) in DOF.iter().enumerate() {
                 f.push(check(format!("r{i}"), "Restraints", dof, n.restrained[i]));
             }
@@ -386,9 +404,38 @@ fn command_for(
 ) -> Result<Option<Command>, String> {
     let name = v.text("name");
     Ok(match kind {
+        EntityKind::Level => {
+            let current = &model.levels[&id];
+            let mut commands = vec![];
+            if name != current.name {
+                commands.push(Command::UpdateLevel {
+                    id,
+                    level: Level {
+                        name,
+                        elevation: current.elevation,
+                    },
+                });
+            }
+            let elevation = v.qty("elevation", Role::Length, "Elevation", current.elevation.si())?;
+            if elevation != current.elevation.si() {
+                // The level moves with its nodes; the other levels stay.
+                commands.push(Command::SetLevelElevation {
+                    id,
+                    elevation: Length::from_si(elevation),
+                    scope: ElevationScope::ThisLevel,
+                });
+            }
+            match commands.len() {
+                0 => None,
+                1 => commands.pop(),
+                _ => Some(Command::Batch { commands }),
+            }
+        }
         EntityKind::Node => {
             let mut n = model.nodes[&id].clone();
             n.name = name;
+            // Rebinding keeps the world position; only the offset changes.
+            n.level = v.entity("level", "Level", model, EntityKind::Level)?;
             for i in 0..3 {
                 n.position[i] = Length::from_si(v.qty(
                     &format!("p{i}"),
@@ -404,6 +451,18 @@ fn command_for(
                 )?);
                 n.mass[i] =
                     Mass::from_si(v.qty(&format!("m{i}"), Role::Mass, "Mass", n.mass[i].si())?);
+            }
+            if v.changed("offset") {
+                if v.changed("p2") {
+                    return Err("Edit either Z or the offset above the level, not both".into());
+                }
+                let offset = v.qty("offset", Role::Length, "Offset", 0.0)?;
+                let elevation = model
+                    .levels
+                    .get(&n.level)
+                    .map(|l| l.elevation.si())
+                    .ok_or("Level: choose a level")?;
+                n.position[2] = Length::from_si(elevation + offset);
             }
             for i in 0..6 {
                 n.restrained[i] = v.check(&format!("r{i}"));
@@ -540,6 +599,8 @@ struct Single {
 struct Multi {
     section: Choice,
     material: Choice,
+    /// The level to bind every selected node to, keeping their positions.
+    level: Choice,
     restraints: [bool; 6],
     _subscriptions: Vec<Subscription>,
 }
@@ -704,11 +765,26 @@ impl PropertyEditor {
             .into_iter()
             .map(|(_, n)| n.into())
             .collect();
+        let levels: Vec<SharedString> = rows_of(model, EntityKind::Level)
+            .into_iter()
+            .map(|(_, n)| n.into())
+            .collect();
         let section =
             cx.new(|cx| SelectState::new(SearchableVec::from(sections), None, window, cx));
         let material =
             cx.new(|cx| SelectState::new(SearchableVec::from(materials), None, window, cx));
+        let level = cx.new(|cx| SelectState::new(SearchableVec::from(levels), None, window, cx));
         let subscriptions = vec![
+            cx.subscribe_in(
+                &level,
+                window,
+                |this, _, event: &SelectEvent<SearchableVec<SharedString>>, window, cx| {
+                    let SelectEvent::Confirm(Some(name)) = event else {
+                        return;
+                    };
+                    this.assign_level_to_nodes(name.clone(), window, cx);
+                },
+            ),
             cx.subscribe_in(
                 &section,
                 window,
@@ -733,6 +809,7 @@ impl PropertyEditor {
         Multi {
             section,
             material,
+            level,
             restraints: [false; 6],
             _subscriptions: subscriptions,
         }
@@ -854,6 +931,36 @@ impl PropertyEditor {
                         _ => frame.material = target,
                     }
                     Command::UpdateFrame { id, frame }
+                })
+                .collect::<Vec<_>>()
+        };
+        if !commands.is_empty() {
+            self.apply(Command::Batch { commands }, window, cx);
+        }
+    }
+
+    /// Binds every selected node to the named level. Positions stay; the
+    /// nodes' offsets change.
+    fn assign_level_to_nodes(
+        &mut self,
+        name: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let commands = {
+            let document = self.document.read(cx);
+            let model = document.model();
+            let Some(level) = model.find::<Level>(&name) else {
+                return;
+            };
+            document
+                .selected_of(EntityKind::Node)
+                .into_iter()
+                .filter(|id| model.nodes[id].level != level)
+                .map(|id| {
+                    let mut node = model.nodes[&id].clone();
+                    node.level = level;
+                    Command::UpdateNode { id, node }
                 })
                 .collect::<Vec<_>>()
         };
@@ -1057,6 +1164,31 @@ impl PropertyEditor {
                 .child(remove)
         };
         Some(match single.kind {
+            EntityKind::Level => {
+                let on_level = oa_model::levels::membership(model, id);
+                let height = oa_model::levels::height_below(model, id)
+                    .map(|h| format!("{} {} above the level below", fmt_q(Role::Length, h), UNITS.symbol(Role::Length)))
+                    .unwrap_or_else(|| "The lowest level".into());
+                v_flex()
+                    .gap_2()
+                    .child(div().text_xs().text_color(muted).child(height))
+                    .child(div().text_xs().text_color(muted).child(format!(
+                        "{} nodes, {} frames, {} shells on this level",
+                        on_level.nodes.len(),
+                        on_level.frames.len(),
+                        on_level.shells.len()
+                    )))
+                    .child(
+                        Button::new("go-to-level")
+                            .small()
+                            .outline()
+                            .label("Make active")
+                            .on_click(move |_, window, cx| {
+                                window.dispatch_action(Box::new(SetActiveLevel(id.0)), cx)
+                            }),
+                    )
+                    .into_any_element()
+            }
             EntityKind::LoadCase => {
                 let case = &model.load_cases[&id];
                 let mut list = v_flex().gap_1();
@@ -1337,6 +1469,17 @@ impl PropertyEditor {
                     v_flex()
                         .gap_2()
                         .child(
+                            Form::new().label_text_size(rems(0.75)).child(
+                                Field::new()
+                                    .label(format!("Bind {nodes} nodes to level"))
+                                    .child(
+                                        Select::new(&multi.level)
+                                            .small()
+                                            .placeholder("Choose a level"),
+                                    ),
+                            ),
+                        )
+                        .child(
                             div()
                                 .text_xs()
                                 .text_color(muted)
@@ -1520,16 +1663,23 @@ mod tests {
     use super::{FieldSpec, Values, command_for, specs};
     use crate::text::{DEFAULT_PRECISION, TestPrecision};
     use oa_core::units::Length;
-    use oa_model::{Command, EntityKind, Model, Node};
+    use oa_model::{Command, ElevationScope, EntityKind, Model, Node};
 
-    /// The panel as just built: every text field shows its committed text.
+    /// The panel as just built: every text field shows its committed text
+    /// and every choice its current selection.
     fn values_for(model: &Model, id: oa_model::EntityId) -> Values {
         let (_, fields) = specs(model, id).unwrap();
         let mut v = Values::default();
         for f in fields {
-            if let FieldSpec::Text { key, value, .. } = f {
-                v.texts.insert(key.clone(), value.clone());
-                v.committed.insert(key, value);
+            match f {
+                FieldSpec::Text { key, value, .. } => {
+                    v.texts.insert(key.clone(), value.clone());
+                    v.committed.insert(key, value);
+                }
+                FieldSpec::Choice { key, selected, .. } => {
+                    v.choices.insert(key, selected);
+                }
+                FieldSpec::Check { .. } => {}
             }
         }
         v
@@ -1540,7 +1690,8 @@ mod tests {
         let _p = TestPrecision::of(DEFAULT_PRECISION);
         // 6 m shows as 19.69 ft, which is not 6 m when parsed back.
         let mut model = Model::default();
-        let id = model.insert(Node::new("N1", [Length::from_metres(6.0); 3]));
+        let level = model.base_level().unwrap();
+        let id = model.insert(Node::new("N1", level, [Length::from_metres(6.0); 3]));
         let v = values_for(&model, id);
         assert_eq!(command_for(&model, id, EntityKind::Node, &v).unwrap(), None);
 
@@ -1553,5 +1704,52 @@ mod tests {
         };
         assert!((node.position[0].si() - 6.096).abs() < 1e-12);
         assert_eq!(node.position[1].si(), 6.0);
+    }
+
+    #[test]
+    fn offset_and_level_edits_write_the_position() {
+        let _p = TestPrecision::of(DEFAULT_PRECISION);
+        let mut model = Model::default();
+        let base = model.base_level().unwrap();
+        let upper = model.insert(oa_model::Level::new("L1", Length::from_feet(12.0)));
+        let id = model.insert(Node::new("N1", base, [Length::ZERO; 3]));
+        // An offset of 2 ft above Base puts the node at 2 ft.
+        let mut v = values_for(&model, id);
+        v.texts.insert("offset".into(), "2".into());
+        let Some(Command::UpdateNode { node, .. }) =
+            command_for(&model, id, EntityKind::Node, &v).unwrap()
+        else {
+            panic!("an edited offset is a command");
+        };
+        assert!((node.position[2].si() - Length::from_feet(2.0).si()).abs() < 1e-12);
+        // Rebinding to L1 keeps the node where it is; its offset becomes -12 ft.
+        let mut v = values_for(&model, id);
+        let rows = crate::explorer::rows_of(&model, EntityKind::Level);
+        v.choices.insert(
+            "level".into(),
+            rows.iter().position(|(l, _)| *l == upper),
+        );
+        let Some(Command::UpdateNode { node, .. }) =
+            command_for(&model, id, EntityKind::Node, &v).unwrap()
+        else {
+            panic!("a rebinding is a command");
+        };
+        assert_eq!(node.level, upper);
+        assert_eq!(node.position[2].si(), 0.0);
+        // Z and offset edited together is ambiguous and refused.
+        let mut v = values_for(&model, id);
+        v.texts.insert("offset".into(), "1".into());
+        v.texts.insert("p2".into(), "1".into());
+        assert!(command_for(&model, id, EntityKind::Node, &v).is_err());
+        // A level's elevation edit becomes a move of that level alone.
+        let mut v = values_for(&model, upper);
+        v.texts.insert("elevation".into(), "14".into());
+        let Some(Command::SetLevelElevation { scope, elevation, .. }) =
+            command_for(&model, upper, EntityKind::Level, &v).unwrap()
+        else {
+            panic!("an elevation edit moves the level");
+        };
+        assert_eq!(scope, ElevationScope::ThisLevel);
+        assert!((elevation.si() - Length::from_feet(14.0).si()).abs() < 1e-12);
     }
 }

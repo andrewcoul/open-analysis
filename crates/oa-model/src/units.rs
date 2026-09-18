@@ -175,6 +175,11 @@ macro_rules! remap {
     };
 }
 
+impl MapQuantities for Level {
+    fn map_quantities(&mut self, f: &mut dyn FnMut(Role, f64) -> f64) {
+        remap!(f, Role::Length, self.elevation, Length);
+    }
+}
 impl MapQuantities for Node {
     fn map_quantities(&mut self, f: &mut dyn FnMut(Role, f64) -> f64) {
         for i in 0..3 {
@@ -293,6 +298,12 @@ impl MapQuantities for LoadCase {
 impl MapQuantities for Command {
     fn map_quantities(&mut self, f: &mut dyn FnMut(Role, f64) -> f64) {
         match self {
+            Command::AddLevel { level, .. } | Command::UpdateLevel { level, .. } => {
+                level.map_quantities(f)
+            }
+            Command::SetLevelElevation { elevation, .. } => {
+                remap!(f, Role::Length, *elevation, Length);
+            }
             Command::AddNode { node, .. } | Command::UpdateNode { node, .. } => {
                 node.map_quantities(f)
             }
@@ -326,6 +337,7 @@ impl MapQuantities for Command {
             | Command::AddGroup { .. }
             | Command::UpdateGroup { .. }
             | Command::SetMetadata { .. }
+            | Command::RemoveLevel { .. }
             | Command::RemoveNode { .. }
             | Command::RemoveMaterial { .. }
             | Command::RemoveSection { .. }
@@ -401,7 +413,7 @@ mod tests {
 
     #[test]
     fn entities_and_commands_map_every_quantity_and_nothing_else() {
-        let mut node = Node::fixed("N", [Length::from_feet(10.0); 3]);
+        let mut node = Node::fixed("N", EntityId(1), [Length::from_feet(10.0); 3]);
         node.mass = [Mass::from_si(14_593.9); 3];
         node.prescribed.rotation = [Angle::from_si(0.5); 3];
         let shown = US.display(&node);

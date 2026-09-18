@@ -5,8 +5,8 @@ use gpui_kit::Context;
 use oa_core::units::*;
 use oa_core::{FrameDiagram, InMemoryResults};
 use oa_model::{
-    Combination, Command, Compiled, Editor, EntityId, EntityKind, Frame, LoadCase, MemberLoad,
-    Model, ModelError, Node, Problem, compile,
+    Combination, Command, Compiled, Editor, EntityId, EntityKind, Frame, Level, LoadCase,
+    MemberLoad, Model, ModelError, Node, Problem, compile,
 };
 use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
@@ -299,7 +299,7 @@ pub fn new_model() -> Model {
 
 /// A two-storey, two-bay steel moment frame on 20 ft bays and 12 ft
 /// storeys, W14x90 columns and W18x50 beams, with dead and wind cases, so a
-/// new user has something to look at. Z is up.
+/// new user has something to look at. Z is up, with a level per floor.
 pub fn example_frame() -> Model {
     let mut m = Model::default();
     m.metadata.name = "Example frame".into();
@@ -323,8 +323,13 @@ pub fn example_frame() -> Model {
     let bays_y = 1;
     let storeys = 2;
     let (bay, storey) = (Length::from_feet(20.0).si(), Length::from_feet(12.0).si());
+    let levels = [
+        m.base_level().expect("a new model has a level"),
+        m.insert(Level::new("Level 2", Length::from_si(storey))),
+        m.insert(Level::new("Roof", Length::from_si(2.0 * storey))),
+    ];
     let mut nodes = vec![];
-    for k in 0..=storeys {
+    for (k, level) in levels.iter().enumerate() {
         for j in 0..=bays_y {
             for i in 0..=bays_x {
                 let position = [
@@ -334,9 +339,9 @@ pub fn example_frame() -> Model {
                 ];
                 let name = format!("N{}", nodes.len() + 1);
                 let node = if k == 0 {
-                    Node::fixed(name, position)
+                    Node::fixed(name, *level, position)
                 } else {
-                    Node::new(name, position)
+                    Node::new(name, *level, position)
                 };
                 nodes.push(m.insert(node));
             }
@@ -428,6 +433,15 @@ mod tests {
         let compiled = compile(&model).expect("example compiles");
         assert_eq!(compiled.solver.nodes.len(), 18);
         assert_eq!(compiled.solver.combinations.len(), 2);
+        // Three levels, six nodes on each, every node on its datum.
+        assert_eq!(model.levels.len(), 3);
+        for level in model.levels.keys() {
+            let on_level = oa_model::levels::membership(&model, *level);
+            assert_eq!(on_level.nodes.len(), 6);
+            assert!(on_level.nodes.iter().all(|n| {
+                oa_model::levels::offset(&model.nodes[n], &model.levels[level]).abs() < 1e-12
+            }));
+        }
         let results = oa_core::analyze_static(&compiled.solver, &Default::default()).unwrap();
         assert_eq!(results.combinations.len(), 2);
     }
@@ -465,8 +479,9 @@ mod tests {
     #[test]
     fn unused_name_skips_taken_names() {
         let mut model = Model::default();
-        model.insert(Node::new("N1", [Length::ZERO; 3]));
-        model.insert(Node::new("N3", [Length::ZERO; 3]));
+        let level = model.base_level().unwrap();
+        model.insert(Node::new("N1", level, [Length::ZERO; 3]));
+        model.insert(Node::new("N3", level, [Length::ZERO; 3]));
         assert_eq!(unused_name::<Node>(&model, "N"), "N4");
     }
 }
