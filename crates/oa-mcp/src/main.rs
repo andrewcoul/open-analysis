@@ -32,7 +32,7 @@ macro_rules! with_session {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct ListArgs {
-    /// One of: node, material, section, frame, shell, diaphragm, load_case, combination, group.
+    /// One of: level, node, material, section, frame, shell, diaphragm, load_case, combination, group.
     kind: String,
     /// Substring of the name to match.
     filter: Option<String>,
@@ -48,7 +48,7 @@ struct IdArgs {
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 struct FindArgs {
-    /// One of: node, material, section, frame, shell, diaphragm, load_case, combination, group.
+    /// One of: level, node, material, section, frame, shell, diaphragm, load_case, combination, group.
     kind: String,
     name: String,
 }
@@ -113,7 +113,7 @@ struct GroupEnvelopeArgs {
 struct DriftArgs {
     upper: u64,
     lower: u64,
-    /// Displacement component, usually "ux" or "uz" for lateral drift.
+    /// Displacement component, usually "ux" or "uy" for lateral drift; Z is up.
     component: String,
 }
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -308,7 +308,7 @@ impl Server {
         ))
     }
     #[tool(
-        description = "Storey drift: displacement of an upper node minus a lower node, with drift ratio when heights differ."
+        description = "Storey drift: displacement of an upper node minus a lower node, with the ratio over their Z separation when it is not zero."
     )]
     async fn drift(
         &self,
@@ -348,7 +348,8 @@ impl ServerHandler for Server {
                 "Structural analysis. Build a model with apply_commands (see command_reference), \
                  compile, analyze, then query envelopes, drifts, or SQL. Names identify entities; \
                  ids come from next_ids. Units are US customary (kip, ft, in; describe_model \
-                 lists every symbol) on the way in and out, and Y is up by convention.",
+                 lists every symbol) on the way in and out. Z is up: levels are planes of \
+                 constant Z, every node binds to one, and a new model starts with Base at 0.",
             )
     }
 }

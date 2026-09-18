@@ -207,10 +207,12 @@ impl Session {
             "units": {"system": UNITS.name(), "symbols": symbols},
             "gravity": display(Role::Acceleration, m.gravity.si()),
             "counts": {
+                "levels": m.levels.len(),
                 "nodes": m.nodes.len(), "materials": m.materials.len(), "sections": m.sections.len(),
                 "frames": m.frames.len(), "shells": m.shells.len(), "diaphragms": m.diaphragms.len(),
                 "load_cases": m.load_cases.len(), "combinations": m.combinations.len(), "groups": m.groups.len(),
             },
+            "levels": m.levels_by_elevation().into_iter().map(|id| self.level_row(id)).collect::<Vec<_>>(),
             "load_cases": names(m.load_cases.values().map(|c| c.name.as_str()).collect()),
             "combinations": names(m.combinations.values().map(|c| c.name.as_str()).collect()),
             "groups": m.groups.iter().map(|(id, g)| json!({"id": id, "name": g.name, "size": g.members.len()})).collect::<Vec<_>>(),
@@ -220,12 +222,35 @@ impl Session {
             "can_redo": self.editor.can_redo(),
         })
     }
-    /// Compact rows for one entity kind, optionally filtered by a name substring.
+    /// A level with its elevation and the storey height below it, in feet.
+    fn level_row(&self, id: EntityId) -> Value {
+        let m = self.model();
+        let l = &m.levels[&id];
+        json!({
+            "id": id, "name": l.name,
+            "elevation": display(Role::Length, l.elevation.si()),
+            "height_below": oa_model::levels::height_below(m, id).map(|h| display(Role::Length, h)),
+        })
+    }
+    /// Compact rows for one entity kind, optionally filtered by a name
+    /// substring. Levels come lowest first.
     pub fn list(&self, kind: EntityKind, filter: Option<&str>, limit: usize) -> Value {
         let m = self.model();
         let matches = |name: &str| filter.is_none_or(|f| name.contains(f));
         let mut rows = vec![];
         let mut total = 0;
+        if kind == EntityKind::Level {
+            for id in m.levels_by_elevation() {
+                if !matches(&m.levels[&id].name) {
+                    continue;
+                }
+                total += 1;
+                if rows.len() < limit {
+                    rows.push(self.level_row(id));
+                }
+            }
+            return json!({"total": total, "rows": rows, "truncated": total > rows.len()});
+        }
         macro_rules! rows {
             ($table:expr, |$id:ident, $e:ident| $summary:expr) => {
                 for ($id, $e) in $table.iter().filter(|(_, e)| matches(&e.name)) {
@@ -237,9 +262,16 @@ impl Session {
             };
         }
         match kind {
+            EntityKind::Level => unreachable!("listed above"),
             EntityKind::Node => rows!(
                 m.nodes,
-                |id, n| json!({"id": id, "name": n.name, "position": n.position.map(|p| display(Role::Length, p.si())), "restrained": n.restrained})
+                |id, n| json!({
+                    "id": id, "name": n.name,
+                    "position": n.position.map(|p| display(Role::Length, p.si())),
+                    "level": m.name_of(n.level),
+                    "offset": m.levels.get(&n.level).map(|l| display(Role::Length, oa_model::levels::offset(n, l))),
+                    "restrained": n.restrained,
+                })
             ),
             EntityKind::Material => rows!(
                 m.materials,
@@ -280,6 +312,7 @@ impl Session {
         let m = self.model();
         let kind = m.kind_of(id).ok_or(ModelError::NotFound(id))?;
         let value = match kind {
+            EntityKind::Level => serde_json::to_value(UNITS.display(&m.levels[&id]))?,
             EntityKind::Node => serde_json::to_value(UNITS.display(&m.nodes[&id]))?,
             EntityKind::Material => serde_json::to_value(UNITS.display(&m.materials[&id]))?,
             EntityKind::Section => serde_json::to_value(UNITS.display(&m.sections[&id]))?,
@@ -295,6 +328,7 @@ impl Session {
     pub fn find(&self, kind: EntityKind, name: &str) -> Option<EntityId> {
         let m = self.model();
         match kind {
+            EntityKind::Level => m.find::<Level>(name),
             EntityKind::Node => m.find::<Node>(name),
             EntityKind::Material => m.find::<Material>(name),
             EntityKind::Section => m.find::<Section>(name),
@@ -521,15 +555,17 @@ impl Session {
             "rows": rows.into_iter().take(limit).map(|(_, v)| v).collect::<Vec<_>>(),
         }))
     }
-    /// Displacement difference between two nodes, such as storey drift.
+    /// Displacement difference between two nodes, such as storey drift. The
+    /// ratio divides by the nodes' actual Z separation, not by a level
+    /// height.
     pub fn drift(&self, upper: EntityId, lower: EntityId, component: &str) -> Result<Value> {
         let (compiled, store) = self.store()?;
         let u = self.index_of(compiled, upper, Quantity::Displacement)?;
         let l = self.index_of(compiled, lower, Quantity::Displacement)?;
         let c = component_index(Quantity::Displacement, component)?;
         let e = store.envelope_drift(u, l, c)?;
-        let height = (self.model().nodes[&upper].position[1].si()
-            - self.model().nodes[&lower].position[1].si())
+        let height = (self.model().nodes[&upper].position[2].si()
+            - self.model().nodes[&lower].position[2].si())
         .abs();
         // The ratio is dimensionless, so it is formed in SI before the
         // displacement is shown in inches.
@@ -537,6 +573,7 @@ impl Session {
         let role = role_of(Quantity::Displacement, c);
         Ok(json!({
             "upper": self.model().name_of(upper), "lower": self.model().name_of(lower),
+            "height": display(Role::Length, height),
             "unit": UNITS.symbol(role),
             "minimum": {"value": display(role, e.minimum.value), "combination": e.minimum.combination, "ratio": ratio(e.minimum.value)},
             "maximum": {"value": display(role, e.maximum.value), "combination": e.maximum.combination, "ratio": ratio(e.maximum.value)},
@@ -589,13 +626,28 @@ impl Session {
 /// Reference text for the `apply_commands` tool: one entry per command with a
 /// minimal JSON example. Kept as data so the agent can read it once.
 pub const COMMAND_REFERENCE: &str = r#"Each command is a JSON object with a "command" field. Ids come from next_ids.
-Units are US customary: coordinates and load positions in ft, shell thickness in in, section area in in² and
+Units are US customary: coordinates, elevations and load positions in ft, shell thickness in in, section area in in² and
 moments of area in in⁴, E in ksi, density in pcf, forces in kip, moments in kip·ft, line loads in kip/ft,
 surface pressure in psf, springs in kip/ft and kip·ft/rad, nodal mass in kip·s²/ft, prescribed displacements
-in in and rad, roll in degrees, gravity in ft/s². Y is up in the examples.
+in in and rad, roll in degrees, gravity in ft/s².
+Z is up. X and Y are the plan axes. A level is a plane of constant Z, and every node binds to one level: its
+offset above the level is position z minus the level elevation. A new model has one level, "Base" at 0.
+list_entities with kind "level" gives each level's id, elevation, and storey height below, lowest first.
 
-add_node      {"command":"add_node","id":1,"node":{"name":"N1","position":[0,0,0],"restrained":[true,true,true,true,true,true]}}
-              optional node fields: prescribed, mass [kip·s²/ft x3], mass_inertia, spring_translation [kip/ft x3], spring_rotation
+add_level     {"command":"add_level","id":11,"level":{"name":"Level 2","elevation":12}}
+update_level  {"command":"update_level","id":11,"level":{"name":"L2","elevation":12}}
+              renames, or re-datums the level in place: its nodes keep their coordinates and their offsets change
+set_level_elevation {"command":"set_level_elevation","id":11,"elevation":14,"scope":"this_and_above"}
+              moves the datum with its bound nodes, keeping every offset. scope "this_level" holds every other level
+              still; "this_and_above" carries the higher levels and their nodes too, so the storey heights above are
+              kept. For a storey height, set elevation = elevation of the level below + height, with this_and_above.
+              refused if the move would cross or land on a level that is not moving, or make geometry invalid that
+              was valid before (a load station past a shortened member, for example). Undo restores exact values.
+remove_level  {"command":"remove_level","id":11}    refused while a node binds to it (update_node to another level
+              first, which keeps the node's coordinates) and for the last level
+add_node      {"command":"add_node","id":1,"node":{"name":"N1","level":11,"position":[0,0,12],"restrained":[true,true,true,true,true,true]}}
+              level is required. optional node fields: prescribed, mass [kip·s²/ft x3], mass_inertia,
+              spring_translation [kip/ft x3], spring_rotation
 update_node   {"command":"update_node","id":1,"node":{...full node...}}
 remove_node   {"command":"remove_node","id":1}     (refused while a frame, shell, diaphragm or load references it)
 add_material  {"command":"add_material","id":2,"material":{"name":"steel","young":29000,"poisson":0.3,"density":490}}
@@ -603,10 +655,10 @@ add_section   {"command":"add_section","id":3,"section":{"name":"col","area":26.
 add_frame     {"command":"add_frame","id":4,"frame":{"name":"C1","nodes":[1,5],"material":2,"section":3}}
               optional: releases [12 bools], behavior "tension_only"|"compression_only", roll, local_y
 add_shell     {"command":"add_shell","id":6,"shell":{"name":"S1","nodes":[1,2,3,4],"material":2,"thickness":8}}
-add_diaphragm {"command":"add_diaphragm","id":7,"diaphragm":{"name":"L1","nodes":[5,6,7],"normal":"y"}}   master optional
+add_diaphragm {"command":"add_diaphragm","id":7,"diaphragm":{"name":"D1","nodes":[5,6,7],"normal":"z"}}   master optional
 add_load_case {"command":"add_load_case","id":8,"load_case":{"name":"wind","nodal":[{"node":5,"force":[10,0,0]}],
-               "member":[{"type":"distributed","member":4,"start":0,"end":20,"start_load":[0,-1,0],"end_load":[0,-1,0],"axes":"global"}],
-               "self_weight":[0,-1,0]}}
+               "member":[{"type":"distributed","member":4,"start":0,"end":20,"start_load":[0,0,-1],"end_load":[0,0,-1],"axes":"global"}],
+               "self_weight":[0,0,-1]}}
 add_combination {"command":"add_combination","id":9,"combination":{"name":"1.2D+1.6W","terms":[[8,1.6]]}}
 add_group     {"command":"add_group","id":10,"group":{"name":"roof","members":[5,6]}}
 update_*, remove_* exist for every kind. set_gravity {"command":"set_gravity","gravity":32.174}

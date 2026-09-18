@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
@@ -37,7 +37,7 @@ pub fn from_json(text: &str) -> Result<Model, FormatError> {
         return Err(FormatError::TooNew(version));
     }
     while version < FORMAT_VERSION {
-        value = migrate(version, value);
+        value = migrate(version, value)?;
         version += 1;
         value["format_version"] = serde_json::json!(version);
     }
@@ -58,6 +58,19 @@ fn check_integrity(model: &mut Model) -> Result<(), FormatError> {
         return Err(FormatError::Corrupt(format!(
             "group #{} lists missing entity #{}",
             group.0, member.0
+        )));
+    }
+    if model.levels.is_empty() {
+        return Err(FormatError::Corrupt("document has no levels".into()));
+    }
+    if let Some((id, node)) = model
+        .nodes
+        .iter()
+        .find(|(_, n)| model.kind_of(n.level) != Some(crate::model::EntityKind::Level))
+    {
+        return Err(FormatError::Corrupt(format!(
+            "node #{} binds to missing level #{}",
+            id.0, node.level.0
         )));
     }
     let high_water = model.max_id().map_or(0, |id| id.0);
@@ -103,9 +116,54 @@ pub fn temporary_path(path: &Path) -> PathBuf {
 
 /// One step: a document at `from` becomes a document at `from + 1`.
 /// Each version bump adds an arm here and a fixture under tests/fixtures.
-fn migrate(from: u32, value: serde_json::Value) -> serde_json::Value {
-    // Version 1 is the first format, so there is nothing to migrate yet.
-    // The first bump turns this into `match from { 1 => ..., _ => value }`.
+fn migrate(from: u32, mut value: serde_json::Value) -> Result<serde_json::Value, FormatError> {
     debug_assert!(from < FORMAT_VERSION);
-    value
+    match from {
+        // Version 2 binds every node to a level. A version 1 document has
+        // none, so one datum at elevation zero is added and every node bound
+        // to it with its Z as the offset. Coordinates and the compiled solver
+        // model are unchanged, and no floors are invented: the user adds
+        // levels and rebinds nodes explicitly.
+        1 => {
+            let exhausted = || FormatError::Corrupt("entity id space is exhausted".into());
+            let id = fresh_id(&value).ok_or_else(exhausted)?;
+            let next = id.checked_add(1).ok_or_else(exhausted)?;
+            value["levels"] = serde_json::json!({
+                id.to_string(): {"name": "Base", "elevation": 0.0}
+            });
+            if let Some(nodes) = value.get_mut("nodes").and_then(|n| n.as_object_mut()) {
+                for node in nodes.values_mut() {
+                    node["level"] = serde_json::json!(id);
+                }
+            }
+            value["next_id"] = serde_json::json!(next);
+            Ok(value)
+        }
+        _ => Ok(value),
+    }
+}
+
+/// An id no table of a version 1 document uses and the allocator has not
+/// handed out; none when the id space is exhausted.
+fn fresh_id(value: &serde_json::Value) -> Option<u64> {
+    const TABLES: [&str; 9] = [
+        "nodes",
+        "materials",
+        "sections",
+        "frames",
+        "shells",
+        "diaphragms",
+        "load_cases",
+        "combinations",
+        "groups",
+    ];
+    let highest = TABLES
+        .iter()
+        .filter_map(|t| value.get(t)?.as_object())
+        .flat_map(|table| table.keys())
+        .filter_map(|k| k.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    let next = value.get("next_id").and_then(|v| v.as_u64()).unwrap_or(0);
+    Some(next.max(highest.checked_add(1)?))
 }

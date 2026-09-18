@@ -1,11 +1,12 @@
 use crate::entity::*;
-use oa_core::units::{Acceleration, STANDARD_GRAVITY};
+use oa_core::units::{Acceleration, Length, STANDARD_GRAVITY};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityKind {
+    Level,
     Node,
     Material,
     Section,
@@ -19,6 +20,7 @@ pub enum EntityKind {
 impl std::fmt::Display for EntityKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
+            Self::Level => "level",
             Self::Node => "node",
             Self::Material => "material",
             Self::Section => "section",
@@ -63,6 +65,9 @@ pub struct Model {
     pub gravity: Acceleration,
     #[serde(default)]
     pub next_id: u64,
+    /// Never empty: a model keeps at least one level, and every node binds to one.
+    #[serde(default)]
+    pub levels: BTreeMap<EntityId, Level>,
     #[serde(default)]
     pub nodes: BTreeMap<EntityId, Node>,
     #[serde(default)]
@@ -82,13 +87,18 @@ pub struct Model {
     #[serde(default)]
     pub groups: BTreeMap<EntityId, Group>,
 }
+/// A new model starts with one level, `Base` at elevation zero, so there is
+/// always a datum to bind nodes to.
 impl Default for Model {
     fn default() -> Self {
+        let mut levels = BTreeMap::new();
+        levels.insert(EntityId(1), Level::new("Base", Length::ZERO));
         Self {
             format_version: format_version(),
             metadata: Metadata::default(),
             gravity: standard_gravity(),
-            next_id: 1,
+            next_id: 2,
+            levels,
             nodes: BTreeMap::new(),
             materials: BTreeMap::new(),
             sections: BTreeMap::new(),
@@ -131,7 +141,8 @@ macro_rules! entity {
         }
     };
 }
-entity!(Node, Node, nodes, |_s| vec![]);
+entity!(Level, Level, levels, |_s| vec![]);
+entity!(Node, Node, nodes, |s| vec![(s.level, EntityKind::Level)]);
 entity!(Material, Material, materials, |_s| vec![]);
 entity!(Section, Section, sections, |_s| vec![]);
 entity!(Frame, Frame, frames, |s| vec![
@@ -198,8 +209,9 @@ impl Model {
         }
     }
     fn all_ids(&self) -> impl Iterator<Item = EntityId> + '_ {
-        self.nodes
+        self.levels
             .keys()
+            .chain(self.nodes.keys())
             .chain(self.materials.keys())
             .chain(self.sections.keys())
             .chain(self.frames.keys())
@@ -240,6 +252,7 @@ impl Model {
     }
     pub fn kind_of(&self, id: EntityId) -> Option<EntityKind> {
         [
+            (self.levels.contains_key(&id), EntityKind::Level),
             (self.nodes.contains_key(&id), EntityKind::Node),
             (self.materials.contains_key(&id), EntityKind::Material),
             (self.sections.contains_key(&id), EntityKind::Section),
@@ -255,9 +268,10 @@ impl Model {
         .map(|(_, k)| k)
     }
     pub fn name_of(&self, id: EntityId) -> Option<&str> {
-        self.nodes
+        self.levels
             .get(&id)
             .map(|e| e.name.as_str())
+            .or_else(|| self.nodes.get(&id).map(|e| e.name.as_str()))
             .or_else(|| self.materials.get(&id).map(|e| e.name.as_str()))
             .or_else(|| self.sections.get(&id).map(|e| e.name.as_str()))
             .or_else(|| self.frames.get(&id).map(|e| e.name.as_str()))
@@ -291,6 +305,7 @@ impl Model {
             }
         }
         let mut out = vec![];
+        scan::<Node>(self, id, &mut out);
         scan::<Frame>(self, id, &mut out);
         scan::<Shell>(self, id, &mut out);
         scan::<Diaphragm>(self, id, &mut out);
@@ -319,12 +334,31 @@ impl Model {
         id
     }
 
-    /// Builds a model from solver input, naming entities by their table position.
+    /// Levels from the lowest up. Elevations are distinct (validation
+    /// rejects coincident datums), so id order only breaks exact ties.
+    pub fn levels_by_elevation(&self) -> Vec<EntityId> {
+        let mut ids: Vec<(f64, EntityId)> = self
+            .levels
+            .iter()
+            .map(|(id, l)| (l.elevation.si(), *id))
+            .collect();
+        ids.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        ids.into_iter().map(|(_, id)| id).collect()
+    }
+    /// The lowest level, if the model has any.
+    pub fn base_level(&self) -> Option<EntityId> {
+        self.levels_by_elevation().into_iter().next()
+    }
+
+    /// Builds a model from solver input, naming entities by their table
+    /// position. Solver input has no levels, so every node binds to the
+    /// default model's base level at elevation zero, with its Z as the offset.
     pub fn from_solver(solver: &oa_core::Model) -> Self {
         let mut m = Model {
             gravity: solver.gravity,
             ..Default::default()
         };
+        let base = m.base_level().expect("a new model has a level");
         let nodes: Vec<EntityId> = solver
             .nodes
             .iter()
@@ -332,6 +366,7 @@ impl Model {
             .map(|(i, n)| {
                 m.insert(Node {
                     name: format!("N{i}"),
+                    level: base,
                     position: n.position,
                     restrained: n.restrained,
                     prescribed: n.prescribed.clone(),

@@ -19,10 +19,30 @@ pub struct Provenance {
     pub designation: String,
 }
 
+/// A named horizontal datum at an absolute global Z elevation. Every node
+/// binds to exactly one; the node's height above it is derived from its
+/// position, never stored a second time. Z is the structural vertical.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Level {
+    pub name: String,
+    pub elevation: Length,
+}
+impl Level {
+    pub fn new(name: impl Into<String>, elevation: Length) -> Self {
+        Self {
+            name: name.into(),
+            elevation,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Node {
     pub name: String,
+    /// The level this node follows when its datum moves.
+    pub level: EntityId,
     pub position: [Length; 3],
     #[serde(default)]
     pub restrained: [bool; 6],
@@ -38,9 +58,10 @@ pub struct Node {
     pub spring_rotation: [RotationalStiffness; 3],
 }
 impl Node {
-    pub fn new(name: impl Into<String>, position: [Length; 3]) -> Self {
+    pub fn new(name: impl Into<String>, level: EntityId, position: [Length; 3]) -> Self {
         Self {
             name: name.into(),
+            level,
             position,
             restrained: [false; 6],
             prescribed: Default::default(),
@@ -50,10 +71,10 @@ impl Node {
             spring_rotation: [RotationalStiffness::ZERO; 3],
         }
     }
-    pub fn fixed(name: impl Into<String>, position: [Length; 3]) -> Self {
+    pub fn fixed(name: impl Into<String>, level: EntityId, position: [Length; 3]) -> Self {
         Self {
             restrained: [true; 6],
-            ..Self::new(name, position)
+            ..Self::new(name, level, position)
         }
     }
 }

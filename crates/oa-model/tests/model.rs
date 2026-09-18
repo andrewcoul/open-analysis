@@ -9,7 +9,8 @@ fn section() -> Section {
     Library::starter().section("W14x90", "column").unwrap()
 }
 
-/// Two-storey, one-bay portal frame built through commands, Y up.
+/// Two-storey, one-bay portal frame built through commands, Z up, with a
+/// level per floor and every node bound to its floor.
 fn portal(editor: &mut Editor) -> (EntityId, EntityId) {
     let m = &mut editor.model;
     let mat = m.allocate();
@@ -26,8 +27,20 @@ fn portal(editor: &mut Editor) -> (EntityId, EntityId) {
             section: section(),
         })
         .unwrap();
+    let base = editor.model.base_level().unwrap();
+    let mut levels = vec![base];
+    for (name, z) in [("L1", 4.0), ("L2", 8.0)] {
+        let id = editor.model.allocate();
+        editor
+            .apply(Command::AddLevel {
+                id,
+                level: Level::new(name, Length::from_si(z)),
+            })
+            .unwrap();
+        levels.push(id);
+    }
     let mut ids = vec![];
-    for (i, (x, y)) in [
+    for (i, (x, z)) in [
         (0.0, 0.0),
         (6.0, 0.0),
         (0.0, 4.0),
@@ -39,11 +52,12 @@ fn portal(editor: &mut Editor) -> (EntityId, EntityId) {
     .enumerate()
     {
         let id = editor.model.allocate();
-        let p = [Length::from_si(x), Length::from_si(y), Length::ZERO];
+        let p = [Length::from_si(x), Length::ZERO, Length::from_si(z)];
+        let level = levels[i / 2];
         let node = if i < 2 {
-            Node::fixed(format!("N{i}"), p)
+            Node::fixed(format!("N{i}"), level, p)
         } else {
-            Node::new(format!("N{i}"), p)
+            Node::new(format!("N{i}"), level, p)
         };
         editor.apply(Command::AddNode { id, node }).unwrap();
         ids.push(id);
@@ -171,13 +185,15 @@ fn m0_solver_fixtures_compile_identically_through_the_model_layer() {
 #[test]
 fn m0_problems_name_entities_not_indices() {
     let mut model = Model::default();
+    let base = model.base_level().unwrap();
     let mat = model.insert(steel());
     let sec = model.insert(section());
-    let a = model.insert(Node::fixed("A", [Length::ZERO; 3]));
+    let a = model.insert(Node::fixed("A", base, [Length::ZERO; 3]));
     let missing = EntityId(999);
     model.insert(Frame::new("F", [a, missing], mat, sec));
     model.insert(Node::new(
         "A",
+        base,
         [Length::from_si(1.0), Length::ZERO, Length::ZERO],
     ));
     let problems = compile(&model).unwrap_err();
@@ -199,16 +215,19 @@ fn m0_problems_name_entities_not_indices() {
 fn m0_auto_master_sits_at_mass_centroid_and_matches_explicit_master() {
     let build = |master: bool| {
         let mut model = Model::default();
+        let level = model.base_level().unwrap();
         let mat = model.insert(steel());
         let sec = model.insert(section());
         let mut tops = vec![];
         for (i, z) in [-2.0, 2.0].into_iter().enumerate() {
             let base = model.insert(Node::fixed(
                 format!("B{i}"),
+                level,
                 [Length::ZERO, Length::ZERO, Length::from_si(z)],
             ));
             let mut top = Node::new(
                 format!("T{i}"),
+                level,
                 [Length::ZERO, Length::from_si(3.0), Length::from_si(z)],
             );
             top.mass[0] = Mass::from_si(if i == 0 { 100.0 } else { 300.0 });
@@ -219,6 +238,7 @@ fn m0_auto_master_sits_at_mass_centroid_and_matches_explicit_master() {
         let explicit = master.then(|| {
             model.insert(Node::new(
                 "M",
+                level,
                 [Length::ZERO, Length::from_si(3.0), Length::ZERO],
             ))
         });
@@ -285,10 +305,12 @@ fn m1_random_command_sequences_undo_to_the_start_and_redo_to_the_end() {
             0 => {
                 let id = editor.model.allocate();
                 let n = editor.model.nodes.len();
+                let level = editor.model.base_level().unwrap();
                 Command::AddNode {
                     id,
                     node: Node::new(
                         format!("R{}", id.0),
+                        level,
                         [
                             Length::from_si(rng.below(10) as f64),
                             Length::from_si(rng.below(10) as f64),
@@ -365,6 +387,7 @@ fn m1_batches_are_atomic_and_removal_refuses_referenced_entities() {
     let mut editor = Editor::new(Model::default());
     portal(&mut editor);
     let base = editor.model.find::<Node>("N0").unwrap();
+    let level = editor.model.base_level().unwrap();
     let new_node = editor.model.allocate();
     let before = editor.model.clone();
     let err = editor
@@ -372,7 +395,7 @@ fn m1_batches_are_atomic_and_removal_refuses_referenced_entities() {
             commands: vec![
                 Command::AddNode {
                     id: new_node,
-                    node: Node::new("extra", [Length::ZERO; 3]),
+                    node: Node::new("extra", level, [Length::ZERO; 3]),
                 },
                 Command::RemoveNode { id: base },
             ],
@@ -390,7 +413,7 @@ fn m1_batches_are_atomic_and_removal_refuses_referenced_entities() {
     assert!(matches!(
         editor.apply(Command::AddNode {
             id: dup,
-            node: Node::new("N0", [Length::ZERO; 3]),
+            node: Node::new("N0", level, [Length::ZERO; 3]),
         }),
         Err(ModelError::DuplicateName { .. })
     ));
@@ -407,10 +430,57 @@ fn m2_format_fixture_loads_round_trips_and_rejects_newer_versions() {
     let model = from_json(text).unwrap();
     assert_eq!(model.format_version, FORMAT_VERSION);
     assert_eq!(model.nodes.len(), 2);
+    // Version 1 had no levels: migration adds one base datum at zero and
+    // binds every node to it with its Z as the offset, inventing no floors
+    // and changing no coordinates.
+    assert_eq!(model.levels.len(), 1);
+    let base = model.base_level().unwrap();
+    assert_eq!(base, EntityId(9), "a fresh id past the highest in use");
+    assert_eq!(model.next_id, 10);
+    assert!(model.nodes.values().all(|n| n.level == base));
+    assert_eq!(model.nodes[&EntityId(2)].position[0].si(), 3.0);
+    let v2 = from_json(include_str!("fixtures/format_v2.json")).unwrap();
+    assert_eq!(model, v2, "the migrated document is the version 2 fixture");
     let compiled = compile(&model).unwrap();
     assert_eq!(compiled.solver.combinations[0].name, "service");
+    assert_eq!(
+        compiled.content_hash(),
+        oa_model::compile(&Model::from_solver(&compiled.solver))
+            .unwrap()
+            .content_hash(),
+        "levels leave the compiled model untouched"
+    );
     let again = from_json(&to_json(&model)).unwrap();
     assert_eq!(again, model);
+    // A version 2 document must bind every node to a level that exists.
+    let mut unbound: serde_json::Value = serde_json::from_str(&to_json(&model)).unwrap();
+    unbound["nodes"]["1"]["level"] = serde_json::json!(999);
+    assert!(matches!(
+        from_json(&unbound.to_string()),
+        Err(oa_model::format::FormatError::Corrupt(_))
+    ));
+    let mut no_levels: serde_json::Value = serde_json::from_str(&to_json(&model)).unwrap();
+    no_levels["levels"] = serde_json::json!({});
+    no_levels["nodes"] = serde_json::json!({});
+    assert!(matches!(
+        from_json(&no_levels.to_string()),
+        Err(oa_model::format::FormatError::Corrupt(_))
+    ));
+    // A version 1 document with no id left for the base level is corrupt,
+    // not a panic, whether the allocator or a table key is exhausted.
+    let mut spent: serde_json::Value = serde_json::from_str(text).unwrap();
+    spent["next_id"] = serde_json::json!(u64::MAX);
+    assert!(matches!(
+        from_json(&spent.to_string()),
+        Err(oa_model::format::FormatError::Corrupt(_))
+    ));
+    let mut spent: serde_json::Value = serde_json::from_str(text).unwrap();
+    let node = spent["nodes"]["1"].clone();
+    spent["nodes"][u64::MAX.to_string()] = node;
+    assert!(matches!(
+        from_json(&spent.to_string()),
+        Err(oa_model::format::FormatError::Corrupt(_))
+    ));
     let mut newer: serde_json::Value = serde_json::from_str(text).unwrap();
     newer["format_version"] = serde_json::json!(FORMAT_VERSION + 1);
     assert!(from_json(&newer.to_string()).is_err());
@@ -427,10 +497,11 @@ fn full_span_loads_converted_from_feet_compile() {
     let us = UnitSystem::UsCustomary;
     let ft = |v: f64| Length::from_si(us.from_display(Role::Length, v));
     let mut m = Model::default();
+    let level = m.base_level().unwrap();
     let mat = m.insert(steel());
     let sec = m.insert(section());
-    let a = m.insert(Node::fixed("A", [ft(48.0), Length::ZERO, Length::ZERO]));
-    let b = m.insert(Node::new("B", [ft(60.0), Length::ZERO, Length::ZERO]));
+    let a = m.insert(Node::fixed("A", level, [ft(48.0), Length::ZERO, Length::ZERO]));
+    let b = m.insert(Node::new("B", level, [ft(60.0), Length::ZERO, Length::ZERO]));
     let beam = m.insert(Frame::new("B1", [a, b], mat, sec));
     let mut case = LoadCase::new("D");
     let w = LineLoad::from_kips_per_foot(-1.0);
@@ -529,6 +600,18 @@ fn m1_journal_replays_an_interrupted_session() {
         let journal = oa_model::store::Journal::open(&path).unwrap();
         let mut editor = Editor::new(start.clone()).with_journal(journal);
         portal(&mut editor);
+        // A level move is journalled as the one command that was issued and
+        // replays to the same geometry.
+        let l1 = editor.model.find::<Level>("L1").unwrap();
+        editor
+            .apply(Command::SetLevelElevation {
+                id: l1,
+                elevation: Length::from_si(4.5),
+                scope: ElevationScope::ThisAndAbove,
+            })
+            .unwrap();
+        editor.undo().unwrap();
+        editor.redo().unwrap();
         editor.undo().unwrap();
         editor.model.clone()
     };
@@ -546,7 +629,7 @@ fn m1_journal_replays_an_interrupted_session() {
 fn m5_json_api_applies_commands_compiles_and_solves() {
     let base = include_str!("fixtures/format_v1.json");
     let commands = serde_json::json!([
-        {"command": "add_node", "id": 20, "node": {"name": "mid", "position": [1.5, 0, 0]}},
+        {"command": "add_node", "id": 20, "node": {"name": "mid", "level": 9, "position": [1.5, 0, 0]}},
         {"command": "set_gravity", "gravity": 9.81}
     ]);
     let updated = oa_model::api::apply_commands_json(base, &commands.to_string()).unwrap();
@@ -564,6 +647,11 @@ fn m5_json_api_applies_commands_compiles_and_solves() {
     assert!((tip / (-1000.0 * 27.0 / (3.0 * 200e9 * 4e-5)) - 1.0).abs() < 1e-9);
     let bad = serde_json::json!([{"command": "remove_node", "id": 1}]);
     assert!(oa_model::api::apply_commands_json(base, &bad.to_string()).is_err());
+    // A node without a level is refused at the JSON boundary.
+    let unbound = serde_json::json!([
+        {"command": "add_node", "id": 21, "node": {"name": "loose", "position": [0, 0, 0]}}
+    ]);
+    assert!(oa_model::api::apply_commands_json(base, &unbound.to_string()).is_err());
 }
 
 #[test]
@@ -574,17 +662,18 @@ fn journal_records_only_accepted_commands_and_replays_cleanly() {
     {
         let journal = oa_model::store::Journal::open(&path).unwrap();
         let mut editor = Editor::new(Model::default()).with_journal(journal);
-        let a = Node::new("A", [Length::ZERO; 3]);
+        let level = editor.model.base_level().unwrap();
+        let a = Node::new("A", level, [Length::ZERO; 3]);
         editor
             .apply(Command::AddNode {
-                id: EntityId(1),
+                id: EntityId(11),
                 node: a.clone(),
             })
             .unwrap();
         // Rejected: duplicate name. Must leave no trace in the journal.
         assert!(matches!(
             editor.apply(Command::AddNode {
-                id: EntityId(2),
+                id: EntityId(12),
                 node: a,
             }),
             Err(ModelError::DuplicateName { .. })
@@ -595,8 +684,8 @@ fn journal_records_only_accepted_commands_and_replays_cleanly() {
                 .apply(Command::Batch {
                     commands: vec![
                         Command::AddNode {
-                            id: EntityId(5),
-                            node: Node::new("C", [Length::ZERO; 3]),
+                            id: EntityId(15),
+                            node: Node::new("C", level, [Length::ZERO; 3]),
                         },
                         Command::RemoveNode { id: EntityId(99) },
                     ],
@@ -605,8 +694,8 @@ fn journal_records_only_accepted_commands_and_replays_cleanly() {
         );
         editor
             .apply(Command::AddNode {
-                id: EntityId(3),
-                node: Node::new("B", [Length::ZERO; 3]),
+                id: EntityId(13),
+                node: Node::new("B", level, [Length::ZERO; 3]),
             })
             .unwrap();
         assert!(editor.undo().unwrap());
@@ -621,8 +710,8 @@ fn journal_records_only_accepted_commands_and_replays_cleanly() {
         command.apply(&mut recovered).unwrap();
     }
     assert_eq!(recovered.nodes.len(), 2);
-    assert_eq!(recovered.nodes[&EntityId(1)].name, "A");
-    assert_eq!(recovered.nodes[&EntityId(3)].name, "B");
+    assert_eq!(recovered.nodes[&EntityId(11)].name, "A");
+    assert_eq!(recovered.nodes[&EntityId(13)].name, "B");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -639,7 +728,8 @@ fn loading_checks_identity_invariants_and_repairs_a_stale_allocator() {
     stale.next_id = 1;
     let mut loaded = from_json(&to_json(&stale)).unwrap();
     assert_eq!(loaded.next_id, model.next_id);
-    let fresh = loaded.insert(Node::new("fresh", [Length::ZERO; 3]));
+    let level = loaded.base_level().unwrap();
+    let fresh = loaded.insert(Node::new("fresh", level, [Length::ZERO; 3]));
     assert!(fresh > model.max_id().unwrap());
     assert_eq!(loaded.nodes.len(), count + 1);
     // A well-formed document loads unchanged.
@@ -699,8 +789,9 @@ fn loading_checks_identity_invariants_and_repairs_a_stale_allocator() {
 #[test]
 fn compile_reports_element_geometry_problems_by_entity() {
     let mut m = Model::default();
+    let level = m.base_level().unwrap();
     let mat = m.insert(steel());
-    let n0 = m.insert(Node::fixed("N0", [Length::ZERO; 3]));
+    let n0 = m.insert(Node::fixed("N0", level, [Length::ZERO; 3]));
     let shell = m.insert(Shell {
         name: "collapsed".into(),
         nodes: [n0; 4],
@@ -721,11 +812,13 @@ fn compile_reports_element_geometry_problems_by_entity() {
     );
 
     let mut m = Model::default();
+    let level = m.base_level().unwrap();
     let mat = m.insert(steel());
     let sec = m.insert(section());
-    let n0 = m.insert(Node::fixed("N0", [Length::ZERO; 3]));
+    let n0 = m.insert(Node::fixed("N0", level, [Length::ZERO; 3]));
     let n1 = m.insert(Node::new(
         "N1",
+        level,
         [Length::from_si(3.0), Length::ZERO, Length::ZERO],
     ));
     let mut frame = Frame::new("twisted", [n0, n1], mat, sec);
@@ -782,12 +875,15 @@ fn attach_refuses_an_unfinished_run() {
     let m = &mut editor.model;
     let mat = m.find::<Material>("steel").unwrap();
     let sec = m.find::<Section>("column").unwrap();
+    let level = m.base_level().unwrap();
     let base = m.insert(Node::fixed(
         "T0",
+        level,
         [Length::from_si(20.0), Length::ZERO, Length::ZERO],
     ));
     let tip = m.insert(Node::new(
         "T1",
+        level,
         [Length::from_si(23.0), Length::ZERO, Length::ZERO],
     ));
     let mut released = Frame::new("released", [base, tip], mat, sec);
@@ -825,4 +921,238 @@ fn attach_refuses_an_unfinished_run() {
     ));
     drop(partial);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Levels: the 0/12/24 ft example from docs/model/LEVEL_SYSTEMS.md, driven
+/// through commands with exact undo and redo.
+#[test]
+fn levels_move_bound_nodes_by_scope_and_undo_exactly() {
+    let ft = Length::from_feet;
+    let mut editor = Editor::new(Model::default());
+    let base = editor.model.base_level().unwrap();
+    let l1 = editor.model.allocate();
+    let roof = editor.model.allocate();
+    editor
+        .apply(Command::AddLevel {
+            id: l1,
+            level: Level::new("L1", ft(12.0)),
+        })
+        .unwrap();
+    editor
+        .apply(Command::AddLevel {
+            id: roof,
+            level: Level::new("Roof", ft(24.0)),
+        })
+        .unwrap();
+    // A node half a foot below L1, bound to it, and another at the same
+    // height bound to Base: only the binding decides who follows a move.
+    let bound = editor.model.allocate();
+    let unbound = editor.model.allocate();
+    let top = editor.model.allocate();
+    for (id, name, level) in [(bound, "bound", l1), (unbound, "base-bound", base), (top, "top", roof)] {
+        let z = if id == top { 24.0 } else { 11.5 };
+        editor
+            .apply(Command::AddNode {
+                id,
+                node: Node::new(name, level, [Length::ZERO, Length::ZERO, ft(z)]),
+            })
+            .unwrap();
+    }
+    let start = editor.model.clone();
+    let z = |editor: &Editor, id: EntityId| editor.model.nodes[&id].position[2].si();
+    let e = |editor: &Editor, id: EntityId| editor.model.levels[&id].elevation.si();
+
+    editor
+        .apply(Command::SetLevelElevation {
+            id: l1,
+            elevation: ft(14.0),
+            scope: ElevationScope::ThisLevel,
+        })
+        .unwrap();
+    assert!((e(&editor, l1) - ft(14.0).si()).abs() < 1e-12);
+    assert!((e(&editor, roof) - ft(24.0).si()).abs() < 1e-12);
+    assert!((z(&editor, bound) - ft(13.5).si()).abs() < 1e-12);
+    assert!((z(&editor, unbound) - ft(11.5).si()).abs() < 1e-12);
+    assert!((z(&editor, top) - ft(24.0).si()).abs() < 1e-12);
+    assert!(editor.undo().unwrap());
+    assert_eq!(editor.model, start, "undo restores the stored values exactly");
+
+    editor
+        .apply(Command::SetLevelElevation {
+            id: l1,
+            elevation: ft(14.0),
+            scope: ElevationScope::ThisAndAbove,
+        })
+        .unwrap();
+    assert!((e(&editor, roof) - ft(26.0).si()).abs() < 1e-12);
+    assert!((z(&editor, top) - ft(26.0).si()).abs() < 1e-12);
+    assert!((z(&editor, bound) - ft(13.5).si()).abs() < 1e-12);
+    assert!((z(&editor, unbound) - ft(11.5).si()).abs() < 1e-12);
+    let moved = editor.model.clone();
+    assert!(editor.undo().unwrap());
+    assert_eq!(editor.model, start);
+    assert!(editor.redo().unwrap());
+    assert_eq!(editor.model, moved);
+
+    // Crossing or landing on a fixed level is refused and leaves no trace.
+    let before = editor.model.clone();
+    assert!(matches!(
+        editor.apply(Command::SetLevelElevation {
+            id: l1,
+            elevation: ft(26.0),
+            scope: ElevationScope::ThisLevel,
+        }),
+        Err(ModelError::Invalid(_))
+    ));
+    assert_eq!(editor.model, before);
+    let [a, b, c, d, e] = <[_; 5]>::try_from((0..5).map(|_| editor.model.allocate()).collect::<Vec<_>>()).unwrap();
+    assert!(matches!(
+        editor.apply(Command::AddLevel {
+            id: a,
+            level: Level::new("dup", ft(14.0)),
+        }),
+        Err(ModelError::Invalid(_))
+    ));
+    assert!(matches!(
+        editor.apply(Command::AddLevel {
+            id: b,
+            level: Level::new("", ft(50.0)),
+        }),
+        Err(ModelError::Invalid(_))
+    ));
+    assert!(matches!(
+        editor.apply(Command::AddLevel {
+            id: c,
+            level: Level::new("L1", ft(50.0)),
+        }),
+        Err(ModelError::DuplicateName { .. })
+    ));
+    // A node cannot bind to something that is not a level.
+    assert!(matches!(
+        editor.apply(Command::AddNode {
+            id: d,
+            node: Node::new("stray", bound, [Length::ZERO; 3]),
+        }),
+        Err(ModelError::WrongKind { .. })
+    ));
+    assert!(matches!(
+        editor.apply(Command::AddNode {
+            id: e,
+            node: Node::new("stray", EntityId(4_242), [Length::ZERO; 3]),
+        }),
+        Err(ModelError::Dangling { .. })
+    ));
+}
+
+#[test]
+fn level_moves_reject_newly_invalid_geometry_but_tolerate_old_problems() {
+    let mut editor = Editor::new(Model::default());
+    portal(&mut editor);
+    // A point load 3.5 m up a 4 m column. Lowering L1 to 2 m would leave
+    // the station past the end of the member: refused, and the load is
+    // neither moved nor scaled.
+    let column = editor.model.find::<Frame>("C1").unwrap();
+    let case = editor.model.find::<LoadCase>("wind").unwrap();
+    let mut load_case = editor.model.load_cases[&case].clone();
+    load_case.member.push(MemberLoad::Point {
+        member: column,
+        position: Length::from_si(3.5),
+        force: [Force::from_si(1_000.0), Force::ZERO, Force::ZERO],
+        moment: [Moment::ZERO; 3],
+        axes: Axes::Global,
+    });
+    editor
+        .apply(Command::UpdateLoadCase { id: case, load_case })
+        .unwrap();
+    assert!(compile(&editor.model).is_ok());
+    let l1 = editor.model.find::<Level>("L1").unwrap();
+    let before = editor.model.clone();
+    let err = editor
+        .apply(Command::SetLevelElevation {
+            id: l1,
+            elevation: Length::from_si(2.0),
+            scope: ElevationScope::ThisAndAbove,
+        })
+        .unwrap_err();
+    assert!(err.to_string().contains("invalid"), "{err}");
+    assert_eq!(editor.model, before);
+    // Raising it keeps every station inside its member.
+    editor
+        .apply(Command::SetLevelElevation {
+            id: l1,
+            elevation: Length::from_si(4.5),
+            scope: ElevationScope::ThisAndAbove,
+        })
+        .unwrap();
+    assert!(editor.undo().unwrap());
+    // An unrelated problem does not mask the check: with a zero modulus the
+    // model fails to compile both before and after, and the move is still
+    // refused for the station it would strand.
+    let steel_id = editor.model.find::<Material>("steel").unwrap();
+    let mut soft = editor.model.materials[&steel_id].clone();
+    soft.young = Pressure::ZERO;
+    editor
+        .apply(Command::UpdateMaterial {
+            id: steel_id,
+            material: soft,
+        })
+        .unwrap();
+    assert!(compile(&editor.model).is_err());
+    let masked = editor.model.clone();
+    let err = editor
+        .apply(Command::SetLevelElevation {
+            id: l1,
+            elevation: Length::from_si(2.0),
+            scope: ElevationScope::ThisAndAbove,
+        })
+        .unwrap_err();
+    assert!(err.to_string().contains("outside its length"), "{err}");
+    assert_eq!(editor.model, masked);
+    assert!(editor.undo().unwrap());
+    // A model that already has a problem can still have its levels edited.
+    let dangling = Frame::new(
+        "dangling",
+        [editor.model.find::<Node>("N0").unwrap(), EntityId(9_999)],
+        editor.model.find::<Material>("steel").unwrap(),
+        editor.model.find::<Section>("column").unwrap(),
+    );
+    editor.model.insert(dangling);
+    assert!(compile(&editor.model).is_err());
+    editor
+        .apply(Command::SetLevelElevation {
+            id: l1,
+            elevation: Length::from_si(5.0),
+            scope: ElevationScope::ThisAndAbove,
+        })
+        .unwrap();
+    assert!((editor.model.levels[&l1].elevation.si() - 5.0).abs() < 1e-12);
+}
+
+#[test]
+fn level_removal_refuses_bound_nodes_and_the_last_level() {
+    let mut editor = Editor::new(Model::default());
+    let base = editor.model.base_level().unwrap();
+    assert!(matches!(
+        editor.apply(Command::RemoveLevel { id: base }),
+        Err(ModelError::Invalid(_))
+    ));
+    let (_, _) = portal(&mut editor);
+    let l2 = editor.model.find::<Level>("L2").unwrap();
+    let err = editor.apply(Command::RemoveLevel { id: l2 }).unwrap_err();
+    assert!(matches!(err, ModelError::Referenced { .. }), "{err}");
+    // Rebinding the nodes first, keeping their coordinates, lets it go.
+    let l1 = editor.model.find::<Level>("L1").unwrap();
+    let commands = oa_model::levels::plan_remove(&editor.model, l2, l1).unwrap();
+    let roof = editor.model.find::<Node>("N4").unwrap();
+    editor.apply(Command::Batch { commands }).unwrap();
+    assert!(!editor.model.levels.contains_key(&l2));
+    assert_eq!(editor.model.nodes[&roof].level, l1);
+    assert!((editor.model.nodes[&roof].position[2].si() - 8.0).abs() < 1e-12);
+    assert!((oa_model::levels::offset(&editor.model.nodes[&roof], &editor.model.levels[&l1]) - 4.0).abs() < 1e-12);
+    assert!(editor.undo().unwrap());
+    assert!(editor.model.levels.contains_key(&l2));
+    assert_eq!(editor.model.nodes[&roof].level, l2);
+    // Ids are never reused, through deletion and undo alike.
+    let fresh = editor.model.allocate();
+    assert!(fresh > editor.model.max_id().unwrap());
 }

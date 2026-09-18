@@ -1,10 +1,13 @@
 //! The 3D model view: an orthographic wireframe of nodes, frames, and
 //! shells painted on a canvas, with orbit, pan, zoom, and click selection.
-//! The draw tools live here too: Node places a node where you click, Frame
-//! joins two clicked nodes, Shell four. Finished shapes are reported as
-//! [`ViewportEvent`]s for the workspace to turn into commands. The view
-//! controls sit in the top-right corner of the canvas, and an empty model
-//! shows a start card instead of a blank canvas.
+//! The draw tools live here too: Node places a node on the active level
+//! where you click, Frame joins two clicked nodes, Shell four. Finished
+//! shapes are reported as [`ViewportEvent`]s for the workspace to turn into
+//! commands. The view can show the whole model or one level's floor, with
+//! or without the storeys beside it as context; the active level is also
+//! the working plane the Node tool places on. The view controls sit in the
+//! top-right corner of the canvas, and an empty model shows a start card
+//! instead of a blank canvas.
 use crate::actions::*;
 use crate::camera::{Camera, UpAxis, ViewPreset};
 use crate::document::Document;
@@ -14,7 +17,8 @@ use gpui_kit::component::button::{Button, ButtonGroup};
 use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, Theme, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use oa_model::EntityId;
+use oa_model::levels::{self, Membership};
+use oa_model::{EntityId, EntityKind, Model, Role};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -32,7 +36,7 @@ pub struct DisplayOptions {
 pub enum Tool {
     #[default]
     Select,
-    /// Click empty space to place a node on the ground plane.
+    /// Click empty space to place a node on the active level.
     Node,
     /// Click node I, then node J. The next frame starts from J.
     Frame,
@@ -51,19 +55,36 @@ impl Tool {
     }
 }
 
+/// How much of the model the view shows. The active level decides what a
+/// level view holds and where the Node tool places, whatever the mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    #[default]
+    Whole,
+    /// The active level's floor objects, plus a marker where each member
+    /// spanning to another level meets its plane.
+    Level,
+    /// The active level with the storeys above and below drawn subdued;
+    /// context cannot be picked or snapped to.
+    LevelContext,
+}
+
 /// A shape finished with a draw tool, for the workspace to add to the model,
 /// or a double-click asking for the selection's properties.
 pub enum ViewportEvent {
-    PlaceNode([f64; 3]),
+    /// A node on a level, at that level's exact elevation.
+    PlaceNode { position: [f64; 3], level: EntityId },
     DrawFrame([EntityId; 2]),
     DrawShell([EntityId; 4]),
     OpenProperties,
 }
 
-/// Grid the Node tool snaps to: one foot, held in metres like the model.
+/// Plan grid the Node tool snaps X and Y to: one foot, held in metres like
+/// the model. Z is never snapped; it is the level's elevation.
 const SNAP: f64 = 0.3048;
 
-/// Screen positions of the last painted frame, used for picking.
+/// Screen positions of the last painted frame, used for picking. Only what
+/// the view shows is here, so hidden or context geometry cannot be picked.
 #[derive(Default)]
 struct Snapshot {
     bounds: Bounds<Pixels>,
@@ -85,6 +106,11 @@ pub struct Viewport {
     /// The preset the camera was last set to, until the user orbits away.
     preset: Option<ViewPreset>,
     options: DisplayOptions,
+    mode: ViewMode,
+    /// The level the Node tool places on and the level views show. Resolved
+    /// against the model whenever it changes; None only for a model with no
+    /// levels, which the model layer does not allow.
+    active_level: Option<EntityId>,
     tool: Tool,
     /// Nodes the Frame or Shell tool has taken so far, in click order.
     picked: Vec<EntityId>,
@@ -105,13 +131,17 @@ impl Viewport {
         let subscription = cx.observe(&document, |this, document, cx| {
             let model = document.read(cx).model();
             this.picked.retain(|id| model.kind_of(*id).is_some());
+            this.resolve_level(model);
             cx.notify();
         });
+        let active_level = document.read(cx).model().base_level();
         Self {
             document,
             camera: Camera::default(),
             preset: Some(ViewPreset::ThreeD),
             options: DisplayOptions::default(),
+            mode: ViewMode::Whole,
+            active_level,
             tool: Tool::Select,
             picked: vec![],
             hover: None,
@@ -131,6 +161,16 @@ impl Viewport {
     }
     pub fn preset(&self) -> Option<ViewPreset> {
         self.preset
+    }
+    pub fn mode(&self) -> ViewMode {
+        self.mode
+    }
+    pub fn active_level(&self) -> Option<EntityId> {
+        self.active_level
+    }
+    /// Whether a click can land on the active level's plane from here.
+    pub fn plane_visible(&self) -> bool {
+        self.camera.plane_visible(2)
     }
     pub fn tool(&self) -> Tool {
         self.tool
@@ -185,6 +225,113 @@ impl Viewport {
     pub fn zoom_extents(&mut self, cx: &mut Context<Self>) {
         self.fit_on_next_paint = true;
         cx.notify();
+    }
+
+    // MARK: Levels
+
+    /// Keeps the active level pointing at a level the model has: after an
+    /// open, an undo, or a deletion it falls back to the lowest level.
+    fn resolve_level(&mut self, model: &Model) {
+        if self
+            .active_level
+            .is_none_or(|l| !model.levels.contains_key(&l))
+        {
+            self.active_level = model.base_level();
+        }
+    }
+    /// Makes a level the active one. A partly drawn shape is dropped, and
+    /// geometry the new view hides leaves the selection, so an off-screen
+    /// entity cannot take an assignment meant for what is shown.
+    pub fn set_active_level(&mut self, level: EntityId, cx: &mut Context<Self>) {
+        if self.active_level == Some(level)
+            || !self.document.read(cx).model().levels.contains_key(&level)
+        {
+            return;
+        }
+        self.active_level = Some(level);
+        self.picked.clear();
+        self.prune_selection(cx);
+        cx.notify();
+    }
+    /// The level above (+1) or below (-1) the active one, stopping at the ends.
+    pub fn step_level(&mut self, step: isize, cx: &mut Context<Self>) {
+        let order = self.document.read(cx).model().levels_by_elevation();
+        let Some(current) = self
+            .active_level
+            .and_then(|l| order.iter().position(|x| *x == l))
+        else {
+            return;
+        };
+        let last = order.len() as isize - 1;
+        let next = (current as isize + step).clamp(0, last) as usize;
+        self.set_active_level(order[next], cx);
+    }
+    /// A level is a plane of constant Z, so a level view looks down Z from
+    /// above whatever up axis the 3D view was drawn with.
+    pub fn set_mode(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        if mode != ViewMode::Whole {
+            self.camera.up = UpAxis::Z;
+            self.camera.set_preset(ViewPreset::Plan);
+            self.preset = Some(ViewPreset::Plan);
+            self.fit_on_next_paint = true;
+        }
+        self.picked.clear();
+        self.prune_selection(cx);
+        cx.notify();
+    }
+    /// The objects the view shows, or None when it shows the whole model.
+    fn shown(&self, model: &Model) -> Option<Membership> {
+        match (self.mode, self.active_level) {
+            (ViewMode::Whole, _) | (_, None) => None,
+            (_, Some(level)) => Some(levels::membership(model, level)),
+        }
+    }
+    /// Everything Select All takes: the whole model, or in a level view only
+    /// the floor objects the view lets the user pick, so a hidden storey
+    /// never rides along into a delete or an assignment.
+    pub fn selectable(&self, model: &Model) -> Vec<EntityId> {
+        match self.shown(model) {
+            None => model
+                .nodes
+                .keys()
+                .chain(model.frames.keys())
+                .chain(model.shells.keys())
+                .copied()
+                .collect(),
+            Some(shown) => shown
+                .nodes
+                .iter()
+                .chain(&shown.frames)
+                .chain(&shown.shells)
+                .copied()
+                .collect(),
+        }
+    }
+    fn prune_selection(&self, cx: &mut Context<Self>) {
+        let Some(shown) = self.shown(self.document.read(cx).model()) else {
+            return;
+        };
+        self.document.update(cx, |document, cx| {
+            let model = document.model();
+            let kept: Vec<EntityId> = document
+                .selection()
+                .iter()
+                .copied()
+                .filter(|id| match model.kind_of(*id) {
+                    Some(EntityKind::Node) => shown.nodes.contains(id),
+                    Some(EntityKind::Frame) => shown.frames.contains(id),
+                    Some(EntityKind::Shell) => shown.shells.contains(id),
+                    _ => true,
+                })
+                .collect();
+            if kept.len() != document.selection().len() {
+                document.set_selection(kept, cx);
+            }
+        });
     }
 
     // MARK: Pointer input
@@ -288,8 +435,11 @@ impl Viewport {
                     .document
                     .update(cx, |document, cx| document.set_selection(vec![id], cx)),
                 None => {
-                    let world = self.ground_point(position);
-                    cx.emit(ViewportEvent::PlaceNode(world));
+                    // No placement when the plane is edge-on: the prompt says so.
+                    let placed = self.work_plane_point(position, self.document.read(cx).model());
+                    if let Some((position, level)) = placed {
+                        cx.emit(ViewportEvent::PlaceNode { position, level });
+                    }
                 }
             },
             Tool::Frame | Tool::Shell => {
@@ -324,10 +474,26 @@ impl Viewport {
         }
     }
 
-    /// Where the Node tool would put a node for a pointer position.
-    fn ground_point(&self, position: Point<Pixels>) -> [f64; 3] {
-        let bounds = self.snapshot.borrow().bounds;
-        snap_to_ground(&self.camera, position, bounds)
+    /// Where the Node tool would put a node for a pointer position: on the
+    /// active level's plane, X and Y snapped to the plan grid and Z exactly
+    /// the level's elevation. None without a level, or when the plane is
+    /// edge-on, since a point in the view plane would not lie on the level.
+    fn work_plane_point(
+        &self,
+        position: Point<Pixels>,
+        model: &Model,
+    ) -> Option<([f64; 3], EntityId)> {
+        let level = self.active_level?;
+        let elevation = model.levels.get(&level)?.elevation.si();
+        if !self.camera.plane_visible(2) {
+            return None;
+        }
+        let centre = self.snapshot.borrow().bounds.center();
+        let p = self
+            .camera
+            .unproject(to_f64(position), to_f64(centre), Some((2, elevation)));
+        let snap = |v: f64| (v / SNAP).round() * SNAP;
+        Some(([snap(p[0]), snap(p[1]), elevation], level))
     }
 
     /// The node within reach of the pointer, nearest first.
@@ -374,19 +540,6 @@ impl Viewport {
     }
 }
 
-/// The ground-plane point under the pointer, snapped to the grid. In an
-/// elevation the ground is edge-on, so the point lies in the view plane
-/// through the centre of the view instead.
-fn snap_to_ground(camera: &Camera, position: Point<Pixels>, bounds: Bounds<Pixels>) -> [f64; 3] {
-    let centre = bounds.center();
-    let axis = match camera.up {
-        UpAxis::Y => 1,
-        UpAxis::Z => 2,
-    };
-    let p = camera.unproject(to_f64(position), to_f64(centre), Some((axis, 0.0)));
-    p.map(|v| (v / SNAP).round() * SNAP)
-}
-
 fn to_f64(p: Point<Pixels>) -> (f64, f64) {
     (f64::from(p.x), f64::from(p.y))
 }
@@ -418,6 +571,39 @@ fn point_in_polygon(p: (f64, f64), poly: &[(f64, f64)]) -> bool {
     inside
 }
 
+/// The point between two member ends at a plane of constant Z, when the
+/// member crosses it.
+fn plane_crossing(a: [f64; 3], b: [f64; 3], elevation: f64) -> Option<[f64; 3]> {
+    let rise = b[2] - a[2];
+    if rise.abs() < 1e-12 {
+        return None;
+    }
+    let t = (elevation - a[2]) / rise;
+    if !(0.0..=1.0).contains(&t) {
+        return None;
+    }
+    Some([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), elevation])
+}
+
+/// Where a quadrilateral meets a plane of constant Z: the two edge crossings
+/// furthest apart, or none when the plane misses it or only touches a corner.
+fn shell_trace(corners: [[f64; 3]; 4], elevation: f64) -> Option<([f64; 3], [f64; 3])> {
+    let cuts: Vec<[f64; 3]> = (0..4)
+        .filter_map(|i| plane_crossing(corners[i], corners[(i + 1) % 4], elevation))
+        .collect();
+    let apart = |p: &[f64; 3], q: &[f64; 3]| (p[0] - q[0]).hypot(p[1] - q[1]);
+    let mut best: Option<(&[f64; 3], &[f64; 3])> = None;
+    for (i, p) in cuts.iter().enumerate() {
+        for q in &cuts[i + 1..] {
+            if best.is_none_or(|(a, b)| apart(p, q) > apart(a, b)) {
+                best = Some((p, q));
+            }
+        }
+    }
+    best.filter(|(p, q)| apart(p, q) > 1e-9)
+        .map(|(p, q)| (*p, *q))
+}
+
 pub fn preset_action(preset: ViewPreset) -> Box<dyn Action> {
     match preset {
         ViewPreset::ThreeD => Box::new(ViewThreeD),
@@ -438,6 +624,8 @@ struct Palette {
     deformed: Hsla,
     diagram: Hsla,
     label: Hsla,
+    /// Storeys shown beside the active level, and members spanning to them.
+    context: Hsla,
     axes: [Hsla; 3],
 }
 
@@ -473,10 +661,22 @@ struct Scene {
     nodes: Vec<NodeMark>,
     frames: Vec<Segment>,
     shells: Vec<Quad>,
+    /// Geometry of the storeys beside the active level, drawn subdued.
+    context_nodes: Vec<Point<Pixels>>,
+    context_frames: Vec<(Point<Pixels>, Point<Pixels>)>,
+    context_shells: Vec<[Point<Pixels>; 4]>,
+    /// Where members spanning to another level meet the active plane. Not
+    /// nodes: they cannot be picked or snapped to.
+    crossings: Vec<Point<Pixels>>,
+    /// Edges of spanning shells that lie along the active level: a wall's
+    /// trace on the floor.
+    traces: Vec<(Point<Pixels>, Point<Pixels>)>,
     deformed_frames: Vec<(Point<Pixels>, Point<Pixels>)>,
     diagrams: Vec<DiagramShape>,
     axes: [(Point<Pixels>, &'static str); 3],
     axes_origin: Point<Pixels>,
+    /// The level a level view shows, with its elevation.
+    level_legend: Option<SharedString>,
     combination: Option<SharedString>,
     /// What the diagrams show and for which combination.
     diagram_legend: Option<SharedString>,
@@ -498,12 +698,37 @@ impl Viewport {
     fn build_scene(&mut self, bounds: Bounds<Pixels>, cx: &App) -> Scene {
         let document = self.document.read(cx);
         let model = document.model();
+        // One classification decides painting, labels, picking, snapping,
+        // deformed shapes, diagrams, and fit alike.
+        let shown = self.shown(model);
+        let context: Vec<Membership> = match (self.mode, self.active_level) {
+            (ViewMode::LevelContext, Some(level)) => {
+                let (below, above) = levels::neighbours(model, level);
+                below
+                    .into_iter()
+                    .chain(above)
+                    .map(|l| levels::membership(model, l))
+                    .collect()
+            }
+            _ => vec![],
+        };
+        let node_shown = |id: &EntityId| shown.as_ref().is_none_or(|m| m.nodes.contains(id));
+        let frame_shown = |id: &EntityId| shown.as_ref().is_none_or(|m| m.frames.contains(id));
+        let shell_shown = |id: &EntityId| shown.as_ref().is_none_or(|m| m.shells.contains(id));
+        let positions: std::collections::BTreeMap<EntityId, [f64; 3]> = model
+            .nodes
+            .iter()
+            .map(|(id, n)| (*id, n.position.map(|v| v.si())))
+            .collect();
         let width = f64::from(bounds.size.width);
         let height = f64::from(bounds.size.height);
         if self.fit_on_next_paint && width > 0.0 && height > 0.0 {
             self.fit_on_next_paint = false;
             self.camera.fit(
-                model.nodes.values().map(|n| n.position.map(|v| v.si())),
+                positions
+                    .iter()
+                    .filter(|(id, _)| node_shown(id))
+                    .map(|(_, p)| *p),
                 width,
                 height,
             );
@@ -515,11 +740,6 @@ impl Viewport {
             (to_point(x, y), depth)
         };
 
-        let positions: std::collections::BTreeMap<EntityId, [f64; 3]> = model
-            .nodes
-            .iter()
-            .map(|(id, n)| (*id, n.position.map(|v| v.si())))
-            .collect();
         let mut snapshot = Snapshot {
             bounds,
             ..Default::default()
@@ -527,6 +747,7 @@ impl Viewport {
         let nodes = model
             .nodes
             .iter()
+            .filter(|(id, _)| node_shown(id))
             .map(|(id, node)| {
                 let (position, _) = project(positions[id]);
                 snapshot.nodes.push((*id, position));
@@ -541,6 +762,7 @@ impl Viewport {
         let frames = model
             .frames
             .iter()
+            .filter(|(id, _)| frame_shown(id))
             .filter_map(|(id, frame)| {
                 let a = positions.get(&frame.nodes[0])?;
                 let b = positions.get(&frame.nodes[1])?;
@@ -555,17 +777,22 @@ impl Viewport {
                 })
             })
             .collect();
+        let quad = |nodes: &[EntityId; 4]| -> Option<([Point<Pixels>; 4], f64)> {
+            let mut points = [Point::default(); 4];
+            let mut depth = 0.0;
+            for (i, n) in nodes.iter().enumerate() {
+                let (p, d) = project(*positions.get(n)?);
+                points[i] = p;
+                depth += d;
+            }
+            Some((points, depth))
+        };
         let mut shells: Vec<Quad> = model
             .shells
             .iter()
+            .filter(|(id, _)| shell_shown(id))
             .filter_map(|(id, shell)| {
-                let mut points = [Point::default(); 4];
-                let mut depth = 0.0;
-                for (i, n) in shell.nodes.iter().enumerate() {
-                    let (p, d) = project(*positions.get(n)?);
-                    points[i] = p;
-                    depth += d;
-                }
+                let (points, depth) = quad(&shell.nodes)?;
                 snapshot.shells.push((*id, points));
                 Some(Quad {
                     points,
@@ -575,6 +802,110 @@ impl Viewport {
             })
             .collect();
         shells.sort_by(|a, b| a.depth.total_cmp(&b.depth));
+
+        // The storeys beside the active level, and the members spanning to
+        // them, as unpickable context.
+        let mut context_nodes = vec![];
+        let mut context_frames = vec![];
+        let mut context_shells = vec![];
+        let segment = |nodes: &[EntityId; 2]| -> Option<(Point<Pixels>, Point<Pixels>)> {
+            Some((
+                project(*positions.get(&nodes[0])?).0,
+                project(*positions.get(&nodes[1])?).0,
+            ))
+        };
+        for beside in &context {
+            for id in beside.nodes.iter().filter(|id| !node_shown(id)) {
+                if let Some(p) = positions.get(id) {
+                    context_nodes.push(project(*p).0);
+                }
+            }
+            for id in beside.frames.iter().filter(|id| !frame_shown(id)) {
+                if let Some(s) = model.frames.get(id).and_then(|f| segment(&f.nodes)) {
+                    context_frames.push(s);
+                }
+            }
+            for id in beside.shells.iter().filter(|id| !shell_shown(id)) {
+                if let Some((points, _)) = model.shells.get(id).and_then(|s| quad(&s.nodes)) {
+                    context_shells.push(points);
+                }
+            }
+        }
+        if self.mode == ViewMode::LevelContext
+            && let Some(m) = &shown
+        {
+            for id in &m.spanning_frames {
+                if let Some(s) = model.frames.get(id).and_then(|f| segment(&f.nodes)) {
+                    context_frames.push(s);
+                }
+            }
+            for id in &m.spanning_shells {
+                if let Some((points, _)) = model.shells.get(id).and_then(|s| quad(&s.nodes)) {
+                    context_shells.push(points);
+                }
+            }
+        }
+        // In a level view, spanning members show where they meet the plane.
+        let mut crossings = vec![];
+        let mut traces = vec![];
+        if self.mode == ViewMode::Level
+            && let (Some(m), Some(level)) = (&shown, self.active_level)
+            && let Some(datum) = model.levels.get(&level)
+        {
+            let elevation = datum.elevation.si();
+            for id in &m.spanning_frames {
+                let Some(frame) = model.frames.get(id) else {
+                    continue;
+                };
+                let on_level = frame.nodes.iter().find(|n| m.nodes.contains(n));
+                let point = match on_level {
+                    Some(n) => positions.get(n).copied(),
+                    None => match (positions.get(&frame.nodes[0]), positions.get(&frame.nodes[1])) {
+                        (Some(a), Some(b)) => plane_crossing(*a, *b, elevation),
+                        _ => None,
+                    },
+                };
+                if let Some(p) = point {
+                    crossings.push(project(p).0);
+                }
+            }
+            for id in &m.spanning_shells {
+                let Some(shell) = model.shells.get(id) else {
+                    continue;
+                };
+                let mut bound = false;
+                for i in 0..4 {
+                    let (a, b) = (shell.nodes[i], shell.nodes[(i + 1) % 4]);
+                    if m.nodes.contains(&a)
+                        && m.nodes.contains(&b)
+                        && let Some(s) = segment(&[a, b])
+                    {
+                        traces.push(s);
+                        bound = true;
+                    }
+                }
+                // A wall passing through with no edge on this level is cut
+                // by the plane instead; no nodes are made for the cut.
+                if !bound
+                    && let [Some(a), Some(b), Some(c), Some(d)] =
+                        shell.nodes.map(|n| positions.get(&n).copied())
+                    && let Some((p, q)) = shell_trace([a, b, c, d], elevation)
+                {
+                    traces.push((project(p).0, project(q).0));
+                }
+            }
+        }
+        let level_legend = match (self.mode, self.active_level) {
+            (ViewMode::Whole, _) | (_, None) => None,
+            (_, Some(level)) => model.levels.get(&level).map(|l| {
+                SharedString::from(format!(
+                    "{} · {} {}",
+                    l.name,
+                    fmt_q(Role::Length, l.elevation.si()),
+                    UNITS.symbol(Role::Length)
+                ))
+            }),
+        };
 
         let mut combination = None;
         let mut deformed_frames = vec![];
@@ -606,7 +937,8 @@ impl Viewport {
                     p[2] + d[2] * factor,
                 ])
             };
-            for frame in model.frames.values() {
+            for (id, frame) in model.frames.iter().filter(|(id, _)| frame_shown(id)) {
+                let _ = id;
                 if let (Some(a), Some(b)) = (deformed(frame.nodes[0]), deformed(frame.nodes[1])) {
                     deformed_frames.push((project(a).0, project(b).0));
                 }
@@ -621,9 +953,9 @@ impl Viewport {
             && let Some(analysis) = document.analysis()
             && let Some(result) = analysis.results.combinations.get(analysis.combination)
         {
-            let shown = analysis.shown_diagrams();
+            let shown_diagrams = analysis.shown_diagrams();
             let column = which.index();
-            let max = peak(shown, column);
+            let max = peak(shown_diagrams, column);
             let extent = model_extent(positions.values().copied());
             let factor = if max > 0.0 { 0.08 * extent / max } else { 0.0 };
             diagram_legend = Some(SharedString::from(format!(
@@ -632,13 +964,13 @@ impl Viewport {
                 UNITS.symbol(which.role()),
                 result.combination
             )));
-            for (id, frame) in &model.frames {
+            for (id, frame) in model.frames.iter().filter(|(id, _)| frame_shown(id)) {
                 let Some(diagram) = analysis
                     .compiled
                     .mapping
                     .frame_index
                     .get(id)
-                    .and_then(|ix| shown.get(*ix))
+                    .and_then(|ix| shown_diagrams.get(*ix))
                 else {
                     continue;
                 };
@@ -695,9 +1027,9 @@ impl Viewport {
             _ => None,
         };
         let ghost = match (self.tool, self.hover_node, self.hover) {
-            (Tool::Node, None, Some(hover)) => {
-                Some(project(snap_to_ground(&self.camera, hover, bounds)).0)
-            }
+            (Tool::Node, None, Some(hover)) => self
+                .work_plane_point(hover, model)
+                .map(|(p, _)| project(p).0),
             _ => None,
         };
 
@@ -720,10 +1052,16 @@ impl Viewport {
             nodes,
             frames,
             shells,
+            context_nodes,
+            context_frames,
+            context_shells,
+            crossings,
+            traces,
             deformed_frames,
             diagrams,
             axes,
             axes_origin,
+            level_legend,
             combination,
             diagram_legend,
             picked,
@@ -769,7 +1107,8 @@ pub(crate) fn stroke_segments(
     }
 }
 
-/// A hollow circle, for nodes the draw tool has taken or is about to take.
+/// A hollow circle, for nodes the draw tool has taken or is about to take,
+/// and for where a spanning member meets the active level.
 fn paint_ring(centre: Point<Pixels>, diameter: f32, width: f32, color: Hsla, window: &mut Window) {
     let bounds = Bounds::centered_at(centre, size(px(diameter), px(diameter)));
     window.paint_quad(quad(
@@ -814,6 +1153,30 @@ fn paint_scene(
             bounds: scene.bounds,
         }),
         |window| {
+            // Context sits under everything, faint enough not to read as the floor.
+            for points in &scene.context_shells {
+                let mut builder = PathBuilder::fill();
+                builder.add_polygon(points, true);
+                if let Ok(path) = builder.build() {
+                    window.paint_path(path, palette.context.opacity(0.12));
+                }
+                stroke_segments(
+                    (0..4).map(|i| (points[i], points[(i + 1) % 4])),
+                    px(1.),
+                    palette.context.opacity(0.5),
+                    window,
+                );
+            }
+            stroke_segments(
+                scene.context_frames.iter().copied(),
+                px(1.),
+                palette.context,
+                window,
+            );
+            for p in &scene.context_nodes {
+                let bounds = Bounds::centered_at(*p, size(px(4.), px(4.)));
+                window.paint_quad(fill(bounds, palette.context));
+            }
             for quad in &scene.shells {
                 let mut builder = PathBuilder::fill();
                 builder.add_polygon(&quad.points, true);
@@ -836,6 +1199,12 @@ fn paint_scene(
                     window,
                 );
             }
+            stroke_segments(
+                scene.traces.iter().copied(),
+                px(1.5),
+                palette.shell.opacity(0.6),
+                window,
+            );
             stroke_segments(
                 scene
                     .frames
@@ -889,6 +1258,11 @@ fn paint_scene(
                     palette.selected.opacity(0.7),
                     window,
                 );
+            }
+            // Spanning members meet the plane as rings, distinct from the
+            // filled squares that are nodes.
+            for p in &scene.crossings {
+                paint_ring(*p, 10., 1.5, palette.frame, window);
             }
             for node in &scene.nodes {
                 let (size_px, color) = match (node.selected, node.restrained) {
@@ -953,6 +1327,11 @@ fn paint_scene(
                 paint_label(&label, origin, palette.axes[i], &style, window, cx);
             }
             let mut legend_top = scene.bounds.top() + px(8.);
+            if let Some(level) = &scene.level_legend {
+                let origin = point(scene.bounds.left() + px(12.), legend_top);
+                paint_label(level, origin, palette.label, &style, window, cx);
+                legend_top += px(16.);
+            }
             if let Some(combination) = &scene.combination {
                 let text: SharedString = format!("Deformed shape: {combination}").into();
                 let origin = point(scene.bounds.left() + px(12.), legend_top);
@@ -970,11 +1349,13 @@ fn paint_scene(
 // MARK: Overlays
 
 impl Viewport {
-    /// View presets, fit, and the up axis in the top-right corner, each
-    /// labelled with its key. Text only; the key map is the affordance.
-    fn view_controls(&self) -> AnyElement {
+    /// View presets, fit, the up axis, the view mode, and the active level
+    /// in the top-right corner, each labelled with its key. Text only; the
+    /// key map is the affordance.
+    fn view_controls(&self, cx: &App) -> AnyElement {
         let preset = self.preset;
         let up = self.camera.up;
+        let mode = self.mode;
         let presets = [
             ("view-3d", "3D  1", "Look from above and to the side", ViewPreset::ThreeD),
             ("view-plan", "Plan  2", "Look straight down", ViewPreset::Plan),
@@ -1029,15 +1410,84 @@ impl Viewport {
                     window.dispatch_action(Box::new(ToggleUpAxis), cx);
                 }
             });
-        h_flex()
+        let modes = ButtonGroup::new("view-mode")
+            .small()
+            .outline()
+            .child(
+                Button::new("mode-whole")
+                    .label("All  5")
+                    .selected(mode == ViewMode::Whole)
+                    .tooltip_with_action("Show the whole model", &ViewWholeModel, None),
+            )
+            .child(
+                Button::new("mode-level")
+                    .label("Level  6")
+                    .selected(mode == ViewMode::Level)
+                    .tooltip_with_action("Show the active level's floor", &ViewActiveLevel, None),
+            )
+            .child(
+                Button::new("mode-context")
+                    .label("Context  7")
+                    .selected(mode == ViewMode::LevelContext)
+                    .tooltip_with_action(
+                        "Show the active level with the storeys beside it",
+                        &ViewActiveLevelContext,
+                        None,
+                    ),
+            )
+            .on_click(|clicks, window, cx| {
+                let action: Box<dyn Action> = match clicks.first() {
+                    Some(0) => Box::new(ViewWholeModel),
+                    Some(1) => Box::new(ViewActiveLevel),
+                    _ => Box::new(ViewActiveLevelContext),
+                };
+                window.dispatch_action(action, cx);
+            });
+        let model = self.document.read(cx).model();
+        let level_name: SharedString = self
+            .active_level
+            .and_then(|l| model.levels.get(&l))
+            .map(|l| l.name.clone())
+            .unwrap_or_else(|| "No level".into())
+            .into();
+        let fg = cx.theme().foreground;
+        let level = h_flex()
+            .gap_1()
+            .items_center()
+            .child(
+                Button::new("level-down")
+                    .small()
+                    .outline()
+                    .label("Down  PgDn")
+                    .tooltip_with_action("Make the level below active", &LevelDown, None)
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(LevelDown), cx)),
+            )
+            .child(
+                div()
+                    .px_1()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(fg)
+                    .whitespace_nowrap()
+                    .child(level_name),
+            )
+            .child(
+                Button::new("level-up")
+                    .small()
+                    .outline()
+                    .label("Up  PgUp")
+                    .tooltip_with_action("Make the level above active", &LevelUp, None)
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(LevelUp), cx)),
+            );
+        v_flex()
             .absolute()
             .top_4()
             .right_4()
             .gap_2()
+            .items_end()
             .occlude()
-            .child(camera)
-            .child(fit)
-            .child(up_axis)
+            .child(h_flex().gap_2().child(camera).child(fit).child(up_axis))
+            .child(h_flex().gap_2().child(modes).child(level))
             .into_any_element()
     }
 }
@@ -1156,8 +1606,8 @@ fn start_card(theme: &Theme) -> AnyElement {
                         .pt_4()
                         .border_t_1()
                         .border_color(border)
-                        .child(step("1  Define a material and a section", "Ctrl+M · Ctrl+T"))
-                        .child(step("2  Draw nodes, then frames and shells", "N · F · S"))
+                        .child(step("1  Define the levels, a material, and a section", "Ctrl+M · Ctrl+T"))
+                        .child(step("2  Draw nodes on the active level, then frames and shells", "N · F · S"))
                         .child(step("3  Assign a load case and loads", "Ctrl+L · L · U"))
                         .child(step("4  Run and show the deformed shape", "Ctrl+R · Shift+D")),
                 ),
@@ -1177,13 +1627,14 @@ impl Render for Viewport {
             deformed: theme.chart_1,
             diagram: theme.warning,
             label: theme.muted_foreground,
+            context: theme.muted_foreground.opacity(0.45),
             axes: [theme.red, theme.green, theme.blue],
         };
         let background = theme.background;
         let hint_color = theme.muted_foreground;
         let empty = self.document.read(cx).model().nodes.is_empty();
         let card = empty.then(|| start_card(theme));
-        let controls = self.view_controls();
+        let controls = self.view_controls(cx);
         let style = window.text_style();
         let view = cx.entity().downgrade();
         let drawing = self.tool != Tool::Select;
@@ -1240,5 +1691,48 @@ impl Render for Viewport {
                     .child("Middle-drag pan")
                     .child("Wheel zoom"),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Named imports: the gpui glob carries its own `test` attribute macro.
+    use super::{plane_crossing, shell_trace};
+
+    #[test]
+    fn a_wall_through_an_intermediate_level_leaves_a_trace() {
+        // Base to roof, 0 to 8 m, cut at a 4 m level none of its nodes bind to.
+        let wall = [
+            [0.0, 0.0, 0.0],
+            [6.0, 0.0, 0.0],
+            [6.0, 0.0, 8.0],
+            [0.0, 0.0, 8.0],
+        ];
+        let (p, q) = shell_trace(wall, 4.0).unwrap();
+        let mut xs = [p[0], q[0]];
+        xs.sort_by(f64::total_cmp);
+        assert_eq!(xs, [0.0, 6.0]);
+        assert!(p[2] == 4.0 && q[2] == 4.0);
+        assert!(shell_trace(wall, 9.0).is_none(), "the plane misses the wall");
+        // A plane through one corner of a tilted panel touches it at a point.
+        let tilted = [
+            [0.0, 0.0, 0.0],
+            [4.0, 0.0, 2.0],
+            [4.0, 0.0, 6.0],
+            [0.0, 0.0, 4.0],
+        ];
+        assert!(shell_trace(tilted, 0.0).is_none());
+    }
+
+    #[test]
+    fn crossing_interpolates_only_between_the_ends() {
+        let a = [0.0, 0.0, 0.0];
+        let b = [4.0, 2.0, 8.0];
+        let p = plane_crossing(a, b, 2.0).unwrap();
+        assert!((p[0] - 1.0).abs() < 1e-12 && (p[1] - 0.5).abs() < 1e-12);
+        assert_eq!(p[2], 2.0, "the plane's elevation, exactly");
+        assert!(plane_crossing(a, b, 9.0).is_none());
+        assert!(plane_crossing(a, b, -1.0).is_none());
+        assert!(plane_crossing(a, [4.0, 2.0, 0.0], 0.0).is_none(), "a level member has no crossing");
     }
 }

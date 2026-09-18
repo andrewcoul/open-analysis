@@ -3,7 +3,7 @@
 use crate::{entity::*, model::*};
 use oa_core::units::Length;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A validation problem tied to an entity when one is known.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -149,8 +149,42 @@ fn snap_to_span(x: oa_core::units::Length, span: f64) -> oa_core::units::Length 
     }
 }
 
+/// Levels are not solver input, but every node binds to one, so the datums
+/// must exist, be finite, and be distinct.
+fn check_levels(model: &Model, problems: &mut Vec<Problem>) {
+    if model.levels.is_empty() {
+        problems.push(Problem {
+            entity: None,
+            name: None,
+            message: "model has no levels".into(),
+        });
+    }
+    for (id, l) in &model.levels {
+        if !l.elevation.si().is_finite() {
+            problems.push(Problem {
+                entity: Some(*id),
+                name: Some(l.name.clone()),
+                message: "elevation is not finite".into(),
+            });
+        }
+    }
+    let order = model.levels_by_elevation();
+    for pair in order.windows(2) {
+        let (a, b) = (&model.levels[&pair[0]], &model.levels[&pair[1]]);
+        if (b.elevation.si() - a.elevation.si()).abs() <= crate::levels::TOLERANCE {
+            problems.push(Problem {
+                entity: Some(pair[1]),
+                name: Some(b.name.clone()),
+                message: format!("sits at the same elevation as {}", model.describe(pair[0])),
+            });
+        }
+    }
+}
+
 pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
     let mut problems = vec![];
+    check_names::<Level>(model, &mut problems);
+    check_levels(model, &mut problems);
     check_names::<Node>(model, &mut problems);
     check_names::<Material>(model, &mut problems);
     check_names::<Section>(model, &mut problems);
@@ -160,6 +194,7 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
     check_names::<LoadCase>(model, &mut problems);
     check_names::<Combination>(model, &mut problems);
     check_names::<Group>(model, &mut problems);
+    check_references::<Node>(model, &mut problems);
     check_references::<Frame>(model, &mut problems);
     check_references::<Shell>(model, &mut problems);
     check_references::<Diaphragm>(model, &mut problems);
@@ -373,6 +408,98 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
         return Err(problems);
     }
     Ok(Compiled { solver, mapping })
+}
+
+/// Geometry problems of the frames and shells on any of `nodes`, and of the
+/// member loads on those frames, each element checked on its own. `compile`
+/// stops at reference problems and at the solver's first complaint, so a
+/// problem elsewhere in the model would hide these.
+pub fn geometry_problems(model: &Model, nodes: &BTreeSet<EntityId>) -> Vec<Problem> {
+    use oa_core::units::{Area, Pressure, SecondMoment};
+    // The element alone, with a stand-in material and section: only its
+    // nodes and orientation are under test.
+    let probe = |ids: &[EntityId]| -> Option<oa_core::Model> {
+        let mut solver = oa_core::Model::default();
+        for id in ids {
+            solver
+                .nodes
+                .push(oa_core::Node::new(model.nodes.get(id)?.position));
+        }
+        solver.materials.push(oa_core::Material {
+            young: Pressure::from_si(1.0),
+            poisson: 0.0,
+            density: Default::default(),
+        });
+        solver.sections.push(oa_core::Section {
+            area: Area::from_si(1.0),
+            iy: SecondMoment::from_si(1.0),
+            iz: SecondMoment::from_si(1.0),
+            torsion: SecondMoment::from_si(1.0),
+        });
+        Some(solver)
+    };
+    let problem = |id: EntityId, message: String| Problem {
+        entity: Some(id),
+        name: model.name_of(id).map(str::to_string),
+        message,
+    };
+    let touched = |ids: &[EntityId]| ids.iter().any(|n| nodes.contains(n));
+    let mut problems = vec![];
+    for (id, f) in model.frames.iter().filter(|(_, f)| touched(&f.nodes)) {
+        let Some(mut solver) = probe(&f.nodes) else {
+            continue;
+        };
+        let span = frame_length(model, *id);
+        if !span.is_finite() || span <= 1e-12 {
+            problems.push(problem(*id, "zero or invalid length".into()));
+            continue;
+        }
+        solver.frames.push(oa_core::Frame {
+            nodes: [oa_core::NodeId(0), oa_core::NodeId(1)],
+            material: oa_core::MaterialId(0),
+            section: oa_core::SectionId(0),
+            local_y: f.local_y,
+            roll: f.roll,
+            releases: f.releases,
+            behavior: f.behavior,
+        });
+        if let Err(e) = solver.validate_frame(0) {
+            problems.push(element_problem(model, *id, &e, "frame 0: "));
+        }
+        for c in model.load_cases.values() {
+            let past = c.member.iter().filter(|l| l.member() == *id).any(|l| {
+                let stations = match l {
+                    MemberLoad::Point { position, .. } => [*position, *position],
+                    MemberLoad::Distributed { start, end, .. } => [*start, *end],
+                };
+                stations
+                    .iter()
+                    .any(|x| !(0.0..=span).contains(&snap_to_span(*x, span).si()))
+            });
+            if past {
+                problems.push(problem(
+                    *id,
+                    format!("load case {:?} loads it outside its length", c.name),
+                ));
+            }
+        }
+    }
+    for (id, s) in model.shells.iter().filter(|(_, s)| touched(&s.nodes)) {
+        let Some(mut solver) = probe(&s.nodes) else {
+            continue;
+        };
+        solver.shells.push(oa_core::Shell {
+            nodes: [0, 1, 2, 3].map(oa_core::NodeId),
+            material: oa_core::MaterialId(0),
+            thickness: s.thickness,
+            formulation: s.formulation,
+            drilling_ratio: s.drilling_ratio,
+        });
+        if let Err(e) = solver.validate_shell(0) {
+            problems.push(element_problem(model, *id, &e, "shell 0: "));
+        }
+    }
+    problems
 }
 
 /// Ties a solver element error back to the entity it came from, dropping
