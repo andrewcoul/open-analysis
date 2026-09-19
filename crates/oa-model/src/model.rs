@@ -16,6 +16,7 @@ pub enum EntityKind {
     LoadCase,
     Combination,
     Group,
+    Underlay,
 }
 impl std::fmt::Display for EntityKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -30,6 +31,7 @@ impl std::fmt::Display for EntityKind {
             Self::LoadCase => "load case",
             Self::Combination => "combination",
             Self::Group => "group",
+            Self::Underlay => "underlay",
         };
         f.write_str(s)
     }
@@ -86,6 +88,8 @@ pub struct Model {
     pub combinations: BTreeMap<EntityId, Combination>,
     #[serde(default)]
     pub groups: BTreeMap<EntityId, Group>,
+    #[serde(default)]
+    pub underlays: BTreeMap<EntityId, Underlay>,
 }
 /// A new model starts with one level, `Base` at elevation zero, so there is
 /// always a datum to bind nodes to.
@@ -108,6 +112,7 @@ impl Default for Model {
             load_cases: BTreeMap::new(),
             combinations: BTreeMap::new(),
             groups: BTreeMap::new(),
+            underlays: BTreeMap::new(),
         }
     }
 }
@@ -175,6 +180,7 @@ entity!(Combination, Combination, combinations, |s| s
     .iter()
     .map(|(id, _)| (*id, EntityKind::LoadCase))
     .collect());
+entity!(Underlay, Underlay, underlays, |s| vec![(s.level, EntityKind::Level)]);
 impl Entity for Group {
     const KIND: EntityKind = EntityKind::Group;
     fn name(&self) -> &str {
@@ -220,6 +226,7 @@ impl Model {
             .chain(self.load_cases.keys())
             .chain(self.combinations.keys())
             .chain(self.groups.keys())
+            .chain(self.underlays.keys())
             .copied()
     }
     /// The highest id any table holds.
@@ -262,6 +269,7 @@ impl Model {
             (self.load_cases.contains_key(&id), EntityKind::LoadCase),
             (self.combinations.contains_key(&id), EntityKind::Combination),
             (self.groups.contains_key(&id), EntityKind::Group),
+            (self.underlays.contains_key(&id), EntityKind::Underlay),
         ]
         .into_iter()
         .find(|(present, _)| *present)
@@ -280,6 +288,7 @@ impl Model {
             .or_else(|| self.load_cases.get(&id).map(|e| e.name.as_str()))
             .or_else(|| self.combinations.get(&id).map(|e| e.name.as_str()))
             .or_else(|| self.groups.get(&id).map(|e| e.name.as_str()))
+            .or_else(|| self.underlays.get(&id).map(|e| e.name.as_str()))
     }
     /// Human-readable handle for messages: `node "N7" (#12)`.
     pub fn describe(&self, id: EntityId) -> String {
@@ -311,6 +320,7 @@ impl Model {
         scan::<Diaphragm>(self, id, &mut out);
         scan::<LoadCase>(self, id, &mut out);
         scan::<Combination>(self, id, &mut out);
+        scan::<Underlay>(self, id, &mut out);
         out
     }
     /// Existing members of a group. Stale ids are skipped.

@@ -23,6 +23,7 @@ crates/oa-gui/src/
   main.rs        bootstrap, key bindings, routing of every action to the workspace
   actions.rs     the command set: one GPUI action per menu item / shortcut
   document.rs    Editor + path + dirty flag + selection + problems + last analysis
+  cad.rs         DXF reader: model-space line work flattened to plan segments
   camera.rs      orthographic orbit camera, pure arithmetic with tests
   viewport.rs    3D canvas: nodes, frames, shells, labels, deformed shape, picking,
                  the draw tools, the view controls overlay, and the start card
@@ -152,8 +153,26 @@ Actions are routed to `Workspace` methods in `main.rs`.
   in kip·ft, line loads in kip/ft, pressures in psf, E and stresses in ksi,
   density in pcf, springs in kip/ft, nodal mass in kip·s²/ft. The model and
   the file stay SI; `text.rs` converts by `Role` through `oa_model::units`.
+- CAD underlays: File > Import CAD underlay reads a DXF (lines, polylines
+  with bulges, arcs, circles, ellipses, block inserts), asks for the level,
+  the drawing units (pre-filled from `$INSUNITS`), and a plan origin, and
+  stores the line work in the model as an `Underlay` entity on that level.
+  It draws under the structure on its level's plane: every underlay in the
+  whole-model view, only the active level's in a level view. View >
+  Underlays hides them. Underlays are listed in the model browser, edited in
+  the property editor (name, level, origin), deleted like anything else, and
+  undoable. They cannot be picked in the view.
 
 ## Not yet done
+
+- Snapping to underlay geometry. The draw tools ignore underlays; a snap
+  toggle is to come. DWG is not read: save as DXF from the CAD package.
+  Text, hatches, splines, meshes, and dimensions are skipped, and the import
+  reports how many entities it skipped; an insert arrayed in rows and columns
+  is placed once. Invisible entities and layers switched off are left out,
+  but frozen layers are not: the `dxf` crate does not read that flag. A
+  drawing whose nested blocks expand past two million entities and segments
+  is refused.
 
 - Snapping the Node tool to anything but the 1 ft grid: no snapping to
   existing nodes, frame ends, or a story level, and no box selection.

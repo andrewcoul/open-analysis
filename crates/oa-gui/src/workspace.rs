@@ -173,6 +173,8 @@ impl Workspace {
                     MenuItem::action("Save", SaveModel),
                     MenuItem::action("Save as…", SaveModelAs),
                     MenuItem::separator(),
+                    MenuItem::action("Import CAD underlay…", ImportCad),
+                    MenuItem::separator(),
                     MenuItem::action("Quit", Quit),
                 ],
                 disabled: false,
@@ -236,6 +238,8 @@ impl Workspace {
                     MenuItem::action("Node labels", ToggleNodeLabels).checked(options.node_labels),
                     MenuItem::action("Frame labels", ToggleFrameLabels)
                         .checked(options.frame_labels),
+                    MenuItem::action("Underlays", ToggleUnderlays)
+                        .checked(!options.hide_underlays),
                     MenuItem::action("Z is up", ToggleUpAxis)
                         .checked(viewport.up_axis() == UpAxis::Z),
                 ],
@@ -483,6 +487,40 @@ impl Workspace {
             Err(e) => self.error(e, window, cx),
         }
     }
+    /// Picks a DXF drawing, then asks which level it lies on and how.
+    pub fn import_cad(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| match crate::cad::read(&path) {
+                Ok(drawing) => crate::dialogs::import_underlay(
+                    this.document.clone(),
+                    this.active_level(cx),
+                    drawing,
+                    &path,
+                    {
+                        let viewport = this.viewport.clone();
+                        move |cx| viewport.update(cx, |viewport, cx| viewport.zoom_extents(cx))
+                    },
+                    window,
+                    cx,
+                ),
+                Err(e) => this.error(e, window, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
 
     // MARK: Edit
 
@@ -574,6 +612,7 @@ impl Workspace {
             // Dependents before the things they reference.
             let order = [
                 EntityKind::Group,
+                EntityKind::Underlay,
                 EntityKind::Combination,
                 EntityKind::LoadCase,
                 EntityKind::Diaphragm,
@@ -594,6 +633,7 @@ impl Workspace {
                     let id = *id;
                     commands.push(match kind {
                         EntityKind::Group => Command::RemoveGroup { id },
+                        EntityKind::Underlay => Command::RemoveUnderlay { id },
                         EntityKind::Combination => Command::RemoveCombination { id },
                         EntityKind::LoadCase => Command::RemoveLoadCase { id },
                         EntityKind::Diaphragm => Command::RemoveDiaphragm { id },
@@ -927,6 +967,7 @@ impl Workspace {
                     item("Open…", Box::new(OpenModel), None),
                     item("Save", Box::new(SaveModel), None),
                     item("Save as…", Box::new(SaveModelAs), None),
+                    item("Import CAD underlay…", Box::new(ImportCad), None),
                 ],
             ),
             (
@@ -1021,6 +1062,7 @@ impl Workspace {
                     item("Level down", Box::new(LevelDown), None),
                     item(&on("Node labels", options.node_labels), Box::new(ToggleNodeLabels), None),
                     item(&on("Frame labels", options.frame_labels), Box::new(ToggleFrameLabels), None),
+                    item(&on("Underlays", !options.hide_underlays), Box::new(ToggleUnderlays), None),
                     item(
                         match viewport.up_axis() {
                             UpAxis::Y => "Draw Z as up",

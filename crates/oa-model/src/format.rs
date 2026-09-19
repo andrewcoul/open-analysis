@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
@@ -71,6 +71,16 @@ fn check_integrity(model: &mut Model) -> Result<(), FormatError> {
         return Err(FormatError::Corrupt(format!(
             "node #{} binds to missing level #{}",
             id.0, node.level.0
+        )));
+    }
+    if let Some((id, underlay)) = model
+        .underlays
+        .iter()
+        .find(|(_, u)| model.kind_of(u.level) != Some(crate::model::EntityKind::Level))
+    {
+        return Err(FormatError::Corrupt(format!(
+            "underlay #{} lies on missing level #{}",
+            id.0, underlay.level.0
         )));
     }
     let high_water = model.max_id().map_or(0, |id| id.0);
@@ -139,6 +149,10 @@ fn migrate(from: u32, mut value: serde_json::Value) -> Result<serde_json::Value,
             value["next_id"] = serde_json::json!(next);
             Ok(value)
         }
+        // Version 3 adds the underlays table. A version 2 document has none
+        // and needs no change; the bump keeps an older build from opening a
+        // document whose underlays it would not understand.
+        2 => Ok(value),
         _ => Ok(value),
     }
 }

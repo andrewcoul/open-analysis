@@ -16,7 +16,7 @@ use oa_core::units::*;
 use oa_model::asce7::{Edition, Method};
 use oa_model::{
     Axes, Command, EntityId, EntityKind, Frame, Library, LoadCase, LoadType, Material, MemberLoad,
-    Model, NodalLoad, Node, Role, Section,
+    Model, NodalLoad, Node, Role, Section, Underlay,
 };
 
 type Choice = Entity<SelectState<SearchableVec<SharedString>>>;
@@ -261,6 +261,115 @@ pub fn add_node(
                 window,
                 cx,
             )
+        },
+    );
+}
+
+/// Lays a drawing read from `path` on a level. The units default to what the
+/// file declares and the origin to the model's; both are asked for because
+/// many drawings declare no unit and few share the model's origin.
+/// `on_imported` runs once the underlay is in the model.
+pub fn import_underlay(
+    document: Entity<Document>,
+    active: Option<EntityId>,
+    drawing: crate::cad::Drawing,
+    path: &std::path::Path,
+    on_imported: impl Fn(&mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let (name, levels, selected) = {
+        let model = document.read(cx).model();
+        let levels: Vec<(EntityId, SharedString)> = model
+            .levels_by_elevation()
+            .into_iter()
+            .map(|id| (id, model.levels[&id].name.clone().into()))
+            .collect();
+        let selected = active
+            .and_then(|a| levels.iter().position(|(id, _)| *id == a))
+            .or_else(|| (!levels.is_empty()).then_some(0));
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Underlay".into());
+        let name = match model.find::<Underlay>(&stem) {
+            Some(_) => unused_name::<Underlay>(model, &format!("{stem} ")),
+            None => stem,
+        };
+        (name, levels, selected)
+    };
+    let fields = ["Origin X", "Origin Y"].map(|a| label(a, Role::Length));
+    let inputs = Inputs::new(
+        window,
+        cx,
+        &[("Name", &name), (&fields[0], "0"), (&fields[1], "0")],
+    )
+    .with_choice(
+        "Level",
+        levels.iter().map(|(_, l)| l.clone()).collect(),
+        selected,
+        window,
+        cx,
+    )
+    .with_choice(
+        "Drawing units",
+        crate::cad::UNITS.iter().map(|(u, _)| (*u).into()).collect(),
+        drawing.unit,
+        window,
+        cx,
+    );
+    open(
+        "Import CAD underlay",
+        "Import",
+        inputs,
+        window,
+        cx,
+        move |inputs, window, cx| {
+            let Some(level) = inputs.choice("Level", cx).and_then(|ix| levels.get(ix)) else {
+                notify_error(window, cx, "Choose a level");
+                return false;
+            };
+            let Some((_, metres)) = inputs
+                .choice("Drawing units", cx)
+                .and_then(|ix| crate::cad::UNITS.get(ix))
+            else {
+                notify_error(window, cx, "Choose the units the drawing was made in");
+                return false;
+            };
+            let mut origin = [Length::ZERO; 2];
+            for (i, field) in fields.iter().enumerate() {
+                match inputs.qty(field, Role::Length, cx) {
+                    Ok(v) => origin[i] = Length::from_si(v),
+                    Err(e) => {
+                        notify_error(window, cx, e);
+                        return false;
+                    }
+                }
+            }
+            let underlay = Underlay {
+                name: inputs.text("Name", cx),
+                level: level.0,
+                origin,
+                segments: drawing
+                    .segments
+                    .iter()
+                    .map(|s| s.map(|p| p.map(|v| Length::from_si(v * metres))))
+                    .collect(),
+            };
+            let id = EntityId(document.read(cx).model().next_id);
+            if !apply(&document, Command::AddUnderlay { id, underlay }, window, cx) {
+                return false;
+            }
+            let mut message = format!("Imported {} segments", drawing.segments.len());
+            if drawing.skipped > 0 {
+                message += &format!(
+                    "; skipped {} entities that are not line work",
+                    drawing.skipped
+                );
+            }
+            window.push_notification(Notification::info(message), cx);
+            on_imported(cx);
+            true
         },
     );
 }

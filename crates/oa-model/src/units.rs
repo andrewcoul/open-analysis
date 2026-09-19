@@ -236,6 +236,13 @@ impl MapQuantities for Combination {
 impl MapQuantities for Group {
     fn map_quantities(&mut self, _: &mut dyn FnMut(Role, f64) -> f64) {}
 }
+impl MapQuantities for Underlay {
+    fn map_quantities(&mut self, f: &mut dyn FnMut(Role, f64) -> f64) {
+        for v in self.origin.iter_mut().chain(self.segments.iter_mut().flatten().flatten()) {
+            remap!(f, Role::Length, *v, Length);
+        }
+    }
+}
 impl MapQuantities for NodalLoad {
     fn map_quantities(&mut self, f: &mut dyn FnMut(Role, f64) -> f64) {
         for i in 0..3 {
@@ -322,6 +329,9 @@ impl MapQuantities for Command {
             Command::AddLoadCase { load_case, .. } | Command::UpdateLoadCase { load_case, .. } => {
                 load_case.map_quantities(f)
             }
+            Command::AddUnderlay { underlay, .. } | Command::UpdateUnderlay { underlay, .. } => {
+                underlay.map_quantities(f)
+            }
             Command::SetGravity { gravity } => {
                 remap!(f, Role::Acceleration, *gravity, Acceleration);
             }
@@ -346,7 +356,8 @@ impl MapQuantities for Command {
             | Command::RemoveDiaphragm { .. }
             | Command::RemoveLoadCase { .. }
             | Command::RemoveCombination { .. }
-            | Command::RemoveGroup { .. } => {}
+            | Command::RemoveGroup { .. }
+            | Command::RemoveUnderlay { .. } => {}
         }
     }
 }

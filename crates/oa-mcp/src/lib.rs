@@ -305,6 +305,10 @@ impl Session {
                 m.groups,
                 |id, e| json!({"id": id, "name": e.name, "size": e.members.len()})
             ),
+            EntityKind::Underlay => rows!(
+                m.underlays,
+                |id, e| json!({"id": id, "name": e.name, "level": m.name_of(e.level), "segments": e.segments.len()})
+            ),
         }
         json!({"total": total, "rows": rows, "truncated": total > rows.len()})
     }
@@ -322,6 +326,7 @@ impl Session {
             EntityKind::LoadCase => serde_json::to_value(UNITS.display(&m.load_cases[&id]))?,
             EntityKind::Combination => serde_json::to_value(&m.combinations[&id])?,
             EntityKind::Group => serde_json::to_value(&m.groups[&id])?,
+            EntityKind::Underlay => serde_json::to_value(UNITS.display(&m.underlays[&id]))?,
         };
         Ok(json!({"id": id, "kind": kind, "entity": value}))
     }
@@ -338,6 +343,7 @@ impl Session {
             EntityKind::LoadCase => m.find::<LoadCase>(name),
             EntityKind::Combination => m.find::<Combination>(name),
             EntityKind::Group => m.find::<Group>(name),
+            EntityKind::Underlay => m.find::<Underlay>(name),
         }
     }
     /// Fresh ids for commands that add entities.
