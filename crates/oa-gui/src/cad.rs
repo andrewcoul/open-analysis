@@ -1,9 +1,12 @@
 //! Reads a DXF drawing as plan line work for an underlay. Model-space lines,
 //! polylines, arcs, circles, and ellipses are kept, curves as short chords,
 //! and block inserts are expanded in place. Z is dropped: an underlay lies
-//! flat on its level. Text, hatches, splines, and dimensions are skipped.
+//! flat on its level. Text, hatches, splines, meshes, and dimensions are skipped,
+//! and so is anything the drawing hides: invisible entities and layers that are
+//! switched off. Frozen layers are not told apart; the `dxf` crate does not read
+//! that flag.
 use dxf::entities::{Entity, EntityType};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::TAU;
 use std::path::Path;
 
@@ -29,11 +32,10 @@ pub struct Drawing {
 
 pub fn read(path: &Path) -> Result<Drawing, String> {
     let drawing = dxf::Drawing::load_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    flatten(&drawing).ok_or_else(|| format!("{}: no line work found", path.display()))
+    flatten(&drawing).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// None when the drawing holds no line work that is read.
-fn flatten(drawing: &dxf::Drawing) -> Option<Drawing> {
+fn flatten(drawing: &dxf::Drawing) -> Result<Drawing, String> {
     let unit = match drawing.header.default_drawing_units {
         dxf::enums::Units::Inches => Some(0),
         dxf::enums::Units::Feet => Some(1),
@@ -43,15 +45,31 @@ fn flatten(drawing: &dxf::Drawing) -> Option<Drawing> {
         _ => None,
     };
     let blocks = drawing.blocks().map(|b| (b.name.as_str(), b)).collect();
+    let off = drawing
+        .layers()
+        .filter(|l| !l.is_layer_on)
+        .map(|l| l.name.to_lowercase())
+        .collect();
     let mut reader = Reader {
         blocks,
+        off,
+        open: vec![],
         segments: vec![],
         skipped: 0,
+        work: 0,
     };
     for entity in drawing.entities() {
-        reader.entity(entity, IDENTITY, 0);
+        reader.entity(entity, IDENTITY, "0");
     }
-    (!reader.segments.is_empty()).then_some(Drawing {
+    if reader.work > BUDGET {
+        return Err(format!(
+            "the drawing expands to more than {BUDGET} entities and segments"
+        ));
+    }
+    if reader.segments.is_empty() {
+        return Err("no line work found".into());
+    }
+    Ok(Drawing {
         segments: reader.segments,
         unit,
         skipped: reader.skipped,
@@ -90,26 +108,46 @@ fn object_frame(outer: &Transform, normal: &dxf::Vector) -> Transform {
     }
 }
 
-/// Inserts nested deeper than this are dropped, which also ends a block
-/// that inserts itself.
+/// Inserts nested deeper than this are dropped, to bound the recursion.
 const MAX_DEPTH: usize = 16;
+/// Entities visited plus segments made before a drawing is refused. Nested
+/// blocks multiply: a few kilobytes of inserts can expand without end, and the
+/// read runs on the interface thread.
+const BUDGET: usize = 2_000_000;
 /// Chords per full turn of an arc.
 const CHORDS: f64 = 48.0;
 
 struct Reader<'a> {
     blocks: HashMap<&'a str, &'a dxf::Block>,
+    /// Layers that are switched off, in lower case: layer names match without case.
+    off: HashSet<String>,
+    /// The blocks being expanded, outermost first.
+    open: Vec<&'a str>,
     segments: Vec<Segment>,
     skipped: usize,
+    /// Entities visited plus segments made, against [`BUDGET`].
+    work: usize,
 }
 
-impl Reader<'_> {
-    fn entity(&mut self, entity: &Entity, m: Transform, depth: usize) {
-        if entity.common.is_in_paper_space {
+impl<'a> Reader<'a> {
+    /// `layer0` is the layer that contents drawn on layer 0 take: inside a
+    /// block, the layer of its insert.
+    fn entity(&mut self, entity: &'a Entity, m: Transform, layer0: &'a str) {
+        self.work += 1;
+        let layer = match entity.common.layer.as_str() {
+            "0" => layer0,
+            own => own,
+        };
+        if self.work > BUDGET
+            || entity.common.is_in_paper_space
+            || !entity.common.is_visible
+            || self.off.contains(&layer.to_lowercase())
+        {
             return;
         }
         match &entity.specific {
             EntityType::Line(line) => {
-                self.segments.push([
+                self.push([
                     apply(&m, [line.p1.x, line.p1.y]),
                     apply(&m, [line.p2.x, line.p2.y]),
                 ]);
@@ -153,6 +191,10 @@ impl Reader<'_> {
                     .collect();
                 self.polyline(&m, &vertices, poly.is_closed());
             }
+            // A mesh stores faces among its vertices, not a run to join up.
+            EntityType::Polyline(poly) if poly.is_polyface_mesh() || poly.is_3d_polygon_mesh() => {
+                self.skipped += 1;
+            }
             EntityType::Polyline(poly) => {
                 let m = object_frame(&m, &poly.normal);
                 let vertices: Vec<([f64; 2], f64)> = poly
@@ -166,7 +208,8 @@ impl Reader<'_> {
                     self.skipped += 1;
                     return;
                 };
-                if depth >= MAX_DEPTH {
+                // A block that reaches itself again would never finish.
+                if self.open.len() >= MAX_DEPTH || self.open.contains(&block.name.as_str()) {
                     self.skipped += 1;
                     return;
                 }
@@ -183,21 +226,32 @@ impl Reader<'_> {
                     insert.location.y - c * bx - d * by,
                 ];
                 let m = compose(&object_frame(&m, &insert.extrusion_direction), &place);
+                self.open.push(block.name.as_str());
                 for entity in &block.entities {
-                    self.entity(entity, m, depth + 1);
+                    if self.work > BUDGET {
+                        break;
+                    }
+                    self.entity(entity, m, layer);
                 }
+                self.open.pop();
             }
             _ => self.skipped += 1,
         }
     }
 
+    fn push(&mut self, segment: Segment) {
+        self.work += 1;
+        if self.work <= BUDGET {
+            self.segments.push(segment);
+        }
+    }
     /// Chords along `point(t)` for t from zero to `sweep` radians.
     fn curve(&mut self, m: &Transform, sweep: f64, point: impl Fn(f64) -> [f64; 2]) {
         let chords = (sweep.abs() / TAU * CHORDS).ceil().max(1.0) as usize;
         let mut last = apply(m, point(0.0));
         for i in 1..=chords {
             let next = apply(m, point(sweep * i as f64 / chords as f64));
-            self.segments.push([last, next]);
+            self.push([last, next]);
             last = next;
         }
     }
@@ -220,7 +274,7 @@ impl Reader<'_> {
             let (q, _) = vertices[(i + 1) % vertices.len()];
             let chord = (q[0] - p[0]).hypot(q[1] - p[1]);
             if bulge == 0.0 || chord == 0.0 {
-                self.segments.push([apply(m, p), apply(m, q)]);
+                self.push([apply(m, p), apply(m, q)]);
                 continue;
             }
             // The centre sits on the chord's left normal, this far along it.
@@ -239,7 +293,8 @@ impl Reader<'_> {
 #[cfg(test)]
 mod tests {
     use super::{Segment, flatten};
-    use dxf::entities::{Arc, Entity, EntityType, Insert, Line, LwPolyline};
+    use dxf::entities::{Arc, Entity, EntityType, Insert, Line, LwPolyline, Polyline, Vertex};
+    use dxf::tables::Layer;
     use dxf::{Block, LwPolylineVertex, Point};
 
     fn line(a: [f64; 2], b: [f64; 2]) -> Entity {
@@ -267,7 +322,7 @@ mod tests {
     #[test]
     fn lines_drop_z_and_report_the_declared_unit() {
         let mut drawing = dxf::Drawing::new();
-        assert!(flatten(&drawing).is_none(), "nothing to read");
+        assert!(flatten(&drawing).is_err(), "nothing to read");
         drawing.header.default_drawing_units = dxf::enums::Units::Millimeters;
         drawing.add_entity(line([0.0, 0.0], [6000.0, 0.0]));
         drawing.add_entity(Entity::new(EntityType::Text(Default::default())));
@@ -337,7 +392,8 @@ mod tests {
         assert!(close(read.segments[0][1], [10.0, 23.0]));
         assert_eq!(read.skipped, 1);
 
-        // A block that inserts itself ends instead of recursing for ever.
+        // A block that reaches itself is expanded once, however many times
+        // it does so: each branch would otherwise double the work per level.
         let mut drawing = dxf::Drawing::new();
         let again = || {
             Entity::new(EntityType::Insert(Insert {
@@ -347,10 +403,102 @@ mod tests {
         };
         drawing.add_block(Block {
             name: "loop".into(),
-            entities: vec![line([0.0, 0.0], [1.0, 0.0]), again()],
+            entities: vec![line([0.0, 0.0], [1.0, 0.0]), again(), again()],
             ..Default::default()
         });
         drawing.add_entity(again());
-        assert_eq!(flatten(&drawing).unwrap().segments.len(), 16);
+        let read = flatten(&drawing).unwrap();
+        assert_eq!(read.segments.len(), 1);
+        assert_eq!(read.skipped, 2);
+    }
+
+    /// Eight inserts a block, fifteen blocks deep, is 8^15 lines from a few
+    /// kilobytes. The read gives up instead of filling memory.
+    #[test]
+    fn nesting_that_multiplies_without_end_is_refused() {
+        let mut drawing = dxf::Drawing::new();
+        for i in 0..15 {
+            let inner = Insert {
+                name: format!("b{}", i + 1),
+                ..Default::default()
+            };
+            drawing.add_block(Block {
+                name: format!("b{i}"),
+                entities: vec![Entity::new(EntityType::Insert(inner)); 8],
+                ..Default::default()
+            });
+        }
+        drawing.add_block(Block {
+            name: "b15".into(),
+            entities: vec![line([0.0, 0.0], [1.0, 0.0])],
+            ..Default::default()
+        });
+        drawing.add_entity(Entity::new(EntityType::Insert(Insert {
+            name: "b0".into(),
+            ..Default::default()
+        })));
+        assert!(flatten(&drawing).is_err_and(|e| e.contains("expands")));
+    }
+
+    #[test]
+    fn what_the_drawing_hides_stays_hidden() {
+        let on_layer = |mut entity: Entity, layer: &str| {
+            entity.common.layer = layer.into();
+            entity
+        };
+        let mut drawing = dxf::Drawing::new();
+        drawing.add_layer(Layer {
+            name: "Alternates".into(),
+            is_layer_on: false,
+            ..Default::default()
+        });
+        drawing.add_entity(line([0.0, 0.0], [1.0, 0.0]));
+        let mut invisible = line([0.0, 1.0], [1.0, 1.0]);
+        invisible.common.is_visible = false;
+        drawing.add_entity(invisible);
+        // Layer names match without regard to case.
+        drawing.add_entity(on_layer(line([0.0, 2.0], [1.0, 2.0]), "ALTERNATES"));
+        // Block contents on layer 0 take the layer of their insert; contents
+        // on a layer of their own keep it.
+        drawing.add_block(Block {
+            name: "mark".into(),
+            entities: vec![
+                line([0.0, 3.0], [1.0, 3.0]),
+                on_layer(line([0.0, 4.0], [1.0, 4.0]), "Alternates"),
+            ],
+            ..Default::default()
+        });
+        let mark = || {
+            Entity::new(EntityType::Insert(Insert {
+                name: "mark".into(),
+                ..Default::default()
+            }))
+        };
+        drawing.add_entity(mark());
+        drawing.add_entity(on_layer(mark(), "Alternates"));
+        let read = flatten(&drawing).unwrap();
+        assert_eq!(
+            read.segments,
+            vec![[[0.0, 0.0], [1.0, 0.0]], [[0.0, 3.0], [1.0, 3.0]]]
+        );
+        assert_eq!(read.skipped, 0, "hidden is not the same as unreadable");
+    }
+
+    /// A polyface mesh lists its faces after its corners, as vertices at the
+    /// origin. Joined up like a polyline they would draw a line to nowhere.
+    #[test]
+    fn meshes_are_skipped_not_joined_up() {
+        let mut drawing = dxf::Drawing::new();
+        let mut mesh = Polyline::default();
+        mesh.set_is_polyface_mesh(true);
+        for (x, y) in [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)] {
+            mesh.add_vertex(&mut drawing, Vertex::new(Point::new(x, y, 0.0)));
+        }
+        mesh.add_vertex(&mut drawing, Vertex::default());
+        drawing.add_entity(Entity::new(EntityType::Polyline(mesh)));
+        drawing.add_entity(line([0.0, 0.0], [1.0, 0.0]));
+        let read = flatten(&drawing).unwrap();
+        assert_eq!(read.segments, vec![[[0.0, 0.0], [1.0, 0.0]]]);
+        assert_eq!(read.skipped, 1);
     }
 }

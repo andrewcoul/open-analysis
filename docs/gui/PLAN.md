@@ -167,9 +167,12 @@ Actions are routed to `Workspace` methods in `main.rs`.
 
 - Snapping to underlay geometry. The draw tools ignore underlays; a snap
   toggle is to come. DWG is not read: save as DXF from the CAD package.
-  Text, hatches, splines, and dimensions are skipped, and the import reports
-  how many entities it skipped; an insert arrayed in rows and columns is
-  placed once.
+  Text, hatches, splines, meshes, and dimensions are skipped, and the import
+  reports how many entities it skipped; an insert arrayed in rows and columns
+  is placed once. Invisible entities and layers switched off are left out,
+  but frozen layers are not: the `dxf` crate does not read that flag. A
+  drawing whose nested blocks expand past two million entities and segments
+  is refused.
 
 - Snapping the Node tool to anything but the 1 ft grid: no snapping to
   existing nodes, frame ends, or a story level, and no box selection.

@@ -1127,20 +1127,40 @@ fn model_extent(points: impl Iterator<Item = [f64; 3]>) -> f64 {
     }
 }
 
+/// Segments stroked as one path. The tessellator indexes its vertices with
+/// 16 bits and spends four on a segment, so a path holds 16,384 at most, and
+/// one that overflows is lost whole: an underlay can run well past that.
+const STROKE_BATCH: usize = 8192;
+
+fn stroke_paths(
+    segments: impl Iterator<Item = (Point<Pixels>, Point<Pixels>)>,
+    width: Pixels,
+) -> Vec<Path<Pixels>> {
+    let mut paths = vec![];
+    let mut builder = PathBuilder::stroke(width);
+    let mut count = 0;
+    for (a, b) in segments {
+        builder.move_to(a);
+        builder.line_to(b);
+        count += 1;
+        if count == STROKE_BATCH {
+            paths.extend(std::mem::replace(&mut builder, PathBuilder::stroke(width)).build());
+            count = 0;
+        }
+    }
+    if count > 0 {
+        paths.extend(builder.build());
+    }
+    paths
+}
+
 pub(crate) fn stroke_segments(
     segments: impl Iterator<Item = (Point<Pixels>, Point<Pixels>)>,
     width: Pixels,
     color: Hsla,
     window: &mut Window,
 ) {
-    let mut builder = PathBuilder::stroke(width);
-    let mut any = false;
-    for (a, b) in segments {
-        builder.move_to(a);
-        builder.line_to(b);
-        any = true;
-    }
-    if any && let Ok(path) = builder.build() {
+    for path in stroke_paths(segments, width) {
         window.paint_path(path, color);
     }
 }
@@ -1766,7 +1786,8 @@ impl Render for Viewport {
 #[cfg(test)]
 mod tests {
     // Named imports: the gpui glob carries its own `test` attribute macro.
-    use super::{plane_crossing, shell_trace};
+    use super::{plane_crossing, shell_trace, stroke_paths, to_point};
+    use gpui_kit::px;
 
     #[test]
     fn a_wall_through_an_intermediate_level_leaves_a_trace() {
@@ -1803,5 +1824,17 @@ mod tests {
         assert!(plane_crossing(a, b, 9.0).is_none());
         assert!(plane_crossing(a, b, -1.0).is_none());
         assert!(plane_crossing(a, [4.0, 2.0, 0.0], 0.0).is_none(), "a level member has no crossing");
+    }
+
+    /// One path cannot hold a whole drawing, and a path that overflows draws
+    /// nothing, so a large underlay goes out as several.
+    #[test]
+    fn a_large_underlay_is_stroked_in_batches_that_all_build() {
+        let segments = (0..20_000).map(|i| {
+            let x = f64::from(i % 1000);
+            (to_point(x, 0.0), to_point(x, 900.0))
+        });
+        assert_eq!(stroke_paths(segments, px(1.)).len(), 3);
+        assert!(stroke_paths(std::iter::empty(), px(1.)).is_empty());
     }
 }
