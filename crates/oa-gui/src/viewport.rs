@@ -14,7 +14,10 @@ use crate::document::Document;
 use crate::results::{Diagram, labelled_stations, peak};
 use crate::text::{UNITS, fmt_q};
 use gpui_kit::component::button::{Button, ButtonGroup};
-use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, Theme, h_flex, v_flex};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::{
+    ActiveTheme as _, IconName, Selectable as _, Sizable as _, Theme, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use oa_model::levels::{self, Membership};
@@ -1444,13 +1447,20 @@ impl Viewport {
                 window.dispatch_action(action, cx);
             });
         let model = self.document.read(cx).model();
-        let level_name: SharedString = self
-            .active_level
+        let active = self.active_level;
+        let levels: Vec<(EntityId, SharedString)> = model
+            .levels_by_elevation()
+            .into_iter()
+            .map(|id| {
+                let name = model.name_of(id).unwrap_or("?").to_string();
+                (id, SharedString::from(name))
+            })
+            .collect();
+        let level_name: SharedString = active
             .and_then(|l| model.levels.get(&l))
             .map(|l| l.name.clone())
             .unwrap_or_else(|| "No level".into())
             .into();
-        let fg = cx.theme().foreground;
         let level = h_flex()
             .gap_1()
             .items_center()
@@ -1458,26 +1468,40 @@ impl Viewport {
                 Button::new("level-down")
                     .small()
                     .outline()
-                    .label("Down  PgDn")
+                    .compact()
+                    .icon(IconName::ArrowDown)
                     .tooltip_with_action("Make the level below active", &LevelDown, None)
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(LevelDown), cx)),
-            )
-            .child(
-                div()
-                    .px_1()
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(fg)
-                    .whitespace_nowrap()
-                    .child(level_name),
             )
             .child(
                 Button::new("level-up")
                     .small()
                     .outline()
-                    .label("Up  PgUp")
+                    .compact()
+                    .icon(IconName::ArrowUp)
                     .tooltip_with_action("Make the level above active", &LevelUp, None)
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(LevelUp), cx)),
+            )
+            .child(
+                Button::new("level-select")
+                    .small()
+                    .outline()
+                    .w(px(128.))
+                    .label(level_name)
+                    .dropdown_caret(true)
+                    .tooltip("The active level: pick another from the list")
+                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                        levels.iter().fold(menu, |menu, (id, label)| {
+                            let id = *id;
+                            menu.item(
+                                PopupMenuItem::new(label.clone())
+                                    .checked(active == Some(id))
+                                    .on_click(move |_, window, cx| {
+                                        window.dispatch_action(Box::new(SetActiveLevel(id.0)), cx)
+                                    }),
+                            )
+                        })
+                    }),
             );
         v_flex()
             .absolute()
