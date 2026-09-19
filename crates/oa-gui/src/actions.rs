@@ -77,6 +77,11 @@ pub struct ShowCombination(pub SharedString);
 #[action(namespace = oa_gui, no_json)]
 pub struct ShowDiagram(pub Option<crate::results::Diagram>);
 
+/// Switches one object snap of the draw tools on or off.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = oa_gui, no_json)]
+pub struct ToggleSnap(pub crate::snap::Kind);
+
 /// Shows every number with this many decimals.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = oa_gui, no_json)]

@@ -15,7 +15,8 @@ pub struct Gates {
     pub frame: Option<&'static str>,
     /// Shell on the four selected nodes.
     pub shell: Option<&'static str>,
-    /// The Frame tool: needs a material, a section, and nodes to click.
+    /// The Frame tool: needs a material, a section, and nodes to click or
+    /// an underlay to snap new ones to.
     pub frame_tool: Option<&'static str>,
     pub shell_tool: Option<&'static str>,
     pub group: Option<&'static str>,
@@ -38,6 +39,7 @@ impl Gates {
             .is_empty()
             .then_some("Define a material first");
         let no_section = model.sections.is_empty().then_some("Define a section first");
+        let traceable = !model.underlays.is_empty();
         let no_case = model
             .load_cases
             .is_empty()
@@ -50,9 +52,11 @@ impl Gates {
                 .or((nodes != 4).then_some("Select exactly four nodes, going around the shell")),
             frame_tool: no_material
                 .or(no_section)
-                .or((model.nodes.len() < 2).then_some("Place at least two nodes first")),
+                .or((model.nodes.len() < 2 && !traceable)
+                    .then_some("Place at least two nodes first")),
             shell_tool: no_material
-                .or((model.nodes.len() < 4).then_some("Place at least four nodes first")),
+                .or((model.nodes.len() < 4 && !traceable)
+                    .then_some("Place at least four nodes first")),
             group: document
                 .selection()
                 .is_empty()
@@ -183,7 +187,7 @@ fn prompt(state: &PromptState) -> Prompt {
                     "{level} is edge-on here. Use the 3D or plan view to place nodes on it. Esc returns to Select."
                 ),
                 (Some(level), false) => format!(
-                    "Click empty space to place a node on {level}, snapped to 1 ft in plan. Click a node to select it. Esc returns to Select."
+                    "Click to place a node on {level}, at a snap point or else on the 1 ft plan grid. Click a node to select it. Esc returns to Select."
                 ),
             },
             aside: state.level.as_ref().map(|_| "PgUp / PgDn change level".into()),
@@ -192,9 +196,9 @@ fn prompt(state: &PromptState) -> Prompt {
         Tool::Frame => Prompt {
             title: "Frame".into(),
             text: match state.picked.last() {
-                None => "Click the I node, then the J node.".into(),
+                None => "Click the I node, then the J node. A snap point makes a node there.".into(),
                 Some(name) => format!(
-                    "Click the J node. I = {name}. The next frame starts from J; Esc stops."
+                    "Click the J node or a snap point. I = {name}. The next frame starts from J; Esc stops."
                 ),
             },
             aside: state
@@ -206,7 +210,7 @@ fn prompt(state: &PromptState) -> Prompt {
         Tool::Shell => Prompt {
             title: "Shell".into(),
             text: format!(
-                "Click the four corner nodes in order around the shell. {} of 4 picked. Esc starts over.",
+                "Click the four corner nodes or snap points in order around the shell. {} of 4 picked. Esc starts over.",
                 state.picked.len()
             ),
             aside: state
