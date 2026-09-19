@@ -341,3 +341,18 @@ pub struct Group {
     #[serde(default)]
     pub members: BTreeSet<EntityId>,
 }
+
+/// A CAD drawing flattened to line segments and laid on a level's plane as a
+/// reference to draw over. It is never compiled: the solver does not see it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Underlay {
+    pub name: String,
+    /// The level whose plane the drawing lies on; it follows the datum.
+    pub level: EntityId,
+    /// Where the drawing's own origin sits in plan.
+    #[serde(default)]
+    pub origin: [Length; 2],
+    /// Segment ends in plan, relative to `origin`.
+    pub segments: Vec<[[Length; 2]; 2]>,
+}

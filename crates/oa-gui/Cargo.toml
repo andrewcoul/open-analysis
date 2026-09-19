@@ -11,6 +11,7 @@ name = "oa-gui"
 path = "src/main.rs"
 
 [dependencies]
+dxf = "0.6.1"
 gpui-kit = "0.6.1"
 oa-core = { workspace = true, features = ["parallel"] }
 oa-model = { workspace = true, features = ["store"] }

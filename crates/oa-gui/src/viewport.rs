@@ -32,6 +32,8 @@ pub struct DisplayOptions {
     pub deformed: bool,
     /// The section force drawn along every member, if any.
     pub diagram: Option<Diagram>,
+    /// Inverted so that the default shows them.
+    pub hide_underlays: bool,
 }
 
 /// What a click in the view does.
@@ -629,6 +631,7 @@ struct Palette {
     label: Hsla,
     /// Storeys shown beside the active level, and members spanning to them.
     context: Hsla,
+    underlay: Hsla,
     axes: [Hsla; 3],
 }
 
@@ -668,6 +671,8 @@ struct Scene {
     context_nodes: Vec<Point<Pixels>>,
     context_frames: Vec<(Point<Pixels>, Point<Pixels>)>,
     context_shells: Vec<[Point<Pixels>; 4]>,
+    /// CAD drawings on the levels in view. Reference only: never picked.
+    underlays: Vec<(Point<Pixels>, Point<Pixels>)>,
     /// Where members spanning to another level meet the active plane. Not
     /// nodes: they cannot be picked or snapped to.
     crossings: Vec<Point<Pixels>>,
@@ -723,6 +728,23 @@ impl Viewport {
             .iter()
             .map(|(id, n)| (*id, n.position.map(|v| v.si())))
             .collect();
+        // Underlays on the levels in view, as world segments on their datum.
+        let (mode, active_level) = (self.mode, self.active_level);
+        let hidden = self.options.hide_underlays;
+        let underlay_segments = || {
+            model
+                .underlays
+                .values()
+                .filter(move |u| {
+                    !hidden && (mode == ViewMode::Whole || Some(u.level) == active_level)
+                })
+                .filter_map(|u| Some((u, model.levels.get(&u.level)?.elevation.si())))
+                .flat_map(|(u, z)| {
+                    u.segments.iter().map(move |s| {
+                        s.map(|p| [u.origin[0].si() + p[0].si(), u.origin[1].si() + p[1].si(), z])
+                    })
+                })
+        };
         let width = f64::from(bounds.size.width);
         let height = f64::from(bounds.size.height);
         if self.fit_on_next_paint && width > 0.0 && height > 0.0 {
@@ -731,7 +753,8 @@ impl Viewport {
                 positions
                     .iter()
                     .filter(|(id, _)| node_shown(id))
-                    .map(|(_, p)| *p),
+                    .map(|(_, p)| *p)
+                    .chain(underlay_segments().flatten()),
                 width,
                 height,
             );
@@ -805,6 +828,17 @@ impl Viewport {
             })
             .collect();
         shells.sort_by(|a, b| a.depth.total_cmp(&b.depth));
+        // A drawing can run to many thousands of segments, most of them off
+        // screen once zoomed in, so those wholly to one side are dropped.
+        let underlays = underlay_segments()
+            .map(|[a, b]| (project(a).0, project(b).0))
+            .filter(|(a, b)| {
+                a.x.max(b.x) >= bounds.left()
+                    && a.x.min(b.x) <= bounds.right()
+                    && a.y.max(b.y) >= bounds.top()
+                    && a.y.min(b.y) <= bounds.bottom()
+            })
+            .collect();
 
         // The storeys beside the active level, and the members spanning to
         // them, as unpickable context.
@@ -1058,6 +1092,7 @@ impl Viewport {
             context_nodes,
             context_frames,
             context_shells,
+            underlays,
             crossings,
             traces,
             deformed_frames,
@@ -1156,6 +1191,12 @@ fn paint_scene(
             bounds: scene.bounds,
         }),
         |window| {
+            stroke_segments(
+                scene.underlays.iter().copied(),
+                px(1.),
+                palette.underlay,
+                window,
+            );
             // Context sits under everything, faint enough not to read as the floor.
             for points in &scene.context_shells {
                 let mut builder = PathBuilder::fill();
@@ -1652,11 +1693,15 @@ impl Render for Viewport {
             diagram: theme.warning,
             label: theme.muted_foreground,
             context: theme.muted_foreground.opacity(0.45),
+            underlay: theme.chart_4.opacity(0.6),
             axes: [theme.red, theme.green, theme.blue],
         };
         let background = theme.background;
         let hint_color = theme.muted_foreground;
-        let empty = self.document.read(cx).model().nodes.is_empty();
+        let empty = {
+            let model = self.document.read(cx).model();
+            model.nodes.is_empty() && model.underlays.is_empty()
+        };
         let card = empty.then(|| start_card(theme));
         let controls = self.view_controls(cx);
         let style = window.text_style();

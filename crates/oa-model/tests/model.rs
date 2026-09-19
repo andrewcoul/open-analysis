@@ -1156,3 +1156,110 @@ fn level_removal_refuses_bound_nodes_and_the_last_level() {
     let fresh = editor.model.allocate();
     assert!(fresh > editor.model.max_id().unwrap());
 }
+
+/// An underlay is reference geometry on a level: it goes in and out through
+/// commands, holds its level in place, survives a save, and never reaches
+/// the solver.
+#[test]
+fn underlay_binds_to_a_level_and_stays_out_of_the_solver() {
+    let mut editor = Editor::new(Model::default());
+    portal(&mut editor);
+    let hash =compile(&editor.model).unwrap().content_hash();
+    let level = editor.model.find::<Level>("L2").unwrap();
+    let point = |x: f64, y: f64| [Length::from_si(x), Length::from_si(y)];
+    let underlay = Underlay {
+        name: "roof plan".into(),
+        level,
+        origin: point(1.0, 2.0),
+        segments: vec![[point(0.0, 0.0), point(6.0, 0.0)]],
+    };
+    let id = editor.model.allocate();
+    editor
+        .apply(Command::AddUnderlay {
+            id,
+            underlay: underlay.clone(),
+        })
+        .unwrap();
+    assert_eq!(editor.model.kind_of(id), Some(EntityKind::Underlay));
+    assert_eq!(compile(&editor.model).unwrap().content_hash(), hash);
+    assert_eq!(from_json(&to_json(&editor.model)).unwrap(), editor.model);
+
+    // A level cannot leave while a drawing lies on it, nodes or no nodes.
+    let empty = editor.model.allocate();
+    editor
+        .apply(Command::AddLevel {
+            id: empty,
+            level: Level::new("L3", Length::from_si(12.0)),
+        })
+        .unwrap();
+    editor
+        .apply(Command::UpdateUnderlay {
+            id,
+            underlay: Underlay {
+                level: empty,
+                ..underlay.clone()
+            },
+        })
+        .unwrap();
+    assert!(matches!(
+        editor.apply(Command::RemoveLevel { id: empty }),
+        Err(ModelError::Referenced { .. })
+    ));
+    assert!(editor.undo().unwrap());
+    assert_eq!(editor.model.underlays[&id], underlay);
+
+    let bad = Underlay {
+        name: "bad".into(),
+        segments: vec![[point(f64::NAN, 0.0), point(1.0, 0.0)]],
+        ..underlay.clone()
+    };
+    let bad_id = editor.model.allocate();
+    assert!(matches!(
+        editor.apply(Command::AddUnderlay {
+            id: bad_id,
+            underlay: bad
+        }),
+        Err(ModelError::Invalid(_))
+    ));
+    let missing = Underlay {
+        name: "lost".into(),
+        level: EntityId(u64::MAX - 1),
+        ..underlay
+    };
+    assert!(matches!(
+        editor.apply(Command::AddUnderlay {
+            id: bad_id,
+            underlay: missing
+        }),
+        Err(ModelError::Dangling { .. })
+    ));
+
+    editor.apply(Command::RemoveUnderlay { id }).unwrap();
+    assert!(editor.model.underlays.is_empty());
+    assert!(editor.undo().unwrap());
+    assert_eq!(editor.model.underlays.len(), 1);
+}
+
+#[test]
+fn format_v3_fixture_loads_with_its_underlay() {
+    let model = from_json(include_str!("fixtures/format_v3.json")).unwrap();
+    let underlay = &model.underlays[&EntityId(10)];
+    assert_eq!(underlay.level, model.base_level().unwrap());
+    assert_eq!(underlay.origin[1].si(), 2.0);
+    assert_eq!(underlay.segments.len(), 2);
+    assert_eq!(from_json(&to_json(&model)).unwrap(), model);
+    // Without its underlays the document is the migrated version 2 fixture.
+    let mut bare = model.clone();
+    bare.underlays.clear();
+    bare.next_id = 10;
+    assert_eq!(
+        bare,
+        from_json(include_str!("fixtures/format_v2.json")).unwrap()
+    );
+    let mut adrift: serde_json::Value = serde_json::from_str(&to_json(&model)).unwrap();
+    adrift["underlays"]["10"]["level"] = serde_json::json!(999);
+    assert!(matches!(
+        from_json(&adrift.to_string()),
+        Err(oa_model::format::FormatError::Corrupt(_))
+    ));
+}

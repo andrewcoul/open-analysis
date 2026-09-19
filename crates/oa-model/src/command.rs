@@ -52,7 +52,8 @@ pub enum Command {
         id: EntityId,
         level: Level,
     },
-    /// Refused while any node binds to the level, and for the last level.
+    /// Refused while any node or underlay binds to the level, and for the
+    /// last level.
     RemoveLevel {
         id: EntityId,
     },
@@ -161,6 +162,17 @@ pub enum Command {
         group: Group,
     },
     RemoveGroup {
+        id: EntityId,
+    },
+    AddUnderlay {
+        id: EntityId,
+        underlay: Underlay,
+    },
+    UpdateUnderlay {
+        id: EntityId,
+        underlay: Underlay,
+    },
+    RemoveUnderlay {
         id: EntityId,
     },
     SetGravity {
@@ -292,6 +304,16 @@ fn check_level(model: &Model, id: EntityId, level: &Level) -> Result<()> {
             "{} already sits at that elevation",
             model.describe(*other)
         )));
+    }
+    Ok(())
+}
+/// An underlay is drawn as it is stored, so every coordinate must be finite.
+fn check_underlay(underlay: &Underlay) -> Result<()> {
+    let finite = |p: &[Length; 2]| p.iter().all(|v| v.si().is_finite());
+    if !finite(&underlay.origin) || !underlay.segments.iter().flatten().all(finite) {
+        return Err(ModelError::Invalid(
+            "underlay coordinates must be finite".into(),
+        ));
     }
     Ok(())
 }
@@ -486,6 +508,28 @@ impl Command {
             RemoveGroup { id } => {
                 let (entity, groups) = remove(model, id)?;
                 removal_inverse(AddGroup { id, group: entity }, groups)
+            }
+            AddUnderlay { id, underlay } => {
+                check_underlay(&underlay)?;
+                add(model, id, underlay)?;
+                RemoveUnderlay { id }
+            }
+            UpdateUnderlay { id, underlay } => {
+                check_underlay(&underlay)?;
+                UpdateUnderlay {
+                    id,
+                    underlay: update(model, id, underlay)?,
+                }
+            }
+            RemoveUnderlay { id } => {
+                let (entity, groups) = remove(model, id)?;
+                removal_inverse(
+                    AddUnderlay {
+                        id,
+                        underlay: entity,
+                    },
+                    groups,
+                )
             }
             SetGravity { gravity } => {
                 if !gravity.si().is_finite() || gravity.si() <= 0.0 {

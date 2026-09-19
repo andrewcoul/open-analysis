@@ -330,6 +330,20 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
             let e = &model.groups[&id];
             f.push(text("name", "Name", &e.name));
         }
+        EntityKind::Underlay => {
+            let e = &model.underlays[&id];
+            f.push(text("name", "Name", &e.name));
+            f.push(entity_choice(
+                "level",
+                "Level",
+                model,
+                EntityKind::Level,
+                Some(e.level),
+            ));
+            for (i, axis) in ["Origin X", "Origin Y"].iter().enumerate() {
+                f.push(qty(&format!("o{i}"), axis, Role::Length, e.origin[i].si()));
+            }
+        }
     }
     Some((kind, f))
 }
@@ -561,6 +575,20 @@ fn command_for(
             let mut e = model.groups[&id].clone();
             e.name = name;
             (e != model.groups[&id]).then_some(Command::UpdateGroup { id, group: e })
+        }
+        EntityKind::Underlay => {
+            let mut e = model.underlays[&id].clone();
+            e.name = name;
+            e.level = v.entity("level", "Level", model, EntityKind::Level)?;
+            for i in 0..2 {
+                e.origin[i] = Length::from_si(v.qty(
+                    &format!("o{i}"),
+                    Role::Length,
+                    "Origin",
+                    e.origin[i].si(),
+                )?);
+            }
+            (e != model.underlays[&id]).then_some(Command::UpdateUnderlay { id, underlay: e })
         }
     })
 }

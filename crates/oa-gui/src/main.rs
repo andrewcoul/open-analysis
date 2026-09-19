@@ -4,6 +4,7 @@
 //! menu bar, command palette, and key bindings dispatch actions, and this file routes
 //! each one to a workspace method.
 mod actions;
+mod cad;
 mod camera;
 mod dialogs;
 mod document;
@@ -181,6 +182,7 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
     on!(OpenModel, |ws, _, window, cx| ws.open(window, cx));
     on!(SaveModel, |ws, _, window, cx| ws.save(window, cx));
     on!(SaveModelAs, |ws, _, window, cx| ws.save_as(window, cx));
+    on!(ImportCad, |ws, _, window, cx| ws.import_cad(window, cx));
     on!(Undo, |ws, _, window, cx| ws.undo(window, cx));
     on!(Redo, |ws, _, window, cx| ws.redo(window, cx));
     on!(SelectAll, |ws, _, _, cx| ws.select_all(cx));
@@ -256,6 +258,8 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
         .toggle_option(|o| o.node_labels = !o.node_labels, cx));
     on!(ToggleFrameLabels, |ws, _, _, cx| ws
         .toggle_option(|o| o.frame_labels = !o.frame_labels, cx));
+    on!(ToggleUnderlays, |ws, _, _, cx| ws
+        .toggle_option(|o| o.hide_underlays = !o.hide_underlays, cx));
     on!(ToggleDeformedShape, |ws, _, _, cx| ws
         .toggle_option(|o| o.deformed = !o.deformed, cx));
     on!(ToggleUpAxis, |ws, _, _, cx| ws.toggle_up_axis(cx));
