@@ -1,8 +1,10 @@
 //! The 3D model view: an orthographic wireframe of nodes, frames, and
 //! shells painted on a canvas, with orbit, pan, zoom, and click selection.
 //! The draw tools live here too: Node places a node on the active level
-//! where you click, Frame joins two clicked nodes, Shell four. Finished
-//! shapes are reported as [`ViewportEvent`]s for the workspace to turn into
+//! where you click, Frame joins two clicked nodes, Shell four. All three
+//! snap to the frames, shell edges, and underlay lines in view (see
+//! [`crate::snap`]), and Frame and Shell make a node where a snapped click
+//! finds none. Finished shapes are reported as [`ViewportEvent`]s for the workspace to turn into
 //! commands. The view can show the whole model or one level's floor, with
 //! or without the storeys beside it as context; the active level is also
 //! the working plane the Node tool places on. The view controls sit in the
@@ -12,6 +14,7 @@ use crate::actions::*;
 use crate::camera::{Camera, UpAxis, ViewPreset};
 use crate::document::Document;
 use crate::results::{Diagram, labelled_stations, peak};
+use crate::snap;
 use crate::text::{UNITS, fmt_q};
 use gpui_kit::component::button::{Button, ButtonGroup};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
@@ -34,6 +37,8 @@ pub struct DisplayOptions {
     pub diagram: Option<Diagram>,
     /// Inverted so that the default shows them.
     pub hide_underlays: bool,
+    /// The object snaps the draw tools use.
+    pub snaps: snap::Modes,
 }
 
 /// What a click in the view does.
@@ -43,9 +48,10 @@ pub enum Tool {
     Select,
     /// Click empty space to place a node on the active level.
     Node,
-    /// Click node I, then node J. The next frame starts from J.
+    /// Click node I, then node J, or snap points to make them at. The next
+    /// frame starts from J.
     Frame,
-    /// Click four nodes in order around the shell.
+    /// Click four nodes or snap points in order around the shell.
     Shell,
 }
 
@@ -74,18 +80,27 @@ pub enum ViewMode {
     LevelContext,
 }
 
+/// A corner of the shape being drawn: a node the model has, or a snapped
+/// point on a level where one is made when the shape is finished.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Pick {
+    Node(EntityId),
+    Point { position: [f64; 3], level: EntityId },
+}
+
 /// A shape finished with a draw tool, for the workspace to add to the model,
 /// or a double-click asking for the selection's properties.
 pub enum ViewportEvent {
     /// A node on a level, at that level's exact elevation.
     PlaceNode { position: [f64; 3], level: EntityId },
-    DrawFrame([EntityId; 2]),
-    DrawShell([EntityId; 4]),
+    DrawFrame([Pick; 2]),
+    DrawShell([Pick; 4]),
     OpenProperties,
 }
 
-/// Plan grid the Node tool snaps X and Y to: one foot, held in metres like
-/// the model. Z is never snapped; it is the level's elevation.
+/// Plan grid the Node tool snaps X and Y to when no object snap is in reach:
+/// one foot, held in metres like the model. Z is never snapped; it is the
+/// level's elevation.
 const SNAP: f64 = 0.3048;
 
 /// Screen positions of the last painted frame, used for picking. Only what
@@ -96,6 +111,16 @@ struct Snapshot {
     nodes: Vec<(EntityId, Point<Pixels>)>,
     frames: Vec<(EntityId, Point<Pixels>, Point<Pixels>)>,
     shells: Vec<(EntityId, [Point<Pixels>; 4])>,
+    /// Lines the draw tools snap to: frames, shell edges, and underlays.
+    /// Empty while nothing is being drawn.
+    segments: Vec<snap::Segment>,
+}
+
+/// Where a draw-tool click that misses every node would land.
+struct Aim {
+    position: [f64; 3],
+    level: EntityId,
+    snap: Option<snap::Hit>,
 }
 
 struct Drag {
@@ -117,8 +142,8 @@ pub struct Viewport {
     /// levels, which the model layer does not allow.
     active_level: Option<EntityId>,
     tool: Tool,
-    /// Nodes the Frame or Shell tool has taken so far, in click order.
-    picked: Vec<EntityId>,
+    /// Corners the Frame or Shell tool has taken so far, in click order.
+    picked: Vec<Pick>,
     /// Pointer position while it is over the view and no drag is running.
     hover: Option<Point<Pixels>>,
     hover_node: Option<EntityId>,
@@ -135,7 +160,7 @@ impl Viewport {
     pub fn new(document: Entity<Document>, cx: &mut Context<Self>) -> Self {
         let subscription = cx.observe(&document, |this, document, cx| {
             let model = document.read(cx).model();
-            this.picked.retain(|id| model.kind_of(*id).is_some());
+            this.resolve_picks(model);
             this.resolve_level(model);
             cx.notify();
         });
@@ -180,7 +205,7 @@ impl Viewport {
     pub fn tool(&self) -> Tool {
         self.tool
     }
-    pub fn picked(&self) -> &[EntityId] {
+    pub fn picked(&self) -> &[Pick] {
         &self.picked
     }
     /// Focus here puts the single-key bindings in reach.
@@ -242,6 +267,21 @@ impl Viewport {
             .is_none_or(|l| !model.levels.contains_key(&l))
         {
             self.active_level = model.base_level();
+        }
+    }
+    /// Keeps the corners taken so far pointing at what the model has: a
+    /// deleted node goes, and a point where a node now stands becomes it.
+    fn resolve_picks(&mut self, model: &Model) {
+        self.picked.retain(|pick| match pick {
+            Pick::Node(id) => model.nodes.contains_key(id),
+            Pick::Point { level, .. } => model.levels.contains_key(level),
+        });
+        for pick in &mut self.picked {
+            if let Pick::Point { position, .. } = *pick
+                && let Some(id) = node_at_position(model, position)
+            {
+                *pick = Pick::Node(id);
+            }
         }
     }
     /// Makes a level the active one. A partly drawn shape is dropped, and
@@ -435,26 +475,24 @@ impl Viewport {
                     cx.emit(ViewportEvent::OpenProperties);
                 }
             }
-            Tool::Node => match self.node_at(position) {
-                Some(id) => self
+            // No placement when the plane is edge-on: the prompt says so.
+            Tool::Node => match self.pick_at(position, self.document.read(cx).model()) {
+                Some(Pick::Node(id)) => self
                     .document
                     .update(cx, |document, cx| document.set_selection(vec![id], cx)),
-                None => {
-                    // No placement when the plane is edge-on: the prompt says so.
-                    let placed = self.work_plane_point(position, self.document.read(cx).model());
-                    if let Some((position, level)) = placed {
-                        cx.emit(ViewportEvent::PlaceNode { position, level });
-                    }
+                Some(Pick::Point { position, level }) => {
+                    cx.emit(ViewportEvent::PlaceNode { position, level });
                 }
+                None => {}
             },
             Tool::Frame | Tool::Shell => {
-                let Some(id) = self.node_at(position) else {
+                let Some(pick) = self.pick_at(position, self.document.read(cx).model()) else {
                     return;
                 };
-                if self.picked.last() == Some(&id) {
+                if self.picked.last() == Some(&pick) {
                     return;
                 }
-                self.picked.push(id);
+                self.picked.push(pick);
                 if self.picked.len() == self.tool.picks() {
                     match self.tool {
                         Tool::Frame => {
@@ -499,6 +537,51 @@ impl Viewport {
             .unproject(to_f64(position), to_f64(centre), Some((2, elevation)));
         let snap = |v: f64| (v / SNAP).round() * SNAP;
         Some(([snap(p[0]), snap(p[1]), elevation], level))
+    }
+
+    /// Where a draw-tool click that misses every node would land: the object
+    /// snap in reach, brought onto the active level in plan, or for the Node
+    /// tool the plan grid. Frame and Shell make nodes only at snap points.
+    /// A perpendicular is dropped from the last corner taken.
+    fn aim(&self, position: Point<Pixels>, model: &Model) -> Option<Aim> {
+        let (grid, level) = self.work_plane_point(position, model)?;
+        let from = self.picked.last().and_then(|pick| match pick {
+            Pick::Node(id) => model.nodes.get(id).map(|n| n.position.map(|v| v.si())),
+            Pick::Point { position, .. } => Some(*position),
+        });
+        let snap = snap::find(
+            &self.snapshot.borrow().segments,
+            to_f64(position),
+            from.map(|p| [p[0], p[1]]),
+            self.options.snaps,
+        );
+        match (snap, self.tool) {
+            (Some(hit), _) => Some(Aim {
+                position: [hit.world[0], hit.world[1], grid[2]],
+                level,
+                snap,
+            }),
+            (None, Tool::Node) => Some(Aim {
+                position: grid,
+                level,
+                snap: None,
+            }),
+            (None, _) => None,
+        }
+    }
+
+    /// What a draw-tool click takes: the node in reach, or where it aims. The
+    /// snap aperture is wider than a node's reach, so a click can miss a node
+    /// and still snap onto it; that is the node too, not a second one there.
+    fn pick_at(&self, position: Point<Pixels>, model: &Model) -> Option<Pick> {
+        if let Some(id) = self.node_at(position) {
+            return Some(Pick::Node(id));
+        }
+        let Aim { position, level, .. } = self.aim(position, model)?;
+        Some(match node_at_position(model, position) {
+            Some(id) => Pick::Node(id),
+            None => Pick::Point { position, level },
+        })
     }
 
     /// The node within reach of the pointer, nearest first.
@@ -576,6 +659,16 @@ fn point_in_polygon(p: (f64, f64), poly: &[(f64, f64)]) -> bool {
     inside
 }
 
+/// The node standing at a position, to a micron, so a snapped point on an
+/// existing node takes it rather than stacking a second one there.
+pub fn node_at_position(model: &Model, position: [f64; 3]) -> Option<EntityId> {
+    model
+        .nodes
+        .iter()
+        .find(|(_, node)| (0..3).all(|i| (node.position[i].si() - position[i]).abs() < 1e-6))
+        .map(|(id, _)| *id)
+}
+
 /// The point between two member ends at a plane of constant Z, when the
 /// member crosses it.
 fn plane_crossing(a: [f64; 3], b: [f64; 3], elevation: f64) -> Option<[f64; 3]> {
@@ -632,6 +725,7 @@ struct Palette {
     /// Storeys shown beside the active level, and members spanning to them.
     context: Hsla,
     underlay: Hsla,
+    snap: Hsla,
     axes: [Hsla; 3],
 }
 
@@ -694,8 +788,11 @@ struct Scene {
     hover_node: Option<Point<Pixels>>,
     /// Where the line from the last picked node is heading.
     rubber: Option<Point<Pixels>>,
-    /// Where the Node tool would place a node.
+    /// Where a click would make a node: the Node tool's, or a Frame or
+    /// Shell corner at a snap point.
     ghost: Option<Point<Pixels>>,
+    /// The object snap in reach, marked on the geometry it belongs to.
+    snap_mark: Option<(snap::Kind, Point<Pixels>)>,
 }
 
 fn to_point(x: f64, y: f64) -> Point<Pixels> {
@@ -770,6 +867,17 @@ impl Viewport {
             bounds,
             ..Default::default()
         };
+        // Lines are only worth recording while a tool can snap to them.
+        let snapping = self.tool != Tool::Select && self.options.snaps.any();
+        let mut segments = vec![];
+        let mut snappable = |world: [[f64; 3]; 2], screen: [Point<Pixels>; 2]| {
+            if snapping {
+                segments.push(snap::Segment {
+                    world,
+                    screen: screen.map(to_f64),
+                });
+            }
+        };
         let nodes = model
             .nodes
             .iter()
@@ -790,11 +898,13 @@ impl Viewport {
             .iter()
             .filter(|(id, _)| frame_shown(id))
             .filter_map(|(id, frame)| {
-                let a = positions.get(&frame.nodes[0])?;
-                let b = positions.get(&frame.nodes[1])?;
-                let (a, _) = project(*a);
-                let (b, _) = project(*b);
+                let ends = [
+                    *positions.get(&frame.nodes[0])?,
+                    *positions.get(&frame.nodes[1])?,
+                ];
+                let [a, b] = ends.map(|p| project(p).0);
                 snapshot.frames.push((*id, a, b));
+                snappable(ends, [a, b]);
                 Some(Segment {
                     a,
                     b,
@@ -820,6 +930,11 @@ impl Viewport {
             .filter_map(|(id, shell)| {
                 let (points, depth) = quad(&shell.nodes)?;
                 snapshot.shells.push((*id, points));
+                for i in 0..4 {
+                    let j = (i + 1) % 4;
+                    let edge = [positions[&shell.nodes[i]], positions[&shell.nodes[j]]];
+                    snappable(edge, [points[i], points[j]]);
+                }
                 Some(Quad {
                     points,
                     depth,
@@ -831,14 +946,19 @@ impl Viewport {
         // A drawing can run to many thousands of segments, most of them off
         // screen once zoomed in, so those wholly to one side are dropped.
         let underlays = underlay_segments()
-            .map(|[a, b]| (project(a).0, project(b).0))
-            .filter(|(a, b)| {
+            .map(|world| (world, project(world[0]).0, project(world[1]).0))
+            .filter(|(_, a, b)| {
                 a.x.max(b.x) >= bounds.left()
                     && a.x.min(b.x) <= bounds.right()
                     && a.y.max(b.y) >= bounds.top()
                     && a.y.min(b.y) <= bounds.bottom()
             })
+            .map(|(world, a, b)| {
+                snappable(world, [a, b]);
+                (a, b)
+            })
             .collect();
+        snapshot.segments = segments;
 
         // The storeys beside the active level, and the members spanning to
         // them, as unpickable context.
@@ -1047,11 +1167,16 @@ impl Viewport {
             }
         }
 
-        // Draw-tool feedback.
+        // Draw-tool feedback, aimed with this frame's geometry.
+        *self.snapshot.borrow_mut() = snapshot;
         let picked: Vec<Point<Pixels>> = self
             .picked
             .iter()
-            .filter_map(|id| positions.get(id).map(|p| project(*p).0))
+            .filter_map(|pick| match pick {
+                Pick::Node(id) => positions.get(id).copied(),
+                Pick::Point { position, .. } => Some(*position),
+            })
+            .map(|p| project(p).0)
             .collect();
         let hover_node = match self.tool {
             Tool::Select => None,
@@ -1059,14 +1184,19 @@ impl Viewport {
                 .hover_node
                 .and_then(|id| positions.get(&id).map(|p| project(*p).0)),
         };
-        let rubber = match self.tool {
-            Tool::Frame | Tool::Shell if !picked.is_empty() => hover_node.or(self.hover),
+        let aim = match (self.tool, self.hover_node, self.hover) {
+            (Tool::Select, ..) => None,
+            (_, None, Some(hover)) => self.aim(hover, model),
             _ => None,
         };
-        let ghost = match (self.tool, self.hover_node, self.hover) {
-            (Tool::Node, None, Some(hover)) => self
-                .work_plane_point(hover, model)
-                .map(|(p, _)| project(p).0),
+        let ghost = aim.as_ref().map(|aim| project(aim.position).0);
+        let snap_mark = aim
+            .and_then(|aim| aim.snap)
+            .map(|hit| (hit.kind, to_point(hit.screen.0, hit.screen.1)));
+        let rubber = match self.tool {
+            Tool::Frame | Tool::Shell if !picked.is_empty() => {
+                hover_node.or(ghost).or(self.hover)
+            }
             _ => None,
         };
 
@@ -1083,7 +1213,6 @@ impl Viewport {
             (axis_end([0.0, 1.0, 0.0]), "Y"),
             (axis_end([0.0, 0.0, 1.0]), "Z"),
         ];
-        *self.snapshot.borrow_mut() = snapshot;
         Scene {
             bounds,
             nodes,
@@ -1106,6 +1235,7 @@ impl Viewport {
             hover_node,
             rubber,
             ghost,
+            snap_mark,
         }
     }
 }
@@ -1177,6 +1307,35 @@ fn paint_ring(centre: Point<Pixels>, diameter: f32, width: f32, color: Hsla, win
         color,
         BorderStyle::Solid,
     ));
+}
+
+/// The marker for an object snap, in the shapes CAD packages use: a square
+/// on an endpoint, a triangle on a midpoint, a cross on an intersection, and
+/// a right angle on a perpendicular. The status bar's toggles match.
+fn snap_glyph(kind: snap::Kind, centre: Point<Pixels>) -> Vec<(Point<Pixels>, Point<Pixels>)> {
+    let at = |x: f32, y: f32| point(centre.x + px(x), centre.y + px(y));
+    let outline: &[(f32, f32)] = match kind {
+        snap::Kind::Endpoint => &[(-6., -6.), (6., -6.), (6., 6.), (-6., 6.), (-6., -6.)],
+        snap::Kind::Midpoint => &[(0., -7.), (7., 5.), (-7., 5.), (0., -7.)],
+        snap::Kind::Intersection => {
+            return vec![
+                (at(-6., -6.), at(6., 6.)),
+                (at(6., -6.), at(-6., 6.)),
+            ];
+        }
+        snap::Kind::Perpendicular => {
+            return vec![
+                (at(-6., -6.), at(-6., 6.)),
+                (at(-6., 6.), at(6., 6.)),
+                (at(-6., 0.), at(0., 0.)),
+                (at(0., 0.), at(0., 6.)),
+            ];
+        }
+    };
+    outline
+        .windows(2)
+        .map(|w| (at(w[0].0, w[0].1), at(w[1].0, w[1].1)))
+        .collect()
 }
 
 pub(crate) fn paint_label(
@@ -1357,6 +1516,12 @@ fn paint_scene(
             if let Some(p) = scene.ghost {
                 let bounds = Bounds::centered_at(p, size(px(7.), px(7.)));
                 window.paint_quad(fill(bounds, palette.selected.opacity(0.6)));
+            }
+            if let Some((kind, p)) = scene.snap_mark {
+                stroke_segments(snap_glyph(kind, p).into_iter(), px(2.), palette.snap, window);
+                let label = SharedString::new_static(kind.label());
+                let origin = point(p.x + px(12.), p.y + px(6.));
+                paint_label(&label, origin, palette.snap, &style, window, cx);
             }
             for node in &scene.nodes {
                 if let Some(label) = &node.label {
@@ -1714,6 +1879,7 @@ impl Render for Viewport {
             label: theme.muted_foreground,
             context: theme.muted_foreground.opacity(0.45),
             underlay: theme.chart_4.opacity(0.6),
+            snap: theme.success,
             axes: [theme.red, theme.green, theme.blue],
         };
         let background = theme.background;

@@ -161,12 +161,29 @@ Actions are routed to `Workspace` methods in `main.rs`.
   whole-model view, only the active level's in a level view. View >
   Underlays hides them. Underlays are listed in the model browser, edited in
   the property editor (name, level, origin), deleted like anything else, and
-  undoable. They cannot be picked in the view.
+  undoable. They cannot be picked in the view, but the draw tools snap to
+  them.
+- Object snaps (`snap.rs`): endpoint, midpoint, intersection, and
+  perpendicular, on frames, shell edges, and underlay lines alike, for the
+  Node, Frame, and Shell tools. The search is in screen space within 10 px of
+  the pointer; intersections and perpendiculars are worked out in plan, and
+  a perpendicular is dropped from the last corner taken, so a pointer resting
+  anywhere on a line finds its foot. The marker is drawn on the geometry
+  (square, triangle, cross, right angle) and the point itself always lands
+  on the active level at the snap's X and Y, so in a 3D view a snap on
+  another storey places below or above it. Frame and Shell take a snap point
+  as a corner and make its node with the shape in one undo step, reusing a
+  node already standing there. With no snap in reach the Node tool falls
+  back to the 1 ft grid. Four icon toggles at the right of the status bar,
+  Draw > Snap, and the command palette switch each snap; the setting lasts
+  for the session. Context storeys and level-view crossings are not snapped
+  to.
 
 ## Not yet done
 
-- Snapping to underlay geometry. The draw tools ignore underlays; a snap
-  toggle is to come. DWG is not read: save as DXF from the CAD package.
+- Underlays: arcs and circles are chords by the time they are stored, so
+  there is no centre, quadrant, or tangent snap. DWG is not read: save as
+  DXF from the CAD package.
   Text, hatches, splines, meshes, and dimensions are skipped, and the import
   reports how many entities it skipped; an insert arrayed in rows and columns
   is placed once. Invisible entities and layers switched off are left out,
@@ -174,8 +191,9 @@ Actions are routed to `Workspace` methods in `main.rs`.
   drawing whose nested blocks expand past two million entities and segments
   is refused.
 
-- Snapping the Node tool to anything but the 1 ft grid: no snapping to
-  existing nodes, frame ends, or a story level, and no box selection.
+- A node made at a snap point on a frame's span does not split the frame,
+  so it is not connected to it. Snap settings are not saved. No box
+  selection.
 - Grids. There is no grid system yet; levels exist (see below) but no plan
   grid lines to snap to.
 - SI display. Every field shows US customary units through

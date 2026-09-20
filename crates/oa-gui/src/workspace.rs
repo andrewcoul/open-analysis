@@ -13,8 +13,10 @@ use crate::loads::{LoadPanel, Section};
 use crate::prompt::{AnalysisSummary, Gates, PromptState, render_prompt, selection_summary};
 use crate::properties::{EditorTab, PropertyEditor};
 use crate::results::Diagram;
+use crate::snap;
 use crate::text;
-use crate::viewport::{Tool, ViewMode, Viewport, ViewportEvent};
+use crate::viewport::{Pick, Tool, ViewMode, Viewport, ViewportEvent, node_at_position};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{
     Command as CommandPalette, CommandGroup, CommandItem, CommandState,
 };
@@ -22,8 +24,8 @@ use gpui_kit::component::menu::AppMenuBar;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, GlobalState, Root, TitleBar, WindowExt as _, h_flex,
-    v_flex,
+    ActiveTheme as _, Disableable as _, GlobalState, Icon, Root, Selectable as _, Sizable as _,
+    TitleBar, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -288,6 +290,18 @@ impl Workspace {
                         .disabled(gates.frame.is_some()),
                     MenuItem::action("Shell from four selected nodes", AddShellFromSelected)
                         .disabled(gates.shell.is_some()),
+                    MenuItem::separator(),
+                    MenuItem::submenu(Menu {
+                        name: "Snap".into(),
+                        items: snap::Kind::ALL
+                            .iter()
+                            .map(|&kind| {
+                                MenuItem::action(kind.label(), ToggleSnap(kind))
+                                    .checked(options.snaps.has(kind))
+                            })
+                            .collect(),
+                        disabled: false,
+                    }),
                 ],
                 disabled: false,
             },
@@ -692,25 +706,72 @@ impl Workspace {
         };
         self.add_shell([*n0, *n1, *n2, *n3], window, cx);
     }
+    /// The nodes under a drawn shape's corners, with the commands that make
+    /// the ones a snapped point still needs, and the first id left unused. A
+    /// point where a node already stands takes that node.
+    fn corner_nodes<const N: usize>(&self, picks: [Pick; N], cx: &App) -> ([EntityId; N], Vec<Command>, u64) {
+        let model = self.document.read(cx).model();
+        let mut next = model.next_id;
+        let mut commands: Vec<Command> = vec![];
+        let mut made: Vec<([f64; 3], EntityId)> = vec![];
+        let mut names: Vec<String> = vec![];
+        let nodes = picks.map(|pick| match pick {
+            Pick::Node(id) => id,
+            Pick::Point { position, level } => node_at_position(model, position)
+                .or_else(|| made.iter().find(|(p, _)| *p == position).map(|(_, id)| *id))
+                .unwrap_or_else(|| {
+                    let id = EntityId(next);
+                    next += 1;
+                    let name = (model.nodes.len() + 1..)
+                        .map(|n| format!("N{n}"))
+                        .find(|name| model.find::<Node>(name).is_none() && !names.contains(name))
+                        .expect("unbounded");
+                    names.push(name.clone());
+                    let node = Node::new(name, level, position.map(Length::from_metres));
+                    commands.push(Command::AddNode { id, node });
+                    made.push((position, id));
+                    id
+                }),
+        });
+        (nodes, commands, next)
+    }
+    /// One undo step for a drawn shape and the nodes made for it.
+    fn apply_drawn(&mut self, mut commands: Vec<Command>, shape: Command, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        let command = if commands.is_empty() {
+            shape
+        } else {
+            commands.push(shape);
+            Command::Batch { commands }
+        };
+        if self.apply(command, window, cx) {
+            self.select(vec![id], cx);
+        }
+    }
     /// A frame from I to J with the first material and section.
     fn add_frame(&mut self, nodes: [EntityId; 2], window: &mut Window, cx: &mut Context<Self>) {
+        self.draw_frame(nodes.map(Pick::Node), window, cx);
+    }
+    fn draw_frame(&mut self, corners: [Pick; 2], window: &mut Window, cx: &mut Context<Self>) {
         let (material, section) = match self.first_material_and_section(cx) {
             Ok(x) => x,
             Err(e) => return self.error(e, window, cx),
         };
+        let (nodes, commands, next) = self.corner_nodes(corners, cx);
         let model = self.document.read(cx).model();
         let frame = Frame::new(unused_name::<Frame>(model, "F"), nodes, material, section);
-        let id = EntityId(model.next_id);
-        if self.apply(Command::AddFrame { id, frame }, window, cx) {
-            self.select(vec![id], cx);
-        }
+        let id = EntityId(next);
+        self.apply_drawn(commands, Command::AddFrame { id, frame }, id, window, cx);
     }
     /// An 8 in shell on four nodes with the first material.
     fn add_shell(&mut self, nodes: [EntityId; 4], window: &mut Window, cx: &mut Context<Self>) {
+        self.draw_shell(nodes.map(Pick::Node), window, cx);
+    }
+    fn draw_shell(&mut self, corners: [Pick; 4], window: &mut Window, cx: &mut Context<Self>) {
         let material = match self.first_material_and_section(cx) {
             Ok((material, _)) => material,
             Err(e) => return self.error(e, window, cx),
         };
+        let (nodes, commands, next) = self.corner_nodes(corners, cx);
         let model = self.document.read(cx).model();
         let shell = Shell {
             name: unused_name::<Shell>(model, "SH"),
@@ -720,10 +781,8 @@ impl Workspace {
             formulation: Default::default(),
             drilling_ratio: 1e-3,
         };
-        let id = EntityId(model.next_id);
-        if self.apply(Command::AddShell { id, shell }, window, cx) {
-            self.select(vec![id], cx);
-        }
+        let id = EntityId(next);
+        self.apply_drawn(commands, Command::AddShell { id, shell }, id, window, cx);
     }
     /// A node at a point the Node tool clicked, on the active level.
     fn place_node(
@@ -757,8 +816,8 @@ impl Workspace {
             ViewportEvent::PlaceNode { position, level } => {
                 self.place_node(*position, *level, window, cx)
             }
-            ViewportEvent::DrawFrame(nodes) => self.add_frame(*nodes, window, cx),
-            ViewportEvent::DrawShell(nodes) => self.add_shell(*nodes, window, cx),
+            ViewportEvent::DrawFrame(corners) => self.draw_frame(*corners, window, cx),
+            ViewportEvent::DrawShell(corners) => self.draw_shell(*corners, window, cx),
             ViewportEvent::OpenProperties => self.show_properties(window, cx),
         }
     }
@@ -1007,7 +1066,13 @@ impl Workspace {
                         Box::new(AddShellFromSelected),
                         gates.shell,
                     ),
-                ],
+                ]
+                .into_iter()
+                .chain(snap::Kind::ALL.iter().map(|&kind| {
+                    let label = format!("Snap to {}", kind.label().to_lowercase());
+                    item(&on(&label, options.snaps.has(kind)), Box::new(ToggleSnap(kind)), None)
+                }))
+                .collect(),
             ),
             (
                 "Define",
@@ -1176,6 +1241,13 @@ impl Workspace {
             viewport.set_options(options, cx);
         });
     }
+    pub fn toggle_snap(&mut self, kind: snap::Kind, cx: &mut Context<Self>) {
+        self.viewport.update(cx, |viewport, cx| {
+            let mut options = viewport.options();
+            options.snaps.toggle(kind);
+            viewport.set_options(options, cx);
+        });
+    }
     pub fn show_diagram(&mut self, diagram: Option<Diagram>, cx: &mut Context<Self>) {
         self.viewport.update(cx, |viewport, cx| {
             let mut options = viewport.options();
@@ -1279,7 +1351,7 @@ impl Workspace {
                         .child(heading("Levels"))
                         .child("Z is up. Every node belongs to a level, at an offset above its elevation; Define > Levels adds, moves, and removes levels. The active level is where the Node tool places nodes and what the level views show; moving a level carries its nodes with it.")
                         .child(heading("Drawing"))
-                        .child("Node places a node where you click, on the active level. Frame joins node I to node J and carries on from J. Shell takes four nodes in order around it. With nodes already selected, Frame and Shell draw on them at once. Loads go on the selected nodes or frames."),
+                        .child("Node places a node where you click, on the active level. Frame joins node I to node J and carries on from J. Shell takes four nodes in order around it. The draw tools snap to the ends, midpoints, and intersections of frames, shell edges, and underlay lines, and to the foot of the perpendicular from the last point; a snapped point lands on the active level, and Frame and Shell make a node there if none stands on it. The icons at the right of the status bar, or Draw > Snap, switch each snap on and off. With nodes already selected, Frame and Shell draw on them at once. Loads go on the selected nodes or frames."),
                 )
         });
     }
@@ -1299,7 +1371,10 @@ impl Workspace {
             picked: viewport
                 .picked()
                 .iter()
-                .filter_map(|id| model.nodes.get(id).map(|n| n.name.clone()))
+                .filter_map(|pick| match pick {
+                    Pick::Node(id) => model.nodes.get(id).map(|n| n.name.clone()),
+                    Pick::Point { .. } => Some("a new node".into()),
+                })
                 .collect(),
             analysis: document.analysis().map(|analysis| AnalysisSummary {
                 combinations: analysis
@@ -1339,6 +1414,7 @@ impl Workspace {
         let problems = document.problems();
         let theme = cx.theme();
         let (warning, muted, success) = (theme.warning, theme.muted_foreground, theme.success);
+        let primary = theme.primary;
         let (results, results_color) = match document.results_state() {
             ResultsState::Current => ("Results current", success),
             ResultsState::Stale => ("Results out of date · Ctrl+R", warning),
@@ -1374,6 +1450,22 @@ impl Workspace {
                 )
             })
             .unwrap_or_else(|| "No level".into());
+        let modes = viewport.options().snaps;
+        let snaps = h_flex().gap_0p5().children(snap::Kind::ALL.map(|kind| {
+            let on = modes.has(kind);
+            Button::new(kind.label())
+                .xsmall()
+                .ghost()
+                .compact()
+                .icon(Icon::default().data(snap_icon(kind)).text_color(if on { primary } else { muted }))
+                .selected(on)
+                .tooltip(format!(
+                    "Snap to {}: {}",
+                    kind.label().to_lowercase(),
+                    if on { "on" } else { "off" }
+                ))
+                .on_click(move |_, window, cx| window.dispatch_action(Box::new(ToggleSnap(kind)), cx))
+        }));
         StatusBar::new()
             .left(
                 h_flex()
@@ -1415,6 +1507,17 @@ impl Workspace {
             .right(div().text_xs().text_color(muted).child(level))
             .right(div().text_xs().text_color(muted).child(shown))
             .right(div().text_xs().text_color(muted).child(view))
+            .right(snaps)
+    }
+}
+
+/// The status bar's icon for a snap: the marker the view draws at one.
+fn snap_icon(kind: snap::Kind) -> &'static [u8] {
+    match kind {
+        snap::Kind::Endpoint => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14"/></svg>"#,
+        snap::Kind::Midpoint => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 5 20 19H4Z"/></svg>"#,
+        snap::Kind::Intersection => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 5l14 14M19 5 5 19"/></svg>"#,
+        snap::Kind::Perpendicular => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4v15h15M5 12h7v7"/></svg>"#,
     }
 }
 
