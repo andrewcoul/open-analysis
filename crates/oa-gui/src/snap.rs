@@ -8,8 +8,9 @@
 /// How near the pointer a snap point must be, in pixels.
 pub const APERTURE: f64 = 10.0;
 
-/// Segments near the pointer tested pairwise for intersections. Dense line
-/// work under the pointer is cut off here rather than squared.
+/// Segments near the pointer tested for intersections, each against every
+/// line in view. Dense line work under the pointer is cut off here rather
+/// than squared; the other snaps, one pass each, see all of it.
 const MAX_NEAR: usize = 32;
 
 /// In priority order: between snap points as near as each other, the earlier wins.
@@ -175,7 +176,6 @@ pub fn find(
         .filter(|(_, d)| *d <= APERTURE)
         .collect();
     near.sort_by(|a, b| a.1.total_cmp(&b.1));
-    near.truncate(MAX_NEAR);
 
     let mut best: Option<(Hit, f64)> = None;
     let mut offer = |kind: Kind, world: [f64; 3], screen: (f64, f64)| {
@@ -201,7 +201,7 @@ pub fn find(
         from.filter(|_| modes.perpendicular)
             .and_then(|p| plan_foot(s, p))
     };
-    for (i, (s, _)) in near.iter().enumerate() {
+    for (s, _) in &near {
         for t in [0.0, 1.0] {
             offer(Kind::Endpoint, s.world_at(t), s.screen_at(t));
         }
@@ -209,11 +209,15 @@ pub fn find(
         if let Some(t) = foot(s) {
             offer(Kind::Perpendicular, s.world_at(t), s.screen_at(t));
         }
-        for (other, _) in &near[i + 1..] {
-            if let Some((t, u)) = plan_crossing(s, other) {
-                // Lines on different levels cross in plan at two places on screen.
-                offer(Kind::Intersection, s.world_at(t), s.screen_at(t));
-                offer(Kind::Intersection, other.world_at(u), other.screen_at(u));
+    }
+    if modes.intersection {
+        // Lines on different levels cross in plan at two places on screen, and
+        // in an oblique view only one of the two lines need be under the pointer.
+        for (s, _) in near.iter().take(MAX_NEAR) {
+            for other in segments.iter().filter(|other| !std::ptr::eq(*s, *other)) {
+                if let Some((t, _)) = plan_crossing(s, other) {
+                    offer(Kind::Intersection, s.world_at(t), s.screen_at(t));
+                }
             }
         }
     }
@@ -231,7 +235,8 @@ pub fn find(
 
 #[cfg(test)]
 mod tests {
-    use super::{Hit, Kind, Modes, Segment, find};
+    use super::{Hit, Kind, MAX_NEAR, Modes, Segment, find};
+    use crate::camera::Camera;
 
     /// A plan view at 10 px/m with Y up the screen.
     fn seg(a: [f64; 3], b: [f64; 3]) -> Segment {
@@ -378,5 +383,47 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hit.world, [4.0, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn an_oblique_view_still_finds_the_plan_crossing_a_storey_up() {
+        // Seen from an angle the beam is painted well away from the point on
+        // the underlay line it crosses in plan.
+        let camera = Camera::default();
+        let oblique = |a: [f64; 3], b: [f64; 3]| Segment {
+            world: [a, b],
+            screen: [a, b].map(|p| {
+                let (x, y, _) = camera.project(p, (0.0, 0.0));
+                (x, y)
+            }),
+        };
+        let lines = [
+            oblique([0.0, 5.0, 0.0], [12.0, 5.0, 0.0]),
+            oblique([5.0, 0.0, 3.0], [5.0, 12.0, 3.0]),
+        ];
+        let (x, y, _) = camera.project([5.0, 5.0, 0.0], (0.0, 0.0));
+        let hit = find(&lines, (x, y), None, only(Kind::Intersection)).unwrap();
+        assert_eq!(hit.world, [5.0, 5.0, 0.0]);
+        // And on the beam, over the same plan point.
+        let (x, y, _) = camera.project([5.0, 5.0, 3.0], (0.0, 0.0));
+        let hit = find(&lines, (x, y), None, only(Kind::Intersection)).unwrap();
+        assert_eq!(hit.world, [5.0, 5.0, 3.0]);
+    }
+
+    #[test]
+    fn dense_line_work_does_not_hide_an_endpoint() {
+        // More lines pass under the pointer than are tested for crossings,
+        // all of them nearer than the one line that ends here.
+        let mut lines: Vec<Segment> = (0..MAX_NEAR)
+            .map(|i| {
+                let y = 0.01 * i as f64;
+                plan([-50.0, y], [50.0, y])
+            })
+            .collect();
+        lines.push(plan([0.0, -0.5], [0.0, -10.0]));
+        assert_eq!(
+            xy(find(&lines, (0.0, 0.0), None, only(Kind::Endpoint))),
+            Some((Kind::Endpoint, [0.0, -0.5]))
+        );
     }
 }

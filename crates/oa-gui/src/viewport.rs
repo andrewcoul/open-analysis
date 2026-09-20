@@ -475,25 +475,19 @@ impl Viewport {
                     cx.emit(ViewportEvent::OpenProperties);
                 }
             }
-            Tool::Node => match self.node_at(position) {
-                Some(id) => self
+            // No placement when the plane is edge-on: the prompt says so.
+            Tool::Node => match self.pick_at(position, self.document.read(cx).model()) {
+                Some(Pick::Node(id)) => self
                     .document
                     .update(cx, |document, cx| document.set_selection(vec![id], cx)),
-                None => {
-                    // No placement when the plane is edge-on: the prompt says so.
-                    let aim = self.aim(position, self.document.read(cx).model());
-                    if let Some(Aim { position, level, .. }) = aim {
-                        cx.emit(ViewportEvent::PlaceNode { position, level });
-                    }
+                Some(Pick::Point { position, level }) => {
+                    cx.emit(ViewportEvent::PlaceNode { position, level });
                 }
+                None => {}
             },
             Tool::Frame | Tool::Shell => {
-                let pick = match self.node_at(position) {
-                    Some(id) => Pick::Node(id),
-                    None => match self.aim(position, self.document.read(cx).model()) {
-                        Some(Aim { position, level, .. }) => Pick::Point { position, level },
-                        None => return,
-                    },
+                let Some(pick) = self.pick_at(position, self.document.read(cx).model()) else {
+                    return;
                 };
                 if self.picked.last() == Some(&pick) {
                     return;
@@ -574,6 +568,20 @@ impl Viewport {
             }),
             (None, _) => None,
         }
+    }
+
+    /// What a draw-tool click takes: the node in reach, or where it aims. The
+    /// snap aperture is wider than a node's reach, so a click can miss a node
+    /// and still snap onto it; that is the node too, not a second one there.
+    fn pick_at(&self, position: Point<Pixels>, model: &Model) -> Option<Pick> {
+        if let Some(id) = self.node_at(position) {
+            return Some(Pick::Node(id));
+        }
+        let Aim { position, level, .. } = self.aim(position, model)?;
+        Some(match node_at_position(model, position) {
+            Some(id) => Pick::Node(id),
+            None => Pick::Point { position, level },
+        })
     }
 
     /// The node within reach of the pointer, nearest first.
