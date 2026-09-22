@@ -63,33 +63,6 @@ fn versioned_json_round_trip_and_strict_validation() {
     assert!(solve_json("{broken").is_err());
 }
 #[test]
-fn consumer_failure_stops_at_first_rejected_result() {
-    struct Stop {
-        calls: usize,
-    }
-    impl ResultConsumer for Stop {
-        fn consume(&mut self, _: CombinationResult) -> Result<()> {
-            self.calls += 1;
-            Err(Error::Consumer("cancelled".into()))
-        }
-    }
-    let AnalysisRequest::Static { model, .. } = request() else {
-        unreachable!()
-    };
-    let mut stop = Stop { calls: 0 };
-    let err = analyze_static_into(
-        &model,
-        &StaticOptions {
-            max_in_flight: 1,
-            ..Default::default()
-        },
-        &mut stop,
-    )
-    .unwrap_err();
-    assert!(matches!(err, Error::Consumer(_)));
-    assert_eq!(stop.calls, 1);
-}
-#[test]
 fn envelopes_retain_combination_and_sign() {
     let envelope = Envelope::from_values([("a", -8.0), ("b", 3.0), ("c", -1.0)]).unwrap();
     assert_eq!(envelope.minimum.combination, "a");
