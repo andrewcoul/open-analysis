@@ -1,0 +1,40 @@
+name: Claude Code Review
+
+# Reviews every pull request with the code-review plugin on Opus 5.5 at xhigh effort
+# and posts findings as inline PR comments. Authenticates with the Claude subscription
+# token in the CLAUDE_CODE_OAUTH_TOKEN secret (generate one with `claude setup-token`).
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+# A new push supersedes an in-flight review of the same PR.
+concurrency:
+  group: claude-code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Fork PRs don't receive repo secrets, so skip them rather than fail.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
+          plugins: "code-review@claude-code-plugins"
+          prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+          # The action only starts the inline-comment MCP server when --allowedTools names it.
+          claude_args: |
+            --model claude-opus-5-5
+            --effort xhigh
+            --allowedTools "mcp__github_inline_comment__create_inline_comment"
