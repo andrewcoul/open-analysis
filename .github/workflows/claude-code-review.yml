@@ -27,8 +27,15 @@ jobs:
         with:
           fetch-depth: 1
 
+      # claude-code-action v1.0.231 installs Claude Code 2.1.278, which rejects
+      # claude-opus-5-5 ("2.1.280 or newer is required"). Install the current CLI and
+      # hand it to the action; drop this once a v1 release pins 2.1.280 or later.
+      - name: Install current Claude Code
+        run: curl -fsSL https://claude.ai/install.sh | bash
+
       - uses: anthropics/claude-code-action@v1
         with:
+          path_to_claude_code_executable: /home/runner/.local/bin/claude
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
           plugins: "code-review@claude-code-plugins"
