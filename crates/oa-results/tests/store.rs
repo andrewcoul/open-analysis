@@ -240,6 +240,55 @@ fn open_reads_back_a_file_store() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Timing comparison from the Phase 8 acceptance criteria. Run in release:
+/// cargo test -p oa-results --release -- --ignored --nocapture
+#[test]
+#[ignore]
+fn timing_sqlite_write_versus_json() {
+    // OA_BENCH_SIZE="bx,by,stories,combos" overrides the default frame.
+    let size: Vec<usize> = std::env::var("OA_BENCH_SIZE")
+        .ok()
+        .map(|s| s.split(',').map(|v| v.parse().unwrap()).collect())
+        .unwrap_or_else(|| vec![10, 10, 16, 32]);
+    let model = frame_model(size[0], size[1], size[2], size[3]);
+    println!(
+        "frame {}x{}x{} with {} combos: {} nodes, {} frames",
+        size[0],
+        size[1],
+        size[2],
+        size[3],
+        model.nodes.len(),
+        model.frames.len()
+    );
+    let options = StaticOptions::default();
+    let t = std::time::Instant::now();
+    let memory = analyze_static(&model, &options).unwrap();
+    let solve = t.elapsed();
+    let t = std::time::Instant::now();
+    let json = serde_json::to_string(&memory.combinations).unwrap();
+    let json_time = t.elapsed();
+    let dir = std::env::temp_dir().join(format!("oa-results-timing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let t = std::time::Instant::now();
+    let mut store = ResultStore::create(dir.join("run.sqlite"), &model, &options).unwrap();
+    for c in memory.combinations {
+        store.consume(c).unwrap();
+    }
+    let sqlite_time = t.elapsed();
+    let t = std::time::Instant::now();
+    let env = store.envelope_frame_force(100, 5).unwrap();
+    let query_time = t.elapsed();
+    let size = std::fs::metadata(dir.join("run.sqlite")).unwrap().len();
+    println!(
+        "solve {solve:?}, json {json_time:?} ({} MB), sqlite write {sqlite_time:?} ({} MB), envelope query {query_time:?} ({:?})",
+        json.len() / 1_000_000,
+        size / 1_000_000,
+        env.maximum.combination
+    );
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Cantilever with torsional releases at both ends and two cases: a valid
 /// tip load, then a tip torque nothing can resist. The second case fails.
 fn model_whose_second_case_fails() -> Model {
