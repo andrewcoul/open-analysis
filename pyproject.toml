@@ -7,7 +7,7 @@ name = "open-analysis"
 version = "0.1.0"
 description = "Sparse structural analysis powered by Rust"
 requires-python = ">=3.10"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 readme = "README.md"
 
 [tool.maturin]
