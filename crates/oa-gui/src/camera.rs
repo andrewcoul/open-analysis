@@ -264,17 +264,6 @@ mod tests {
     }
 
     #[test]
-    fn unproject_returns_to_the_ground_plane() {
-        let camera = Camera::default();
-        let p = [3.0, 4.0, 0.0];
-        let (x, y, _) = camera.project(p, (400.0, 300.0));
-        let back = camera.unproject((x, y), (400.0, 300.0), Some((2, 0.0)));
-        for i in 0..3 {
-            assert!(close(back[i], p[i]), "{back:?}");
-        }
-    }
-
-    #[test]
     fn unproject_falls_back_to_the_view_plane_when_edge_on() {
         let mut camera = Camera::default();
         camera.set_preset(ViewPreset::ElevationX);

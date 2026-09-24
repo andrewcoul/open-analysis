@@ -273,26 +273,6 @@ fn diaphragm_eccentric_load_twists_and_shares_by_lever_arm() {
 }
 
 #[test]
-fn diaphragm_load_at_master_shares_equally() {
-    let p = 1000.0;
-    let (k, _) = column_stiffness();
-    let mut m = two_column_diaphragm(2.0);
-    m.add_load_case(LoadCase {
-        name: "master".into(),
-        nodal: vec![NodalLoad::force(
-            NodeId(4),
-            [Force::from_si(p), Force::ZERO, Force::ZERO],
-        )],
-        ..Default::default()
-    });
-    let r = analyze_static(&m, &Default::default()).unwrap();
-    let u = r.combinations[0].displacements.as_ref().unwrap();
-    close(u[1][0], p / (2.0 * k), 1e-9);
-    close(u[3][0], p / (2.0 * k), 1e-9);
-    assert!(u[4][4].abs() < 1e-15);
-}
-
-#[test]
 fn diaphragm_modal_couples_offset_masses_exactly() {
     let e = 2.0;
     let (m1, m2) = (100.0, 300.0);

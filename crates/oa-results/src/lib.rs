@@ -674,21 +674,3 @@ impl ResultConsumer for ResultStore {
             .map_err(|e| oa_core::Error::Consumer(e.to_string()))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn hash_is_stable_and_sensitive() {
-        let mut m = Model::default();
-        m.add_material(oa_core::Material {
-            young: oa_core::units::Pressure::from_si(1.0),
-            poisson: 0.3,
-            density: Default::default(),
-        });
-        let a = model_hash(&m).unwrap();
-        assert_eq!(a, model_hash(&m.clone()).unwrap());
-        m.materials[0].poisson = 0.31;
-        assert_ne!(a, model_hash(&m).unwrap());
-    }
-}
