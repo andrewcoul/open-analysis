@@ -4984,17 +4984,21 @@ name = "oa-gui"
 version = "0.1.0"
 dependencies = [
  "dxf",
+ "futures",
  "gpui-kit",
  "oa-core",
+ "oa-mcp",
  "oa-model",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
 name = "oa-mcp"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "oa-core",
  "oa-model",
  "oa-results",
@@ -6462,6 +6466,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "tracing",
  "uuid",
@@ -7787,6 +7792,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
@@ -7822,6 +7828,17 @@ dependencies = [
  "either",
  "futures-util",
  "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-stream"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
  "tokio",
 ]
 
