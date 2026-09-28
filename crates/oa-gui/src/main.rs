@@ -35,7 +35,9 @@ const FONTS: [&[u8]; 3] = [
 /// The visual system on top of the kit's themes: Switzer at 14px, an 8px
 /// radius everywhere, and indigo as the accent of both the light and dark
 /// themes. The configs are changed rather than the live values so a theme
-/// switch keeps them.
+/// switch keeps them. Notifications rise from the bottom-right corner, above
+/// the status bar, where they cover neither the view controls nor the
+/// prompt strip.
 fn apply_visual_system(cx: &mut App) {
     use gpui_kit::component::{Theme, ThemeConfig};
     let mode = Theme::global(cx).mode;
@@ -77,6 +79,9 @@ fn apply_visual_system(cx: &mut App) {
         Theme::global_mut(cx).apply_config(&std::rc::Rc::new(config));
     }
     Theme::change(mode, None, cx);
+    let notification = &mut Theme::global_mut(cx).notification;
+    notification.placement = Anchor::BottomRight;
+    notification.margins.bottom = px(48.);
 }
 
 /// The key map, in menu order. Single letters and digits are bound in the
@@ -318,6 +323,8 @@ fn main() {
                     size(px(1440.), px(900.)),
                     cx,
                 ))),
+                // The class window managers and docks know the app by.
+                app_id: Some("open-analysis".into()),
                 ..TitleBar::window_options()
             };
             let window = cx

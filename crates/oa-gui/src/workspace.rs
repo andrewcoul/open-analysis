@@ -10,7 +10,9 @@ use crate::document::{
 use crate::explorer::Explorer;
 use crate::levels::LevelPanel;
 use crate::loads::{LoadPanel, Section};
-use crate::prompt::{AnalysisSummary, Gates, PromptState, render_prompt, selection_summary};
+use crate::prompt::{
+    AnalysisSummary, Gates, PromptState, describe, render_prompt, selection_summary,
+};
 use crate::properties::{EditorTab, PropertyEditor};
 use crate::results::Diagram;
 use crate::snap;
@@ -66,10 +68,7 @@ impl Workspace {
         let menu_bar = AppMenuBar::new(cx);
         let subscriptions = vec![
             cx.observe_in(&document, window, |this, _, window, cx| {
-                window.set_window_title(&format!(
-                    "{} - open-analysis",
-                    this.document.read(cx).title()
-                ));
+                window.set_window_title(&window_title(this.document.read(cx)));
                 this.refresh_menus(cx);
                 cx.notify();
             }),
@@ -93,10 +92,7 @@ impl Workspace {
             palette: None,
             _subscriptions: subscriptions,
         };
-        window.set_window_title(&format!(
-            "{} - open-analysis",
-            this.document.read(cx).title()
-        ));
+        window.set_window_title(&window_title(this.document.read(cx)));
         this.refresh_menus(cx);
         // The single-key bindings live on the view, so it starts focused.
         let focus = this.viewport.read(cx).focus_handle().clone();
@@ -202,7 +198,12 @@ impl Workspace {
                         items: text::PRECISIONS
                             .iter()
                             .map(|&decimals| {
-                                MenuItem::action(decimals.to_string(), SetPrecision(decimals))
+                                let label = match decimals {
+                                    0 => "Whole numbers".to_string(),
+                                    1 => "1 decimal place".to_string(),
+                                    n => format!("{n} decimal places"),
+                                };
+                                MenuItem::action(label, SetPrecision(decimals))
                                     .checked(decimals == text::precision())
                             })
                             .collect(),
@@ -231,7 +232,7 @@ impl Workspace {
                     MenuItem::action("Active level with context", ViewActiveLevelContext)
                         .checked(mode == ViewMode::LevelContext),
                     MenuItem::submenu(Menu {
-                        name: "Active level".into(),
+                        name: "Go to level".into(),
                         disabled: levels.is_empty(),
                         items: levels,
                     }),
@@ -575,7 +576,7 @@ impl Workspace {
     /// Deletes the selection. Frames and shells on deleted nodes go too, and
     /// loads or diaphragm entries on anything deleted are dropped first.
     pub fn delete_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let commands = {
+        let (commands, summary) = {
             let document = self.document.read(cx);
             let model = document.model();
             let mut doomed: BTreeSet<EntityId> = document.selection().iter().copied().collect();
@@ -661,11 +662,10 @@ impl Workspace {
                     });
                 }
             }
-            commands
+            (commands, describe(model, &doomed))
         };
-        let count = commands.len();
         if self.apply(Command::Batch { commands }, window, cx) {
-            self.info(format!("Deleted {count} entities"), window, cx);
+            self.info(format!("Deleted {summary}"), window, cx);
         }
     }
 
@@ -1137,7 +1137,7 @@ impl Workspace {
             ),
             ("Analyze", analyze),
             ("Results", results),
-            ("Help", vec![item("Guide and shortcuts…", Box::new(About), None)]),
+            ("Help", vec![item("Guide and keys…", Box::new(About), None)]),
         ]
     }
     pub fn add_load_case(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1421,23 +1421,20 @@ impl Workspace {
             ResultsState::Stale => ("Results out of date · Ctrl+R", warning),
             ResultsState::None => ("No results yet · Ctrl+R", muted),
         };
-        let problem_text = match problems.len() {
-            0 => "Model is valid".to_string(),
-            1 => problems[0].to_string(),
-            n => format!("{n} problems: {}", problems[0]),
+        // A new model has no nodes, which the solver refuses; that is where
+        // every model starts, not a fault worth a warning.
+        let empty = model.nodes.is_empty();
+        let flagged = !empty && !problems.is_empty();
+        let problem_text = match problems {
+            _ if empty => "Empty model".to_string(),
+            [] => "Model is valid".to_string(),
+            [one] => text::capitalize(&one.to_string()),
+            [first, ..] => format!("{} problems: {first}", problems.len()),
         };
-        let valid = problems.is_empty();
-        let view = match viewport.preset() {
-            Some(ViewPreset::ThreeD) => "3D view",
-            Some(ViewPreset::Plan) => "Plan view",
-            Some(ViewPreset::ElevationX) => "Elevation, X across",
-            Some(ViewPreset::ElevationY) => "Elevation, Y across",
-            None => "Free orbit",
-        };
-        let shown = match viewport.mode() {
-            ViewMode::Whole => "Whole model",
-            ViewMode::Level => "Active level",
-            ViewMode::LevelContext => "Level with context",
+        let problem_color = match (empty, flagged) {
+            (true, _) => muted,
+            (false, true) => warning,
+            (false, false) => success,
         };
         let level = viewport
             .active_level()
@@ -1473,13 +1470,12 @@ impl Workspace {
                     .gap_1p5()
                     .items_center()
                     .text_xs()
+                    .child(div().size(px(7.)).rounded_full().bg(problem_color))
                     .child(
                         div()
-                            .size(px(7.))
-                            .rounded_full()
-                            .bg(if valid { success } else { warning }),
-                    )
-                    .child(div().when(!valid, |d| d.text_color(warning)).child(problem_text)),
+                            .when(flagged, |d| d.text_color(warning))
+                            .child(problem_text),
+                    ),
             )
             .left(div().text_xs().text_color(muted).child(format!(
                 "{} nodes · {} frames · {} shells · {} cases · {} combinations",
@@ -1498,16 +1494,8 @@ impl Workspace {
                     .child(div().size(px(7.)).rounded_full().bg(results_color))
                     .child(results),
             )
-            .right(div().text_xs().text_color(muted).child("kip, ft, in"))
-            .right(div().text_xs().text_color(muted).child(
-                match viewport.up_axis() {
-                    UpAxis::Y => "Y up",
-                    UpAxis::Z => "Z up",
-                },
-            ))
             .right(div().text_xs().text_color(muted).child(level))
-            .right(div().text_xs().text_color(muted).child(shown))
-            .right(div().text_xs().text_color(muted).child(view))
+            .right(div().text_xs().text_color(muted).child("kip, ft, in"))
             .right(snaps)
     }
 }
@@ -1522,6 +1510,11 @@ fn panel_dialog(dialog: Dialog, width: f32, window: &Window) -> Dialog {
         .w(px(width))
         .max_h(window.viewport_size().height * 0.8)
         .on_ok(|_, _, _| false)
+}
+
+/// "Example frame — open-analysis", with a star while there are unsaved changes.
+fn window_title(document: &Document) -> String {
+    format!("{} — open-analysis", document.title())
 }
 
 /// The status bar's icon for a snap: the marker the view draws at one.
@@ -1539,7 +1532,7 @@ impl Render for Workspace {
         let theme = cx.theme();
         let (background, foreground, muted) =
             (theme.background, theme.foreground, theme.muted_foreground);
-        let title = self.document.read(cx).title();
+        let title = window_title(self.document.read(cx));
         v_flex()
             .size_full()
             .bg(background)
@@ -1552,7 +1545,7 @@ impl Render for Workspace {
                             .px_3()
                             .text_sm()
                             .text_color(muted)
-                            .child(format!("{title} - open-analysis")),
+                            .child(title),
                     ),
             )
             .child(render_prompt(&self.prompt_state(cx), cx))

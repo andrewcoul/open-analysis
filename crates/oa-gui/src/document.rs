@@ -128,12 +128,17 @@ impl Document {
     pub fn can_redo(&self) -> bool {
         self.editor.can_redo()
     }
+    /// The file's name, or before it is saved the model's own name.
     pub fn title(&self) -> String {
         let name = self
             .path
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
+            .or_else(|| {
+                let name = self.model().metadata.name.trim();
+                (!name.is_empty()).then(|| name.to_string())
+            })
             .unwrap_or_else(|| "Untitled".into());
         if self.dirty {
             format!("{name} *")
@@ -466,6 +471,14 @@ mod tests {
                 .fold(0.0, f64::max)
         };
         assert!(peak(4) > 0.0);
+    }
+
+    #[test]
+    fn an_unsaved_model_is_titled_by_its_own_name() {
+        assert_eq!(Document::with_model(example_frame(), None).title(), "Example frame");
+        assert_eq!(Document::with_model(new_model(), None).title(), "Untitled");
+        let saved = Document::with_model(example_frame(), Some("frame.oa.json".into()));
+        assert_eq!(saved.title(), "frame.oa.json");
     }
 
     #[test]
