@@ -695,17 +695,7 @@ pub fn generate_combinations(document: Entity<Document>, window: &mut Window, cx
                 Some(1) => Method::AllowableStress,
                 _ => Method::Strength,
             };
-            let commands: Vec<Command> = {
-                let model = document.read(cx).model();
-                oa_model::asce7::generate(model, edition, method)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, combination)| Command::AddCombination {
-                        id: EntityId(model.next_id + i as u64),
-                        combination,
-                    })
-                    .collect()
-            };
+            let commands = oa_model::asce7::commands(document.read(cx).model(), edition, method);
             let count = commands.len();
             if count == 0 {
                 window.push_notification(

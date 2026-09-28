@@ -1,13 +1,18 @@
-//! The open model: the editor with its history, the file it came from, the
-//! current selection, validation problems, and the last analysis. Every view
-//! observes this entity and re-renders when it notifies.
-use gpui_kit::Context;
+//! The open model: the session that holds it with its history and file, the
+//! current selection, validation problems, the last analysis, and the agent
+//! that may be attached. Every view observes this entity and re-renders when
+//! it notifies.
+use crate::agent::AgentStatus;
+use gpui_kit::{Context, EventEmitter};
 use oa_core::units::*;
 use oa_core::{FrameDiagram, InMemoryResults};
+use oa_mcp::Session;
+use oa_mcp::server::Job;
 use oa_model::{
-    Combination, Command, Compiled, Editor, EntityId, EntityKind, Frame, Level, LoadCase,
-    MemberLoad, Model, ModelError, Node, Problem, compile,
+    Combination, Command, Compiled, EntityId, EntityKind, Frame, Level, LoadCase, MemberLoad,
+    Model, ModelError, Node, Problem, compile,
 };
+use serde_json::Value;
 use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 
@@ -69,41 +74,64 @@ pub enum ResultsState {
     Stale,
 }
 
+/// Something an attached agent did that the view should respond to as it
+/// would to the person doing it.
+pub enum AgentEvent {
+    /// The agent made or opened another model, which the view should frame.
+    Replaced,
+    /// The agent ran an analysis, whose deformed shape the view should show.
+    Analyzed,
+}
+
 pub struct Document {
-    editor: Editor,
-    path: Option<PathBuf>,
-    dirty: bool,
+    /// The model, its history, and its file, shared with an attached agent:
+    /// the person's edits and the agent's land on one undo stack.
+    session: Session,
     revision: u64,
     /// In click order, so "frame between the two selected nodes" is well defined.
     selection: Vec<EntityId>,
     problems: Vec<Problem>,
     analysis: Option<Analysis>,
     results_stale: bool,
+    agent: AgentStatus,
 }
+
+impl EventEmitter<AgentEvent> for Document {}
 
 impl Document {
     pub fn with_model(model: Model, path: Option<PathBuf>) -> Self {
         let problems = validate(&model);
+        let mut session = Session::with_path(model, path);
+        // A person's unsaved work is not the agent's to discard, and the
+        // view draws every analysis, whoever runs it.
+        session.protect_unsaved = true;
+        session.keep_in_memory = true;
         Self {
-            editor: Editor::new(model),
-            path,
-            dirty: false,
+            session,
             revision: 0,
             selection: vec![],
             problems,
             analysis: None,
             results_stale: false,
+            agent: AgentStatus::default(),
         }
     }
 
     pub fn model(&self) -> &Model {
-        &self.editor.model
+        self.session.model()
     }
     pub fn path(&self) -> Option<&Path> {
-        self.path.as_deref()
+        self.session.path()
     }
     pub fn is_dirty(&self) -> bool {
-        self.dirty
+        self.session.is_dirty()
+    }
+    pub fn agent(&self) -> &AgentStatus {
+        &self.agent
+    }
+    pub fn set_agent(&mut self, status: AgentStatus, cx: &mut Context<Self>) {
+        self.agent = status;
+        cx.notify();
     }
     /// Bumps on every model change. Views use it to invalidate derived state.
     pub fn revision(&self) -> u64 {
@@ -123,16 +151,15 @@ impl Document {
         }
     }
     pub fn can_undo(&self) -> bool {
-        self.editor.can_undo()
+        self.session.can_undo()
     }
     pub fn can_redo(&self) -> bool {
-        self.editor.can_redo()
+        self.session.can_redo()
     }
     /// The file's name, or before it is saved the model's own name.
     pub fn title(&self) -> String {
         let name = self
-            .path
-            .as_ref()
+            .path()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .or_else(|| {
@@ -140,7 +167,7 @@ impl Document {
                 (!name.is_empty()).then(|| name.to_string())
             })
             .unwrap_or_else(|| "Untitled".into());
-        if self.dirty {
+        if self.is_dirty() {
             format!("{name} *")
         } else {
             name
@@ -189,65 +216,95 @@ impl Document {
     // MARK: Editing
 
     pub fn apply(&mut self, command: Command, cx: &mut Context<Self>) -> Result<(), ModelError> {
-        self.editor.apply(command)?;
+        self.session.user_apply(command)?;
         self.after_edit(cx);
         Ok(())
     }
     pub fn undo(&mut self, cx: &mut Context<Self>) -> Result<bool, ModelError> {
-        let done = self.editor.undo()?;
+        let done = self.session.user_undo()?;
         if done {
             self.after_edit(cx);
         }
         Ok(done)
     }
     pub fn redo(&mut self, cx: &mut Context<Self>) -> Result<bool, ModelError> {
-        let done = self.editor.redo()?;
+        let done = self.session.user_redo()?;
         if done {
             self.after_edit(cx);
         }
         Ok(done)
     }
     fn after_edit(&mut self, cx: &mut Context<Self>) {
-        self.dirty = true;
         self.revision += 1;
         if self.analysis.take().is_some() {
             self.results_stale = true;
         }
         self.problems = validate(self.model());
-        let model = &self.editor.model;
+        let model = self.session.model();
         self.selection.retain(|id| model.kind_of(*id).is_some());
         cx.notify();
     }
 
     /// Replaces the whole model, for example after opening a file. The
-    /// revision keeps counting up so views that cache by it rebuild.
+    /// revision keeps counting up so views that cache by it rebuild, and an
+    /// attached agent stays attached, now to the new model.
     pub fn replace(&mut self, model: Model, path: Option<PathBuf>, cx: &mut Context<Self>) {
         let revision = self.revision + 1;
+        let agent = std::mem::take(&mut self.agent);
         *self = Self::with_model(model, path);
         self.revision = revision;
+        self.agent = agent;
+        cx.notify();
+    }
+    /// After an agent replaced the model inside the session.
+    fn after_replace(&mut self, cx: &mut Context<Self>) {
+        self.revision += 1;
+        self.selection.clear();
+        self.analysis = None;
+        self.results_stale = false;
+        self.problems = validate(self.model());
+        cx.emit(AgentEvent::Replaced);
         cx.notify();
     }
 
     pub fn mark_saved(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.path = Some(path);
-        self.dirty = false;
+        self.session.mark_saved(path);
         cx.notify();
     }
 
-    // MARK: Analysis
+    // MARK: Agent
 
-    /// Runs a linear static analysis for every combination. Returns the number
-    /// of combinations solved.
-    pub fn run_static(&mut self, cx: &mut Context<Self>) -> Result<usize, String> {
-        let compiled = compile(self.model()).map_err(|problems| {
-            problems
-                .iter()
-                .map(|p| p.to_string())
-                .collect::<Vec<_>>()
-                .join("\n")
-        })?;
-        let results = oa_core::analyze_static(&compiled.solver, &oa_core::StaticOptions::default())
-            .map_err(|e| e.to_string())?;
+    /// Runs one of an attached agent's tool calls against the session, then
+    /// brings the rest of the document up to date with whatever it changed,
+    /// exactly as for an edit or analysis made here.
+    pub fn run_agent_job(&mut self, job: Job, cx: &mut Context<Self>) -> Result<Value, String> {
+        let (revision, generation) = (self.session.revision(), self.session.generation());
+        // A fault in one tool call must not take the person's unsaved work
+        // down with the window.
+        let session = &mut self.session;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(session)))
+            .unwrap_or_else(|_| {
+                Err(oa_mcp::SessionError::Invalid(
+                    "the GUI hit an internal error running this call; the model is unchanged \
+                     unless describe_model says otherwise"
+                        .into(),
+                ))
+            })
+            .map_err(|e| e.to_string());
+        if self.session.generation() != generation {
+            self.after_replace(cx);
+        } else if self.session.revision() != revision {
+            self.after_edit(cx);
+        }
+        if self.show_fresh_results(cx).is_some() {
+            cx.emit(AgentEvent::Analyzed);
+        }
+        result
+    }
+    /// Takes the results of the session's last analysis, if it has new ones,
+    /// for the view to draw. Returns how many combinations they hold.
+    fn show_fresh_results(&mut self, cx: &mut Context<Self>) -> Option<usize> {
+        let (compiled, results) = self.session.take_fresh_results()?;
         let count = results.combinations.len();
         self.analysis = Some(Analysis {
             compiled,
@@ -257,7 +314,27 @@ impl Document {
         });
         self.results_stale = false;
         cx.notify();
-        Ok(count)
+        Some(count)
+    }
+
+    // MARK: Analysis
+
+    /// Runs a linear static analysis for every combination, through the
+    /// session so an attached agent can query the same results. Returns the
+    /// number of combinations solved.
+    pub fn run_static(&mut self, cx: &mut Context<Self>) -> Result<usize, String> {
+        if !self.problems.is_empty() {
+            return Err(self
+                .problems
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"));
+        }
+        self.session
+            .analyze(oa_core::StaticOptions::default(), None)
+            .map_err(|e| e.to_string())?;
+        Ok(self.show_fresh_results(cx).unwrap_or(0))
     }
     pub fn set_combination(&mut self, ix: usize, cx: &mut Context<Self>) {
         if let Some(a) = &mut self.analysis
