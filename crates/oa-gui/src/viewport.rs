@@ -19,7 +19,8 @@ use crate::text::{UNITS, fmt_q};
 use gpui_kit::component::button::{Button, ButtonGroup};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Selectable as _, Sizable as _, Theme, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, Theme, h_flex,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -722,6 +723,8 @@ struct Palette {
     deformed: Hsla,
     diagram: Hsla,
     label: Hsla,
+    /// Legend text in the view's top-left corner.
+    legend: Hsla,
     /// Storeys shown beside the active level, and members spanning to them.
     context: Hsla,
     underlay: Hsla,
@@ -1555,21 +1558,36 @@ fn paint_scene(
                 let origin = point(end.x + px(3.), end.y - px(8.));
                 paint_label(&label, origin, palette.axes[i], &style, window, cx);
             }
-            let mut legend_top = scene.bounds.top() + px(8.);
+            // The legend: what the view shows, each series behind a swatch of
+            // its colour so the text itself can stay readable.
+            let mut legend_top = scene.bounds.top() + px(12.);
+            let mut legend = |text: &SharedString,
+                              swatch: Option<Hsla>,
+                              window: &mut Window,
+                              cx: &mut App| {
+                let mut x = scene.bounds.left() + px(16.);
+                if let Some(color) = swatch {
+                    let y = legend_top + px(8.);
+                    stroke_segments(
+                        std::iter::once((point(x, y), point(x + px(16.), y))),
+                        px(2.),
+                        color,
+                        window,
+                    );
+                    x += px(24.);
+                }
+                paint_label(text, point(x, legend_top), palette.legend, &style, window, cx);
+                legend_top += px(20.);
+            };
             if let Some(level) = &scene.level_legend {
-                let origin = point(scene.bounds.left() + px(12.), legend_top);
-                paint_label(level, origin, palette.label, &style, window, cx);
-                legend_top += px(16.);
+                legend(level, None, window, cx);
             }
             if let Some(combination) = &scene.combination {
                 let text: SharedString = format!("Deformed shape: {combination}").into();
-                let origin = point(scene.bounds.left() + px(12.), legend_top);
-                paint_label(&text, origin, palette.deformed, &style, window, cx);
-                legend_top += px(16.);
+                legend(&text, Some(palette.deformed), window, cx);
             }
-            if let Some(legend) = &scene.diagram_legend {
-                let origin = point(scene.bounds.left() + px(12.), legend_top);
-                paint_label(legend, origin, palette.diagram, &style, window, cx);
+            if let Some(diagram) = &scene.diagram_legend {
+                legend(diagram, Some(palette.diagram), window, cx);
             }
         },
     );
@@ -1579,39 +1597,44 @@ fn paint_scene(
 
 impl Viewport {
     /// View presets, fit, the up axis, the view mode, and the active level
-    /// in the top-right corner, each labelled with its key. Text only; the
-    /// key map is the affordance.
+    /// in the top-right corner, each labelled with its key; once there are
+    /// results, a row below picks the diagram and the combination shown.
+    /// Text only; the key map is the affordance.
     fn view_controls(&self, cx: &App) -> AnyElement {
         let preset = self.preset;
         let up = self.camera.up;
         let mode = self.mode;
+        let muted = cx.theme().muted_foreground;
+        // The key follows the label, quieter, so "Fit" and "Z" never read
+        // as one name.
+        let keyed = move |button: Button, label: &'static str, key: &'static str| {
+            button
+                .label(label)
+                .child(div().text_color(muted).child(key))
+        };
         let presets = [
-            ("view-3d", "3D  1", "Look from above and to the side", ViewPreset::ThreeD),
-            ("view-plan", "Plan  2", "Look straight down", ViewPreset::Plan),
-            ("view-x", "Elev X  3", "Elevation with X across the screen", ViewPreset::ElevationX),
-            ("view-y", "Elev Y  4", "Elevation with Y across the screen", ViewPreset::ElevationY),
+            ("view-3d", "3D", "1", "Look from above and to the side", ViewPreset::ThreeD),
+            ("view-plan", "Plan", "2", "Look straight down", ViewPreset::Plan),
+            ("view-x", "Elev X", "3", "Elevation with X across the screen", ViewPreset::ElevationX),
+            ("view-y", "Elev Y", "4", "Elevation with Y across the screen", ViewPreset::ElevationY),
         ];
         let camera = ButtonGroup::new("view-presets")
             .small()
             .outline()
-            .children(presets.iter().map(|(id, label, description, which)| {
+            .children(presets.iter().map(|(id, label, key, description, which)| {
                 let action = preset_action(*which);
-                Button::new(*id)
-                    .label(*label)
+                keyed(Button::new(*id), label, key)
                     .selected(preset == Some(*which))
                     .tooltip_with_action(*description, action.as_ref(), None)
             }))
             .on_click(move |clicks, window, cx| {
                 if let Some(ix) = clicks.first()
-                    && let Some((_, _, _, which)) = presets.get(*ix)
+                    && let Some((_, _, _, _, which)) = presets.get(*ix)
                 {
                     window.dispatch_action(preset_action(*which), cx);
                 }
             });
-        let fit = Button::new("fit")
-            .small()
-            .outline()
-            .label("Fit  Z")
+        let fit = keyed(Button::new("fit").small().outline(), "Fit", "Z")
             .tooltip_with_action("Fit the whole model in the view", &ZoomExtents, None)
             .on_click(|_, window, cx| window.dispatch_action(Box::new(ZoomExtents), cx));
         let up_axis = ButtonGroup::new("up-axis")
@@ -1643,20 +1666,17 @@ impl Viewport {
             .small()
             .outline()
             .child(
-                Button::new("mode-whole")
-                    .label("All  5")
+                keyed(Button::new("mode-whole"), "All", "5")
                     .selected(mode == ViewMode::Whole)
                     .tooltip_with_action("Show the whole model", &ViewWholeModel, None),
             )
             .child(
-                Button::new("mode-level")
-                    .label("Level  6")
+                keyed(Button::new("mode-level"), "Level", "6")
                     .selected(mode == ViewMode::Level)
                     .tooltip_with_action("Show the active level's floor", &ViewActiveLevel, None),
             )
             .child(
-                Button::new("mode-context")
-                    .label("Context  7")
+                keyed(Button::new("mode-context"), "Context", "7")
                     .selected(mode == ViewMode::LevelContext)
                     .tooltip_with_action(
                         "Show the active level with the storeys beside it",
@@ -1738,7 +1758,107 @@ impl Viewport {
             .occlude()
             .child(h_flex().gap_2().child(camera).child(fit).child(up_axis))
             .child(h_flex().gap_2().child(modes).child(level))
+            .children(self.result_controls(cx))
             .into_any_element()
+    }
+
+    /// With results in hand: the deformed shape on or off, the section
+    /// force drawn along the members, and the combination shown, stepped
+    /// with the arrows like the active level or picked from the list.
+    fn result_controls(&self, cx: &App) -> Option<AnyElement> {
+        let analysis = self.document.read(cx).analysis()?;
+        let combinations: Vec<SharedString> = analysis
+            .results
+            .combinations
+            .iter()
+            .map(|c| SharedString::from(c.combination.clone()))
+            .collect();
+        let shown = analysis.combination;
+        let current = combinations.get(shown).cloned().unwrap_or_default();
+        let several = combinations.len() > 1;
+        let diagram = self.options.diagram;
+        let deformed = Button::new("deformed")
+            .small()
+            .outline()
+            .label("Deformed")
+            .selected(self.options.deformed)
+            .tooltip_with_action("Draw the deformed shape", &ToggleDeformedShape, None)
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleDeformedShape), cx));
+        let diagrams = Button::new("diagram-select")
+            .small()
+            .outline()
+            .w(px(144.))
+            .label(diagram.map_or("No diagram", Diagram::label))
+            .dropdown_caret(true)
+            .tooltip("The section force drawn along every member")
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                std::iter::once(None)
+                    .chain(Diagram::ALL.map(Some))
+                    .fold(menu, |menu, which| {
+                        menu.item(
+                            PopupMenuItem::new(which.map_or("No diagram", Diagram::label))
+                                .checked(diagram == which)
+                                .on_click(move |_, window, cx| {
+                                    window.dispatch_action(Box::new(ShowDiagram(which)), cx)
+                                }),
+                        )
+                    })
+            });
+        let step = |id: &'static str, icon: IconName, tip: &'static str, action: Box<dyn Action>| {
+            Button::new(id)
+                .small()
+                .outline()
+                .compact()
+                .icon(icon)
+                .disabled(!several)
+                .tooltip_with_action(tip, action.as_ref(), None)
+                .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+        };
+        let picker = Button::new("combination-select")
+            .small()
+            .outline()
+            .w(px(176.))
+            .label(current)
+            .dropdown_caret(true)
+            .tooltip("The combination the view shows: pick another from the list")
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                combinations
+                    .iter()
+                    .enumerate()
+                    .fold(menu, |menu, (ix, name)| {
+                        let name = name.clone();
+                        menu.item(PopupMenuItem::new(name.clone()).checked(ix == shown).on_click(
+                            move |_, window, cx| {
+                                window.dispatch_action(Box::new(ShowCombination(name.clone())), cx)
+                            },
+                        ))
+                    })
+            });
+        Some(
+            h_flex()
+                .gap_2()
+                .child(deformed)
+                .child(diagrams)
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(step(
+                            "combination-previous",
+                            IconName::ChevronLeft,
+                            "Show the previous combination",
+                            Box::new(PreviousCombination),
+                        ))
+                        .child(step(
+                            "combination-next",
+                            IconName::ChevronRight,
+                            "Show the next combination",
+                            Box::new(NextCombination),
+                        ))
+                        .child(picker),
+                )
+                .into_any_element(),
+        )
     }
 }
 
@@ -1874,9 +1994,10 @@ impl Render for Viewport {
             node: theme.muted_foreground,
             restraint: theme.chart_3,
             selected: theme.primary,
-            deformed: theme.chart_1,
+            deformed: theme.cyan,
             diagram: theme.warning,
             label: theme.muted_foreground,
+            legend: theme.foreground,
             context: theme.muted_foreground.opacity(0.45),
             underlay: theme.chart_4.opacity(0.6),
             snap: theme.success,

@@ -212,7 +212,7 @@ pub fn render_member_results(
             Role::Displacement,
             &diagram.stations,
             deflections,
-            theme.chart_1,
+            theme.cyan,
             theme,
             &style,
         ))
@@ -238,13 +238,16 @@ fn plot(
         .max_by(|a, b| a.1.total_cmp(b.1))
         .zip(values.iter().enumerate().min_by(|a, b| a.1.total_cmp(b.1)))
     {
-        Some(((kmax, max), (kmin, min))) => format!(
-            "max {} at {} ft · min {} at {} ft",
-            fmt_q(role, *max),
-            fmt_q(Role::Length, stations[kmax]),
-            fmt_q(role, *min),
-            fmt_q(Role::Length, stations[kmin]),
-        ),
+        Some(((kmax, max), (kmin, min))) => {
+            let unit = UNITS.symbol(Role::Length);
+            format!(
+                "max {} at {} {unit} · min {} at {} {unit}",
+                fmt_q(role, *max),
+                fmt_q(Role::Length, stations[kmax]),
+                fmt_q(role, *min),
+                fmt_q(Role::Length, stations[kmin]),
+            )
+        }
         None => String::new(),
     };
     let stations = stations.to_vec();
