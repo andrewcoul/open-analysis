@@ -928,21 +928,20 @@ impl Workspace {
             }
         };
         state.update(cx, |state, cx| state.set_query("", window, cx));
-        let workspace = cx.entity().downgrade();
+        // Gathered now rather than in the builder: the builder runs while the
+        // workspace renders the dialog layer, when the workspace cannot be
+        // read. Nothing the entries show can change while the palette is up.
+        let groups = self.palette_entries(cx);
         let palette_state = state.clone();
-        window.open_dialog(cx, move |dialog, _, cx| {
-            let groups = workspace
-                .upgrade()
-                .map(|workspace| workspace.read(cx).palette_entries(cx))
-                .unwrap_or_default();
+        window.open_dialog(cx, move |dialog, _, _| {
             let mut palette = CommandPalette::new(&palette_state)
                 .placeholder("Type a command, or the name of something to define…")
                 .bordered(false)
                 .max_h(px(420.))
                 .on_confirm(|_, window, cx| window.close_dialog(cx))
                 .on_cancel(|window, cx| window.close_dialog(cx));
-            for (label, items) in groups {
-                palette = palette.group(CommandGroup::new().label(label).items(items));
+            for (label, items) in &groups {
+                palette = palette.group(CommandGroup::new().label(*label).items(items.clone()));
             }
             dialog.w(px(620.)).footer(div()).child(palette)
         });
