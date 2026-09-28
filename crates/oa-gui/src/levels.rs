@@ -12,7 +12,6 @@ use crate::text::{UNITS, fmt_q, label, parse_q};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::*;
@@ -431,7 +430,7 @@ impl LevelPanel {
                             .gap_1()
                             .child(
                                 Button::new(("go-to-level", ix))
-                                    .xsmall()
+                                    .small()
                                     .outline()
                                     .label("Go to")
                                     .on_click(move |_, window, cx| {
@@ -440,7 +439,7 @@ impl LevelPanel {
                             )
                             .child(
                                 Button::new(("remove-level", ix))
-                                    .xsmall()
+                                    .small()
                                     .danger()
                                     .outline()
                                     .label("Remove")
@@ -462,26 +461,21 @@ impl LevelPanel {
 impl Render for LevelPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
+        // The dialog around the table scrolls it.
         v_flex()
-            .id("levels-scroll")
-            .size_full()
-            .overflow_scrollbar()
+            .gap_2()
+            .child(div().text_xs().text_color(muted).child(
+                "Lowest first. Elevation moves a level with its nodes; height below moves it with every level above.",
+            ))
+            .child(self.render_table(cx))
             .child(
-                v_flex()
-                    .gap_2()
-                    .child(div().text_xs().text_color(muted).child(
-                        "Lowest first. Elevation moves a level with its nodes; height below moves it with every level above.",
-                    ))
-                    .child(self.render_table(cx))
-                    .child(
-                        h_flex().gap_2().child(
-                            Button::new("add-level")
-                                .small()
-                                .outline()
-                                .label("Add level above")
-                                .on_click(cx.listener(|this, _, window, cx| this.add_level(window, cx))),
-                        ),
-                    ),
+                h_flex().gap_2().child(
+                    Button::new("add-level")
+                        .small()
+                        .outline()
+                        .label("Add level above")
+                        .on_click(cx.listener(|this, _, window, cx| this.add_level(window, cx))),
+                ),
             )
     }
 }

@@ -4,6 +4,7 @@
 use crate::actions::{AddDistributedLoad, AddNodalLoad, DeleteSelected, SetActiveLevel};
 use crate::document::Document;
 use crate::explorer::rows_of;
+use crate::prompt::selection_summary;
 use crate::results::{Plane, render_member_results};
 use crate::text::{UNITS, fmt_num, fmt_q, label, parse_num, parse_q};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -11,7 +12,6 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::form::{Field, Form};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{
@@ -37,13 +37,24 @@ pub enum EditorTab {
     Results,
 }
 
-/// What one field shows, independent of the widget that edits it.
+/// The form is a grid of six columns, so a field can take the whole row,
+/// half of it (Node I beside Node J), a third (X, Y, Z), or two thirds.
+const COLUMNS: usize = 6;
+const FULL: u16 = 6;
+const TWO_THIRDS: u16 = 4;
+const HALF: u16 = 3;
+const THIRD: u16 = 2;
+
+/// What one field shows, independent of the widget that edits it. Fields
+/// are laid out in the order they are listed.
 enum FieldSpec {
     Text {
         key: String,
         label: SharedString,
         value: String,
+        span: u16,
     },
+    /// Checkboxes listed one after another under the same group share a row.
     Check {
         key: String,
         group: SharedString,
@@ -55,13 +66,25 @@ enum FieldSpec {
         label: SharedString,
         options: Vec<SharedString>,
         selected: Option<usize>,
+        span: u16,
     },
+}
+impl FieldSpec {
+    /// Columns of the grid the field takes; the full row unless set.
+    fn span(mut self, columns: u16) -> Self {
+        match &mut self {
+            FieldSpec::Text { span, .. } | FieldSpec::Choice { span, .. } => *span = columns,
+            FieldSpec::Check { .. } => {}
+        }
+        self
+    }
 }
 fn text(key: &str, label: &str, value: impl Into<String>) -> FieldSpec {
     FieldSpec::Text {
         key: key.into(),
         label: label.into(),
         value: value.into(),
+        span: FULL,
     }
 }
 fn num(key: &str, label: &str, value: f64) -> FieldSpec {
@@ -90,6 +113,7 @@ fn choice(
         label: label.into(),
         options,
         selected,
+        span: FULL,
     }
 }
 fn entity_choice(
@@ -134,86 +158,81 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
     match kind {
         EntityKind::Level => {
             let l = &model.levels[&id];
-            f.push(text("name", "Name", &l.name));
-            f.push(qty("elevation", "Elevation", Role::Length, l.elevation.si()));
+            f.push(text("name", "Name", &l.name).span(HALF));
+            f.push(qty("elevation", "Elevation", Role::Length, l.elevation.si()).span(HALF));
         }
         EntityKind::Node => {
             let n = &model.nodes[&id];
             f.push(text("name", "Name", &n.name));
             for (i, axis) in ["X", "Y", "Z"].iter().enumerate() {
-                f.push(qty(
-                    &format!("p{i}"),
-                    axis,
-                    Role::Length,
-                    n.position[i].si(),
-                ));
+                f.push(
+                    qty(&format!("p{i}"), axis, Role::Length, n.position[i].si()).span(THIRD),
+                );
             }
-            f.push(entity_choice(
-                "level",
-                "Level",
-                model,
-                EntityKind::Level,
-                Some(n.level),
-            ));
+            f.push(
+                entity_choice("level", "Level", model, EntityKind::Level, Some(n.level))
+                    .span(HALF),
+            );
             let offset = model
                 .levels
                 .get(&n.level)
                 .map_or(0.0, |l| oa_model::levels::offset(n, l));
-            f.push(qty("offset", "Offset above level", Role::Length, offset));
+            f.push(qty("offset", "Offset above level", Role::Length, offset).span(HALF));
             for (i, dof) in DOF.iter().enumerate() {
                 f.push(check(format!("r{i}"), "Restraints", dof, n.restrained[i]));
             }
-            for (i, axis) in ["kx", "ky", "kz"].iter().enumerate() {
-                f.push(qty(
-                    &format!("k{i}"),
-                    axis,
-                    Role::Stiffness,
-                    n.spring_translation[i].si(),
-                ));
+            for (i, axis) in ["Spring kx", "Spring ky", "Spring kz"].iter().enumerate() {
+                f.push(
+                    qty(
+                        &format!("k{i}"),
+                        axis,
+                        Role::Stiffness,
+                        n.spring_translation[i].si(),
+                    )
+                    .span(THIRD),
+                );
             }
             for (i, axis) in ["Mass x", "Mass y", "Mass z"].iter().enumerate() {
-                f.push(qty(&format!("m{i}"), axis, Role::Mass, n.mass[i].si()));
+                f.push(qty(&format!("m{i}"), axis, Role::Mass, n.mass[i].si()).span(THIRD));
             }
         }
         EntityKind::Frame => {
             let e = &model.frames[&id];
             f.push(text("name", "Name", &e.name));
-            f.push(entity_choice(
-                "node_i",
-                "Node I",
-                model,
-                EntityKind::Node,
-                Some(e.nodes[0]),
-            ));
-            f.push(entity_choice(
-                "node_j",
-                "Node J",
-                model,
-                EntityKind::Node,
-                Some(e.nodes[1]),
-            ));
-            f.push(entity_choice(
-                "material",
-                "Material",
-                model,
-                EntityKind::Material,
-                Some(e.material),
-            ));
-            f.push(entity_choice(
-                "section",
-                "Section",
-                model,
-                EntityKind::Section,
-                Some(e.section),
-            ));
+            f.push(
+                entity_choice("node_i", "Node I", model, EntityKind::Node, Some(e.nodes[0]))
+                    .span(HALF),
+            );
+            f.push(
+                entity_choice("node_j", "Node J", model, EntityKind::Node, Some(e.nodes[1]))
+                    .span(HALF),
+            );
+            f.push(
+                entity_choice(
+                    "material",
+                    "Material",
+                    model,
+                    EntityKind::Material,
+                    Some(e.material),
+                )
+                .span(HALF),
+            );
+            f.push(
+                entity_choice(
+                    "section",
+                    "Section",
+                    model,
+                    EntityKind::Section,
+                    Some(e.section),
+                )
+                .span(HALF),
+            );
             let behavior = BEHAVIORS.iter().position(|(_, b)| *b == e.behavior);
-            f.push(choice(
-                "behavior",
-                "Axial behavior",
-                labels(&BEHAVIORS),
-                behavior,
-            ));
-            f.push(qty("roll", "Roll", Role::Angle, e.roll.si()));
+            f.push(
+                choice("behavior", "Axial behavior", labels(&BEHAVIORS), behavior)
+                    .span(TWO_THIRDS),
+            );
+            f.push(qty("roll", "Roll", Role::Angle, e.roll.si()).span(THIRD));
             for (i, dof) in DOF.iter().enumerate() {
                 f.push(check(
                     format!("rel{i}"),
@@ -235,49 +254,48 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
             let e = &model.shells[&id];
             f.push(text("name", "Name", &e.name));
             for i in 0..4 {
-                f.push(entity_choice(
-                    &format!("n{i}"),
-                    &format!("Node {}", i + 1),
-                    model,
-                    EntityKind::Node,
-                    Some(e.nodes[i]),
-                ));
+                f.push(
+                    entity_choice(
+                        &format!("n{i}"),
+                        &format!("Node {}", i + 1),
+                        model,
+                        EntityKind::Node,
+                        Some(e.nodes[i]),
+                    )
+                    .span(HALF),
+                );
             }
-            f.push(entity_choice(
-                "material",
-                "Material",
-                model,
-                EntityKind::Material,
-                Some(e.material),
-            ));
-            f.push(qty(
-                "thickness",
-                "Thickness",
-                Role::Thickness,
-                e.thickness.si(),
-            ));
+            f.push(
+                entity_choice(
+                    "material",
+                    "Material",
+                    model,
+                    EntityKind::Material,
+                    Some(e.material),
+                )
+                .span(HALF),
+            );
+            f.push(qty("thickness", "Thickness", Role::Thickness, e.thickness.si()).span(HALF));
             let formulation = FORMULATIONS.iter().position(|(_, x)| *x == e.formulation);
-            f.push(choice(
-                "formulation",
-                "Formulation",
-                labels(&FORMULATIONS),
-                formulation,
-            ));
+            f.push(
+                choice("formulation", "Formulation", labels(&FORMULATIONS), formulation)
+                    .span(HALF),
+            );
         }
         EntityKind::Material => {
             let e = &model.materials[&id];
             f.push(text("name", "Name", &e.name));
-            f.push(qty("young", "E", Role::Stress, e.young.si()));
-            f.push(num("poisson", "Poisson's ratio", e.poisson));
-            f.push(qty("density", "Density", Role::Density, e.density.si()));
+            f.push(qty("young", "E", Role::Stress, e.young.si()).span(THIRD));
+            f.push(num("poisson", "Poisson's ratio", e.poisson).span(THIRD));
+            f.push(qty("density", "Density", Role::Density, e.density.si()).span(THIRD));
         }
         EntityKind::Section => {
             let e = &model.sections[&id];
             f.push(text("name", "Name", &e.name));
-            f.push(qty("area", "Area", Role::Area, e.area.si()));
-            f.push(qty("iy", "Iy", Role::SecondMoment, e.iy.si()));
-            f.push(qty("iz", "Iz", Role::SecondMoment, e.iz.si()));
-            f.push(qty("torsion", "J", Role::SecondMoment, e.torsion.si()));
+            f.push(qty("area", "Area", Role::Area, e.area.si()).span(HALF));
+            f.push(qty("torsion", "J", Role::SecondMoment, e.torsion.si()).span(HALF));
+            f.push(qty("iy", "Iy", Role::SecondMoment, e.iy.si()).span(HALF));
+            f.push(qty("iz", "Iz", Role::SecondMoment, e.iz.si()).span(HALF));
         }
         EntityKind::LoadCase => {
             let e = &model.load_cases[&id];
@@ -286,32 +304,34 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
                 .iter()
                 .enumerate()
             {
-                f.push(num(&format!("sw{i}"), axis, e.self_weight[i]));
+                f.push(num(&format!("sw{i}"), axis, e.self_weight[i]).span(THIRD));
             }
         }
         EntityKind::Combination => {
             let e = &model.combinations[&id];
             f.push(text("name", "Name", &e.name));
             for (i, (case, factor)) in e.terms.iter().enumerate() {
-                f.push(entity_choice(
-                    &format!("term_case_{i}"),
-                    &format!("Case {}", i + 1),
-                    model,
-                    EntityKind::LoadCase,
-                    Some(*case),
-                ));
-                f.push(num(
-                    &format!("term_factor_{i}"),
-                    &format!("Factor {}", i + 1),
-                    *factor,
-                ));
+                f.push(
+                    entity_choice(
+                        &format!("term_case_{i}"),
+                        &format!("Case {}", i + 1),
+                        model,
+                        EntityKind::LoadCase,
+                        Some(*case),
+                    )
+                    .span(TWO_THIRDS),
+                );
+                f.push(
+                    num(&format!("term_factor_{i}"), &format!("Factor {}", i + 1), *factor)
+                        .span(THIRD),
+                );
             }
         }
         EntityKind::Diaphragm => {
             let e = &model.diaphragms[&id];
             f.push(text("name", "Name", &e.name));
             let normal = AXES.iter().position(|(_, a)| *a == e.normal);
-            f.push(choice("normal", "Normal axis", labels(&AXES), normal));
+            f.push(choice("normal", "Normal axis", labels(&AXES), normal).span(THIRD));
             let rows = rows_of(model, EntityKind::Node);
             let selected = e
                 .master
@@ -319,12 +339,7 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
                 .map(|i| i + 1);
             let mut options: Vec<SharedString> = vec!["(automatic)".into()];
             options.extend(rows.into_iter().map(|(_, n)| SharedString::from(n)));
-            f.push(choice(
-                "master",
-                "Master node",
-                options,
-                selected.or(Some(0)),
-            ));
+            f.push(choice("master", "Master node", options, selected.or(Some(0))).span(TWO_THIRDS));
         }
         EntityKind::Group => {
             let e = &model.groups[&id];
@@ -341,7 +356,7 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
                 Some(e.level),
             ));
             for (i, axis) in ["Origin X", "Origin Y"].iter().enumerate() {
-                f.push(qty(&format!("o{i}"), axis, Role::Length, e.origin[i].si()));
+                f.push(qty(&format!("o{i}"), axis, Role::Length, e.origin[i].si()).span(HALF));
             }
         }
     }
@@ -600,6 +615,7 @@ struct TextField {
     label: SharedString,
     input: Entity<InputState>,
     committed: String,
+    span: u16,
 }
 struct CheckField {
     key: String,
@@ -611,17 +627,32 @@ struct ChoiceField {
     key: String,
     label: SharedString,
     select: Choice,
+    span: u16,
+}
+
+/// One field's widget, kept in the order the specs list them.
+enum Widget {
+    Text(TextField),
+    Check(CheckField),
+    Choice(ChoiceField),
 }
 
 struct Single {
     id: EntityId,
     kind: EntityKind,
-    texts: Vec<TextField>,
-    checks: Vec<CheckField>,
-    choices: Vec<ChoiceField>,
+    fields: Vec<Widget>,
     /// The plane of bending the Results tab plots, for a frame.
     plane: Plane,
     _subscriptions: Vec<Subscription>,
+}
+
+impl Single {
+    fn texts(&self) -> impl Iterator<Item = &TextField> {
+        self.fields.iter().filter_map(|f| match f {
+            Widget::Text(t) => Some(t),
+            _ => None,
+        })
+    }
 }
 
 struct Multi {
@@ -688,7 +719,7 @@ impl PropertyEditor {
         };
         if let Some(key) = self.pending_focus.take()
             && let Shown::Single(single) = &self.shown
-            && let Some(field) = single.texts.iter().find(|t| t.key == key)
+            && let Some(field) = single.texts().find(|t| t.key == key)
         {
             field.input.update(cx, |input, cx| input.focus(window, cx));
         }
@@ -711,15 +742,18 @@ impl PropertyEditor {
         let mut single = Single {
             id,
             kind,
-            texts: vec![],
-            checks: vec![],
-            choices: vec![],
+            fields: vec![],
             plane,
             _subscriptions: vec![],
         };
         for spec in specs {
             match spec {
-                FieldSpec::Text { key, label, value } => {
+                FieldSpec::Text {
+                    key,
+                    label,
+                    value,
+                    span,
+                } => {
                     let input =
                         cx.new(|cx| InputState::new(window, cx).default_value(value.clone()));
                     let field_key = key.clone();
@@ -735,12 +769,13 @@ impl PropertyEditor {
                             _ => {}
                         },
                     ));
-                    single.texts.push(TextField {
+                    single.fields.push(Widget::Text(TextField {
                         key,
                         label,
                         input,
                         committed: value,
-                    });
+                        span,
+                    }));
                 }
                 FieldSpec::Check {
                     key,
@@ -748,18 +783,19 @@ impl PropertyEditor {
                     label,
                     value,
                 } => {
-                    single.checks.push(CheckField {
+                    single.fields.push(Widget::Check(CheckField {
                         key,
                         group,
                         label,
                         value,
-                    });
+                    }));
                 }
                 FieldSpec::Choice {
                     key,
                     label,
                     options,
                     selected,
+                    span,
                 } => {
                     let select = cx.new(|cx| {
                         SelectState::new(
@@ -776,7 +812,12 @@ impl PropertyEditor {
                             this.commit(window, cx)
                         },
                     ));
-                    single.choices.push(ChoiceField { key, label, select });
+                    single.fields.push(Widget::Choice(ChoiceField {
+                        key,
+                        label,
+                        select,
+                        span,
+                    }));
                 }
             }
         }
@@ -855,26 +896,27 @@ impl PropertyEditor {
             return;
         };
         let mut values = Values::default();
-        for t in &single.texts {
-            values
-                .texts
-                .insert(t.key.clone(), t.input.read(cx).value().to_string());
-            values.committed.insert(t.key.clone(), t.committed.clone());
-        }
-        for c in &single.checks {
-            values.checks.insert(c.key.clone(), c.value);
-        }
-        for c in &single.choices {
-            values.choices.insert(
-                c.key.clone(),
-                c.select.read(cx).selected_index(cx).map(|ix| ix.row),
-            );
+        for field in &single.fields {
+            match field {
+                Widget::Text(t) => {
+                    values
+                        .texts
+                        .insert(t.key.clone(), t.input.read(cx).value().to_string());
+                    values.committed.insert(t.key.clone(), t.committed.clone());
+                }
+                Widget::Check(c) => {
+                    values.checks.insert(c.key.clone(), c.value);
+                }
+                Widget::Choice(c) => {
+                    values.choices.insert(
+                        c.key.clone(),
+                        c.select.read(cx).selected_index(cx).map(|ix| ix.row),
+                    );
+                }
+            }
         }
         let (id, kind) = (single.id, single.kind);
-        let unchanged = single
-            .texts
-            .iter()
-            .all(|t| values.text(&t.key) == t.committed);
+        let unchanged = single.texts().all(|t| values.text(&t.key) == t.committed);
         let result = {
             let document = self.document.read(cx);
             command_for(document.model(), id, kind, &values)
@@ -917,7 +959,10 @@ impl PropertyEditor {
 
     fn set_check(&mut self, key: String, value: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let Shown::Single(single) = &mut self.shown
-            && let Some(field) = single.checks.iter_mut().find(|c| c.key == key)
+            && let Some(field) = single.fields.iter_mut().find_map(|f| match f {
+                Widget::Check(c) if c.key == key => Some(c),
+                _ => None,
+            })
         {
             field.value = value;
             self.commit(window, cx);
@@ -1103,65 +1148,65 @@ impl PropertyEditor {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let muted = cx.theme().muted_foreground;
-        let mut form = Form::new().label_text_size(rems(0.75));
-        for t in &single.texts {
-            form = form.child(
-                Field::new()
+        let mut form = form();
+        let mut fields = single.fields.iter().peekable();
+        while let Some(field) = fields.next() {
+            form = form.child(match field {
+                Widget::Text(t) => Field::new()
+                    .col_span(t.span)
                     .label(t.label.clone())
                     .child(Input::new(&t.input).small()),
-            );
-        }
-        for c in &single.choices {
-            form = form.child(
-                Field::new()
+                Widget::Choice(c) => Field::new()
+                    .col_span(c.span)
                     .label(c.label.clone())
                     .child(Select::new(&c.select).small()),
-            );
-        }
-        let mut groups: Vec<SharedString> = vec![];
-        for c in &single.checks {
-            if !groups.contains(&c.group) {
-                groups.push(c.group.clone());
-            }
-        }
-        for group in groups {
-            let boxes = single.checks.iter().filter(|c| c.group == group).map(|c| {
-                let key = c.key.clone();
-                Checkbox::new(SharedString::from(format!("check-{}", c.key)))
-                    .small()
-                    .label(c.label.clone())
-                    .checked(c.value)
-                    .on_change(cx.listener(move |this, value: &bool, window, cx| {
-                        this.set_check(key.clone(), *value, window, cx)
-                    }))
+                Widget::Check(first) => {
+                    let mut group = vec![first];
+                    while let Some(Widget::Check(next)) = fields.peek()
+                        && next.group == first.group
+                    {
+                        group.push(next);
+                        fields.next();
+                    }
+                    let boxes = group.into_iter().map(|c| {
+                        let key = c.key.clone();
+                        Checkbox::new(SharedString::from(format!("check-{}", c.key)))
+                            .small()
+                            .label(c.label.clone())
+                            .checked(c.value)
+                            .on_change(cx.listener(move |this, value: &bool, window, cx| {
+                                this.set_check(key.clone(), *value, window, cx)
+                            }))
+                    });
+                    Field::new()
+                        .col_span(FULL)
+                        .label(first.group.clone())
+                        .child(h_flex().flex_wrap().gap_x_3().gap_y_1().children(boxes))
+                }
             });
-            form = form.child(
-                Field::new()
-                    .label(group.clone())
-                    .child(h_flex().flex_wrap().gap_x_3().gap_y_1().children(boxes)),
-            );
         }
         let extras = self.render_extras(single, window, cx);
         v_flex()
-            .gap_3()
+            .gap_4()
             .child(form)
             .children(extras)
             .child(
-                h_flex().gap_2().child(
-                    Button::new("delete-entity")
-                        .small()
-                        .danger()
-                        .label("Delete")
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(DeleteSelected), cx)
-                        }),
-                ),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(muted)
-                    .child(format!("id #{}", single.id.0)),
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        Button::new("delete-entity")
+                            .small()
+                            .danger()
+                            .label("Delete")
+                            .on_click(delete_and_close),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(format!("id #{}", single.id.0)),
+                    ),
             )
             .into_any_element()
     }
@@ -1447,107 +1492,92 @@ impl PropertyEditor {
 
     fn render_multi(&self, multi: &Multi, cx: &mut Context<Self>) -> AnyElement {
         let document = self.document.read(cx);
-        let muted = cx.theme().muted_foreground;
-        let mut counts: Vec<(EntityKind, usize)> = vec![];
-        for id in document.selection() {
-            if let Some(kind) = document.model().kind_of(*id) {
-                match counts.iter_mut().find(|(k, _)| *k == kind) {
-                    Some((_, n)) => *n += 1,
-                    None => counts.push((kind, 1)),
-                }
-            }
-        }
-        let summary = counts
-            .iter()
-            .map(|(k, n)| format!("{n} {k}{}", if *n == 1 { "" } else { "s" }))
-            .collect::<Vec<_>>()
-            .join(", ");
         let frames = document.selected_of(EntityKind::Frame).len();
         let nodes = document.selected_of(EntityKind::Node).len();
         let restraints = multi.restraints;
-        v_flex()
-            .gap_3()
-            .child(div().text_sm().child(summary))
-            .when(frames > 0, |this| {
-                this.child(
-                    Form::new()
-                        .label_text_size(rems(0.75))
+        let mut form = form();
+        if frames > 0 {
+            form = form
+                .child(
+                    Field::new()
+                        .col_span(HALF)
+                        .label(format!("Assign section to {frames} frames"))
                         .child(
-                            Field::new()
-                                .label(format!("Assign section to {frames} frames"))
-                                .child(
-                                    Select::new(&multi.section)
-                                        .small()
-                                        .placeholder("Choose a section"),
-                                ),
-                        )
-                        .child(
-                            Field::new()
-                                .label(format!("Assign material to {frames} frames"))
-                                .child(
-                                    Select::new(&multi.material)
-                                        .small()
-                                        .placeholder("Choose a material"),
-                                ),
+                            Select::new(&multi.section)
+                                .small()
+                                .placeholder("Choose a section"),
                         ),
                 )
-            })
-            .when(nodes > 0, |this| {
-                this.child(
-                    v_flex()
-                        .gap_2()
+                .child(
+                    Field::new()
+                        .col_span(HALF)
+                        .label(format!("Assign material to {frames} frames"))
                         .child(
-                            Form::new().label_text_size(rems(0.75)).child(
-                                Field::new()
-                                    .label(format!("Bind {nodes} nodes to level"))
-                                    .child(
-                                        Select::new(&multi.level)
-                                            .small()
-                                            .placeholder("Choose a level"),
-                                    ),
-                            ),
-                        )
+                            Select::new(&multi.material)
+                                .small()
+                                .placeholder("Choose a material"),
+                        ),
+                );
+        }
+        if nodes > 0 {
+            let boxes = (0..6).map(|i| {
+                Checkbox::new(("multi-restraint", i))
+                    .small()
+                    .label(DOF[i])
+                    .checked(restraints[i])
+                    .on_change(cx.listener(move |this, value: &bool, _, cx| {
+                        if let Shown::Multi(multi) = &mut this.shown {
+                            multi.restraints[i] = *value;
+                            cx.notify();
+                        }
+                    }))
+            });
+            form = form
+                .child(
+                    Field::new()
+                        .col_span(FULL)
+                        .label(format!("Bind {nodes} nodes to level"))
                         .child(
-                            div()
-                                .text_xs()
-                                .text_color(muted)
-                                .child(format!("Restraints for {nodes} nodes")),
-                        )
+                            Select::new(&multi.level)
+                                .small()
+                                .placeholder("Choose a level"),
+                        ),
+                )
+                .child(
+                    Field::new()
+                        .col_span(FULL)
+                        .label(format!("Set restraints of {nodes} nodes"))
                         .child(
                             h_flex()
                                 .flex_wrap()
+                                .items_center()
                                 .gap_x_3()
                                 .gap_y_1()
-                                .children((0..6).map(|i| {
-                                    Checkbox::new(("multi-restraint", i))
+                                .children(boxes)
+                                .child(
+                                    Button::new("apply-restraints")
                                         .small()
-                                        .label(DOF[i])
-                                        .checked(restraints[i])
-                                        .on_change(cx.listener(move |this, value: &bool, _, cx| {
-                                            if let Shown::Multi(multi) = &mut this.shown {
-                                                multi.restraints[i] = *value;
-                                                cx.notify();
-                                            }
-                                        }))
-                                })),
-                        )
-                        .child(
-                            Button::new("apply-restraints")
-                                .small()
-                                .outline()
-                                .label("Apply restraints")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.assign_restraints(window, cx)
-                                })),
+                                        .outline()
+                                        .ml_auto()
+                                        .label("Apply")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.assign_restraints(window, cx)
+                                        })),
+                                ),
                         ),
-                )
-            })
+                );
+        }
+        v_flex()
+            .gap_4()
+            .when(frames > 0 || nodes > 0, |this| this.child(form))
             .child(
-                Button::new("delete-selected")
-                    .small()
-                    .danger()
-                    .label("Delete selected")
-                    .on_click(|_, window, cx| window.dispatch_action(Box::new(DeleteSelected), cx)),
+                h_flex().child(
+                    Button::new("delete-selected")
+                        .small()
+                        .danger()
+                        .label("Delete selected")
+                        .on_click(delete_and_close),
+                ),
             )
             .into_any_element()
     }
@@ -1558,6 +1588,21 @@ enum LoadRef {
     Nodal(usize),
     Member(usize),
     Surface(usize),
+}
+
+/// The editor's form: the six-column grid with small labels.
+fn form() -> Form {
+    Form::new()
+        .small()
+        .columns(COLUMNS)
+        .label_text_size(rems(0.75))
+}
+
+/// Deletes the selection and closes the editor, which would otherwise be
+/// left open on nothing.
+fn delete_and_close(_: &ClickEvent, window: &mut Window, cx: &mut App) {
+    window.dispatch_action(Box::new(DeleteSelected), cx);
+    window.close_dialog(cx);
 }
 
 fn remove_button(
@@ -1573,27 +1618,25 @@ fn remove_button(
         .into_any_element()
 }
 
-impl Render for PropertyEditor {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let (bg, fg, muted) = (
-            theme.sidebar,
-            theme.sidebar_foreground,
-            theme.muted_foreground,
-        );
-        let title: SharedString = match &self.shown {
+impl PropertyEditor {
+    /// What the editor shows, for its dialog's title: "Frame F7", or the
+    /// selection's make-up, "18 nodes, 26 frames".
+    pub fn title(&self, cx: &App) -> SharedString {
+        let document = self.document.read(cx);
+        match &self.shown {
             Shown::Nothing => "Properties".into(),
             Shown::Single(single) => {
-                let name = self
-                    .document
-                    .read(cx)
-                    .model()
-                    .name_of(single.id)
-                    .unwrap_or("?");
-                format!("{} {name}", capitalize(&single.kind.to_string())).into()
+                let name = document.model().name_of(single.id).unwrap_or("?");
+                format!("{} {name}", crate::text::capitalize(&single.kind.to_string())).into()
             }
-            Shown::Multi(_) => "Selection".into(),
-        };
+            Shown::Multi(_) => selection_summary(document).into(),
+        }
+    }
+}
+
+impl Render for PropertyEditor {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
         // A frame with results gets a Results tab: its diagram for the shown combination.
         let results = match &self.shown {
             Shown::Single(single) if single.kind == EntityKind::Frame => {
@@ -1611,7 +1654,7 @@ impl Render for PropertyEditor {
             _ => None,
         };
         let tabs = results.is_some().then(|| {
-            div().px_3().child(
+            div().child(
                 TabBar::new("property-tabs")
                     .underline()
                     .small()
@@ -1652,43 +1695,15 @@ impl Render for PropertyEditor {
             (Shown::Single(single), _) => self.render_single(single, window, cx),
             (Shown::Multi(multi), _) => self.render_multi(multi, cx),
         };
-        v_flex()
-            .size_full()
-            .bg(bg)
-            .text_color(fg)
-            .child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(title),
-            )
-            .children(tabs)
-            .child(
-                v_flex()
-                    .id("properties-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scrollbar()
-                    .px_3()
-                    .pb_3()
-                    .child(body),
-            )
+        // The dialog around the editor gives it its title and scrolls it.
+        v_flex().gap_3().pb_1().children(tabs).child(body)
     }
 }
 
-fn capitalize(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
-}
 
 #[cfg(test)]
 mod tests {
-    use super::{FieldSpec, Values, command_for, specs};
+    use super::{FULL, FieldSpec, Values, command_for, specs};
     use crate::text::{DEFAULT_PRECISION, TestPrecision};
     use oa_core::units::Length;
     use oa_model::{Command, ElevationScope, EntityKind, Model, Node};
@@ -1711,6 +1726,35 @@ mod tests {
             }
         }
         v
+    }
+
+    /// The editor lays fields out in this order, so a node's level sits with
+    /// its position rather than after its springs and masses, and a group of
+    /// checkboxes starts on a fresh row.
+    #[test]
+    fn node_fields_read_in_order_on_whole_rows() {
+        let _p = TestPrecision::of(DEFAULT_PRECISION);
+        let mut model = Model::default();
+        let level = model.base_level().unwrap();
+        let id = model.insert(Node::new("N1", level, [Length::ZERO; 3]));
+        let (_, fields) = specs(&model, id).unwrap();
+        let keys: Vec<&str> = fields
+            .iter()
+            .map(|f| match f {
+                FieldSpec::Text { key, .. }
+                | FieldSpec::Check { key, .. }
+                | FieldSpec::Choice { key, .. } => key.as_str(),
+            })
+            .collect();
+        assert_eq!(keys[..6], ["name", "p0", "p1", "p2", "level", "offset"]);
+        let mut filled = 0;
+        for f in &fields {
+            match f {
+                FieldSpec::Text { span, .. } | FieldSpec::Choice { span, .. } => filled += span,
+                FieldSpec::Check { .. } => assert_eq!(filled % FULL, 0, "a row left part-filled"),
+            }
+        }
+        assert_eq!(filled % FULL, 0);
     }
 
     #[test]

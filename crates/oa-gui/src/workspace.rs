@@ -10,7 +10,9 @@ use crate::document::{
 use crate::explorer::Explorer;
 use crate::levels::LevelPanel;
 use crate::loads::{LoadPanel, Section};
-use crate::prompt::{AnalysisSummary, Gates, PromptState, render_prompt, selection_summary};
+use crate::prompt::{
+    AnalysisSummary, Gates, PromptState, describe, render_prompt, selection_summary,
+};
 use crate::properties::{EditorTab, PropertyEditor};
 use crate::results::Diagram;
 use crate::snap;
@@ -20,6 +22,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{
     Command as CommandPalette, CommandGroup, CommandItem, CommandState,
 };
+use gpui_kit::component::dialog::Dialog;
 use gpui_kit::component::menu::AppMenuBar;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::status_bar::StatusBar;
@@ -65,10 +68,7 @@ impl Workspace {
         let menu_bar = AppMenuBar::new(cx);
         let subscriptions = vec![
             cx.observe_in(&document, window, |this, _, window, cx| {
-                window.set_window_title(&format!(
-                    "{} - open-analysis",
-                    this.document.read(cx).title()
-                ));
+                window.set_window_title(&window_title(this.document.read(cx)));
                 this.refresh_menus(cx);
                 cx.notify();
             }),
@@ -92,10 +92,7 @@ impl Workspace {
             palette: None,
             _subscriptions: subscriptions,
         };
-        window.set_window_title(&format!(
-            "{} - open-analysis",
-            this.document.read(cx).title()
-        ));
+        window.set_window_title(&window_title(this.document.read(cx)));
         this.refresh_menus(cx);
         // The single-key bindings live on the view, so it starts focused.
         let focus = this.viewport.read(cx).focus_handle().clone();
@@ -201,7 +198,12 @@ impl Workspace {
                         items: text::PRECISIONS
                             .iter()
                             .map(|&decimals| {
-                                MenuItem::action(decimals.to_string(), SetPrecision(decimals))
+                                let label = match decimals {
+                                    0 => "Whole numbers".to_string(),
+                                    1 => "1 decimal place".to_string(),
+                                    n => format!("{n} decimal places"),
+                                };
+                                MenuItem::action(label, SetPrecision(decimals))
                                     .checked(decimals == text::precision())
                             })
                             .collect(),
@@ -230,7 +232,7 @@ impl Workspace {
                     MenuItem::action("Active level with context", ViewActiveLevelContext)
                         .checked(mode == ViewMode::LevelContext),
                     MenuItem::submenu(Menu {
-                        name: "Active level".into(),
+                        name: "Go to level".into(),
                         disabled: levels.is_empty(),
                         items: levels,
                     }),
@@ -574,7 +576,7 @@ impl Workspace {
     /// Deletes the selection. Frames and shells on deleted nodes go too, and
     /// loads or diaphragm entries on anything deleted are dropped first.
     pub fn delete_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let commands = {
+        let (commands, summary) = {
             let document = self.document.read(cx);
             let model = document.model();
             let mut doomed: BTreeSet<EntityId> = document.selection().iter().copied().collect();
@@ -660,11 +662,10 @@ impl Workspace {
                     });
                 }
             }
-            commands
+            (commands, describe(model, &doomed))
         };
-        let count = commands.len();
         if self.apply(Command::Batch { commands }, window, cx) {
-            self.info(format!("Deleted {count} entities"), window, cx);
+            self.info(format!("Deleted {summary}"), window, cx);
         }
     }
 
@@ -855,64 +856,61 @@ impl Workspace {
 
     // MARK: Pop-up panels
 
-    /// The property editor for the selection, in a dialog.
+    /// The property editor for the selection, in a dialog named for it.
     pub fn show_properties(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.document.read(cx).selection().is_empty() {
             return self.info("Select something to edit first", window, cx);
         }
         let properties = self.properties.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .w(px(460.))
-                .footer(div())
-                .child(div().h(px(560.)).child(properties.clone()))
+        window.open_dialog(cx, move |dialog, window, cx| {
+            panel_dialog(dialog, 480., window)
+                .title(properties.read(cx).title(cx))
+                .child(properties.clone())
         });
     }
     /// The load cases table, in a dialog.
     pub fn show_load_cases(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self.load_cases.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
+        window.open_dialog(cx, move |dialog, window, _| {
+            panel_dialog(dialog, 720., window)
                 .title("Load cases")
-                .w(px(760.))
-                .footer(div())
-                // Enter commits a cell and must not confirm the dialog.
-                .on_ok(|_, _, _| false)
-                .child(div().h(px(480.)).child(panel.clone()))
+                .child(panel.clone())
         });
     }
     /// The levels table, in a dialog.
     pub fn show_levels(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self.levels.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
+        window.open_dialog(cx, move |dialog, window, _| {
+            panel_dialog(dialog, 720., window)
                 .title("Levels")
-                .w(px(960.))
-                .footer(div())
-                .on_ok(|_, _, _| false)
-                .child(div().h(px(420.)).child(panel.clone()))
+                .child(panel.clone())
         });
     }
-    /// The load combinations matrix, in a dialog.
+    /// The load combinations matrix, in a dialog as wide as its columns
+    /// need, a name and one factor per load case.
     pub fn show_combinations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self.combinations.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
+        let document = self.document.clone();
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let cases = document.read(cx).model().load_cases.len() as f32;
+            let widest = f32::from(window.viewport_size().width) - 64.;
+            let width = (320. + 120. * cases).clamp(560., widest.max(560.));
+            panel_dialog(dialog, width, window)
                 .title("Load combinations")
-                .w(px(920.))
-                .footer(div())
-                .on_ok(|_, _, _| false)
-                .child(div().h(px(480.)).child(panel.clone()))
+                .child(panel.clone())
         });
     }
-    /// The model tree, in a dialog. Click selects, double-click edits.
+    /// The model tree, in a dialog. Click selects, double-click edits. The
+    /// sections holding the selection open, so it is in sight.
     pub fn show_model_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = self.document.read(cx).selection().to_vec();
+        self.explorer
+            .update(cx, |explorer, cx| explorer.reveal(&selection, cx));
         let explorer = self.explorer.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .w(px(380.))
-                .footer(div())
-                .child(div().h(px(560.)).child(explorer.clone()))
+        window.open_dialog(cx, move |dialog, window, _| {
+            panel_dialog(dialog, 400., window)
+                .title("Model browser")
+                .child(explorer.clone())
         });
     }
 
@@ -928,21 +926,20 @@ impl Workspace {
             }
         };
         state.update(cx, |state, cx| state.set_query("", window, cx));
-        let workspace = cx.entity().downgrade();
+        // Gathered now rather than in the builder: the builder runs while the
+        // workspace renders the dialog layer, when the workspace cannot be
+        // read. Nothing the entries show can change while the palette is up.
+        let groups = self.palette_entries(cx);
         let palette_state = state.clone();
-        window.open_dialog(cx, move |dialog, _, cx| {
-            let groups = workspace
-                .upgrade()
-                .map(|workspace| workspace.read(cx).palette_entries(cx))
-                .unwrap_or_default();
+        window.open_dialog(cx, move |dialog, _, _| {
             let mut palette = CommandPalette::new(&palette_state)
                 .placeholder("Type a command, or the name of something to define…")
                 .bordered(false)
                 .max_h(px(420.))
                 .on_confirm(|_, window, cx| window.close_dialog(cx))
                 .on_cancel(|window, cx| window.close_dialog(cx));
-            for (label, items) in groups {
-                palette = palette.group(CommandGroup::new().label(label).items(items));
+            for (label, items) in &groups {
+                palette = palette.group(CommandGroup::new().label(*label).items(items.clone()));
             }
             dialog.w(px(620.)).footer(div()).child(palette)
         });
@@ -1140,7 +1137,7 @@ impl Workspace {
             ),
             ("Analyze", analyze),
             ("Results", results),
-            ("Help", vec![item("Guide and shortcuts…", Box::new(About), None)]),
+            ("Help", vec![item("Guide and keys…", Box::new(About), None)]),
         ]
     }
     pub fn add_load_case(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1306,7 +1303,7 @@ impl Workspace {
         }
     }
     pub fn about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        window.open_dialog(cx, |dialog, _, cx| {
+        window.open_dialog(cx, |dialog, window, cx| {
             let muted = cx.theme().muted_foreground;
             let heading = move |text: &'static str| {
                 div()
@@ -1319,12 +1316,14 @@ impl Workspace {
             let row = move |keys: &'static str, what: &'static str| {
                 h_flex()
                     .gap_3()
-                    .child(div().w(px(150.)).text_color(muted).child(keys))
-                    .child(what)
+                    .items_start()
+                    .child(div().w(px(168.)).flex_shrink_0().text_color(muted).child(keys))
+                    .child(div().flex_1().min_w_0().child(what))
             };
             dialog
                 .title("Guide")
-                .w(px(480.))
+                .w(px(560.))
+                .max_h(window.viewport_size().height * 0.8)
                 .child(
                     v_flex()
                         .gap_1()
@@ -1350,6 +1349,8 @@ impl Workspace {
                         .child(row("Esc", "Stop drawing, then back to Select, then deselect"))
                         .child(heading("Levels"))
                         .child("Z is up. Every node belongs to a level, at an offset above its elevation; Define > Levels adds, moves, and removes levels. The active level is where the Node tool places nodes and what the level views show; moving a level carries its nodes with it.")
+                        .child(heading("Results"))
+                        .child("After a run, a row under the view controls turns the deformed shape on and off, draws a section force along every member, and steps through the combinations. Results > Member results plots the shear, moment, and deflection of one selected frame. Any edit drops the results until the next run.")
                         .child(heading("Drawing"))
                         .child("Node places a node where you click, on the active level. Frame joins node I to node J and carries on from J. Shell takes four nodes in order around it. The draw tools snap to the ends, midpoints, and intersections of frames, shell edges, and underlay lines, and to the foot of the perpendicular from the last point; a snapped point lands on the active level, and Frame and Shell make a node there if none stands on it. The icons at the right of the status bar, or Draw > Snap, switch each snap on and off. With nodes already selected, Frame and Shell draw on them at once. Loads go on the selected nodes or frames."),
                 )
@@ -1420,23 +1421,20 @@ impl Workspace {
             ResultsState::Stale => ("Results out of date · Ctrl+R", warning),
             ResultsState::None => ("No results yet · Ctrl+R", muted),
         };
-        let problem_text = match problems.len() {
-            0 => "Model is valid".to_string(),
-            1 => problems[0].to_string(),
-            n => format!("{n} problems: {}", problems[0]),
+        // A new model has no nodes, which the solver refuses; that is where
+        // every model starts, not a fault worth a warning.
+        let empty = model.nodes.is_empty();
+        let flagged = !empty && !problems.is_empty();
+        let problem_text = match problems {
+            _ if empty => "Empty model".to_string(),
+            [] => "Model is valid".to_string(),
+            [one] => text::capitalize(&one.to_string()),
+            [first, ..] => format!("{} problems: {first}", problems.len()),
         };
-        let valid = problems.is_empty();
-        let view = match viewport.preset() {
-            Some(ViewPreset::ThreeD) => "3D view",
-            Some(ViewPreset::Plan) => "Plan view",
-            Some(ViewPreset::ElevationX) => "Elevation, X across",
-            Some(ViewPreset::ElevationY) => "Elevation, Y across",
-            None => "Free orbit",
-        };
-        let shown = match viewport.mode() {
-            ViewMode::Whole => "Whole model",
-            ViewMode::Level => "Active level",
-            ViewMode::LevelContext => "Level with context",
+        let problem_color = match (empty, flagged) {
+            (true, _) => muted,
+            (false, true) => warning,
+            (false, false) => success,
         };
         let level = viewport
             .active_level()
@@ -1472,13 +1470,12 @@ impl Workspace {
                     .gap_1p5()
                     .items_center()
                     .text_xs()
+                    .child(div().size(px(7.)).rounded_full().bg(problem_color))
                     .child(
                         div()
-                            .size(px(7.))
-                            .rounded_full()
-                            .bg(if valid { success } else { warning }),
-                    )
-                    .child(div().when(!valid, |d| d.text_color(warning)).child(problem_text)),
+                            .when(flagged, |d| d.text_color(warning))
+                            .child(problem_text),
+                    ),
             )
             .left(div().text_xs().text_color(muted).child(format!(
                 "{} nodes · {} frames · {} shells · {} cases · {} combinations",
@@ -1497,18 +1494,27 @@ impl Workspace {
                     .child(div().size(px(7.)).rounded_full().bg(results_color))
                     .child(results),
             )
-            .right(div().text_xs().text_color(muted).child("kip, ft, in"))
-            .right(div().text_xs().text_color(muted).child(
-                match viewport.up_axis() {
-                    UpAxis::Y => "Y up",
-                    UpAxis::Z => "Z up",
-                },
-            ))
             .right(div().text_xs().text_color(muted).child(level))
-            .right(div().text_xs().text_color(muted).child(shown))
-            .right(div().text_xs().text_color(muted).child(view))
+            .right(div().text_xs().text_color(muted).child("kip, ft, in"))
             .right(snaps)
     }
+}
+
+/// A dialog holding a live panel rather than a form. It has no buttons,
+/// since every edit commits as it is made, and Enter, which commits a
+/// field, must not close it. It grows with its content to most of the
+/// window's height and then scrolls, so a short table leaves no blank space
+/// and a long one stays on screen.
+fn panel_dialog(dialog: Dialog, width: f32, window: &Window) -> Dialog {
+    dialog
+        .w(px(width))
+        .max_h(window.viewport_size().height * 0.8)
+        .on_ok(|_, _, _| false)
+}
+
+/// "Example frame — open-analysis", with a star while there are unsaved changes.
+fn window_title(document: &Document) -> String {
+    format!("{} — open-analysis", document.title())
 }
 
 /// The status bar's icon for a snap: the marker the view draws at one.
@@ -1526,7 +1532,7 @@ impl Render for Workspace {
         let theme = cx.theme();
         let (background, foreground, muted) =
             (theme.background, theme.foreground, theme.muted_foreground);
-        let title = self.document.read(cx).title();
+        let title = window_title(self.document.read(cx));
         v_flex()
             .size_full()
             .bg(background)
@@ -1539,7 +1545,7 @@ impl Render for Workspace {
                             .px_3()
                             .text_sm()
                             .text_color(muted)
-                            .child(format!("{title} - open-analysis")),
+                            .child(title),
                     ),
             )
             .child(render_prompt(&self.prompt_state(cx), cx))

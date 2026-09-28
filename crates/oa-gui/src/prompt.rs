@@ -7,7 +7,7 @@ use crate::viewport::{DisplayOptions, Tool};
 use gpui_kit::component::{ActiveTheme as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use oa_model::EntityKind;
+use oa_model::{EntityId, EntityKind, Model};
 
 /// Why each gated command is unavailable, or `None` when it can run.
 pub struct Gates {
@@ -78,9 +78,14 @@ impl Gates {
 
 /// "2 nodes, 1 frame" for the current selection, or "Nothing".
 pub fn selection_summary(document: &Document) -> String {
-    let model = document.model();
+    describe(document.model(), document.selection())
+}
+
+/// "2 nodes, 1 frame" for these entities, kinds in the order first met, or
+/// "Nothing".
+pub fn describe<'a>(model: &Model, ids: impl IntoIterator<Item = &'a EntityId>) -> String {
     let mut counts: Vec<(EntityKind, usize)> = vec![];
-    for id in document.selection() {
+    for id in ids {
         if let Some(kind) = model.kind_of(*id) {
             match counts.iter_mut().find(|(k, _)| *k == kind) {
                 Some((_, n)) => *n += 1,
@@ -271,4 +276,22 @@ pub fn render_prompt(state: &PromptState, cx: &App) -> impl IntoElement {
                     .child(aside),
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::describe;
+    use oa_core::units::Length;
+    use oa_model::{Model, Node};
+
+    #[test]
+    fn describes_by_kind_with_plurals() {
+        let mut model = Model::default();
+        let level = model.base_level().unwrap();
+        let a = model.insert(Node::new("N1", level, [Length::ZERO; 3]));
+        let b = model.insert(Node::new("N2", level, [Length::from_feet(10.0); 3]));
+        assert_eq!(describe(&model, &[a]), "1 node");
+        assert_eq!(describe(&model, &[a, b]), "2 nodes");
+        assert_eq!(describe(&model, &[]), "Nothing");
+    }
 }

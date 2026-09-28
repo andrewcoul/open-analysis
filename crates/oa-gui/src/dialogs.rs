@@ -21,52 +21,87 @@ use oa_model::{
 
 type Choice = Entity<SelectState<SearchableVec<SharedString>>>;
 
-/// Labelled text inputs plus optional choice lists, read back by label.
+/// How much of a row a field takes on the forms' six-column grid.
+#[derive(Clone, Copy)]
+enum Width {
+    Full,
+    Half,
+    Third,
+}
+impl Width {
+    fn span(self) -> u16 {
+        match self {
+            Width::Full => 6,
+            Width::Half => 3,
+            Width::Third => 2,
+        }
+    }
+}
+
+enum Widget {
+    Text(Entity<InputState>),
+    Choice(Choice),
+}
+
+/// Labelled text inputs and choice lists, laid out in the order they are
+/// added and read back by label.
+#[derive(Default)]
 struct Inputs {
-    texts: Vec<(SharedString, Entity<InputState>)>,
-    choices: Vec<(SharedString, Choice, Vec<SharedString>)>,
+    fields: Vec<(SharedString, Widget, Width)>,
 }
 impl Inputs {
-    fn new(window: &mut Window, cx: &mut App, fields: &[(&str, &str)]) -> Self {
-        let texts = fields
-            .iter()
-            .map(|(label, value)| {
-                let value = value.to_string();
-                (
-                    SharedString::from(label.to_string()),
-                    cx.new(|cx| InputState::new(window, cx).default_value(value)),
-                )
-            })
-            .collect();
-        Self {
-            texts,
-            choices: vec![],
-        }
+    fn with_text(
+        mut self,
+        label: &str,
+        value: &str,
+        width: Width,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
+        let value = value.to_string();
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(value));
+        self.fields
+            .push((label.to_string().into(), Widget::Text(input), width));
+        self
+    }
+    /// A name that may be left blank, saying what a blank one becomes.
+    fn with_optional_name(mut self, blank: &str, window: &mut Window, cx: &mut App) -> Self {
+        let blank = blank.to_string();
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(blank));
+        self.fields
+            .push(("Name".into(), Widget::Text(input), Width::Full));
+        self
     }
     fn with_choice(
         mut self,
         label: &str,
         options: Vec<SharedString>,
         selected: Option<usize>,
+        width: Width,
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
         let select = cx.new(|cx| {
             SelectState::new(
-                SearchableVec::from(options.clone()),
+                SearchableVec::from(options),
                 selected.map(IndexPath::new),
                 window,
                 cx,
             )
         });
-        self.choices.push((label.into(), select, options));
+        self.fields
+            .push((label.to_string().into(), Widget::Choice(select), width));
         self
     }
     fn text(&self, label: &str, cx: &App) -> String {
-        self.texts
+        self.fields
             .iter()
-            .find(|(l, _)| l.as_ref() == label)
-            .map(|(_, s)| s.read(cx).value().to_string())
+            .find_map(|(l, widget, _)| match widget {
+                Widget::Text(input) if l.as_ref() == label => {
+                    Some(input.read(cx).value().to_string())
+                }
+                _ => None,
+            })
             .unwrap_or_default()
     }
     fn num(&self, label: &str, cx: &App) -> Result<f64, String> {
@@ -77,27 +112,22 @@ impl Inputs {
         parse_q(role, label, &self.text(label, cx))
     }
     fn choice(&self, label: &str, cx: &App) -> Option<usize> {
-        self.choices
+        self.fields
             .iter()
-            .find(|(l, _, _)| l.as_ref() == label)
-            .and_then(|(_, s, _)| s.read(cx).selected_index(cx))
+            .find_map(|(l, widget, _)| match widget {
+                Widget::Choice(select) if l.as_ref() == label => select.read(cx).selected_index(cx),
+                _ => None,
+            })
             .map(|ix| ix.row)
     }
     fn form(&self) -> Form {
-        let mut form = Form::new().label_text_size(rems(0.8));
-        for (label, select, _) in &self.choices {
-            form = form.child(
-                Field::new()
-                    .label(label.clone())
-                    .child(Select::new(select).small()),
-            );
-        }
-        for (label, input) in &self.texts {
-            form = form.child(
-                Field::new()
-                    .label(label.clone())
-                    .child(Input::new(input).small()),
-            );
+        let mut form = Form::new().small().columns(6).label_text_size(rems(0.8));
+        for (label, widget, width) in &self.fields {
+            let field = Field::new().col_span(width.span()).label(label.clone());
+            form = form.child(match widget {
+                Widget::Text(input) => field.child(Input::new(input).small()),
+                Widget::Choice(select) => field.child(Select::new(select).small()),
+            });
         }
         form
     }
@@ -139,7 +169,7 @@ fn open<F>(
         let on_ok = on_ok.clone();
         dialog
             .title(title)
-            .w(px(420.))
+            .w(px(480.))
             .child(inputs.form())
             .footer(
                 DialogFooter::new()
@@ -159,6 +189,18 @@ fn open<F>(
             )
             .on_ok(move |_, window, cx| on_ok(&inputs_for_ok, window, cx))
     });
+}
+
+/// The name typed, or when it is left blank, `fallback`, numbered on if an
+/// entity of this kind already has it: "A992", then "A992 2".
+fn name_or<T: oa_model::model::Entity>(model: &Model, typed: String, fallback: &str) -> String {
+    if !typed.trim().is_empty() {
+        return typed;
+    }
+    std::iter::once(fallback.to_string())
+        .chain((2..).map(|n| format!("{fallback} {n}")))
+        .find(|name| model.find::<T>(name).is_none())
+        .expect("unbounded")
 }
 
 fn names(model: &Model, kind: EntityKind) -> Vec<SharedString> {
@@ -189,7 +231,8 @@ pub fn add_node(
             .map(|id| {
                 let l = &model.levels[&id];
                 let elevation = crate::text::fmt_q(Role::Length, l.elevation.si());
-                (id, format!("{} ({elevation} ft)", l.name).into())
+                let unit = crate::text::UNITS.symbol(Role::Length);
+                (id, format!("{} ({elevation} {unit})", l.name).into())
             })
             .collect();
         let selected = active
@@ -198,23 +241,19 @@ pub fn add_node(
         (unused_name::<Node>(model, "N"), levels, selected)
     };
     let fields = ["X", "Y", "Offset above level"].map(|a| label(a, Role::Length));
-    let inputs = Inputs::new(
-        window,
-        cx,
-        &[
-            ("Name", &name),
-            (&fields[0], "0"),
-            (&fields[1], "0"),
-            (&fields[2], "0"),
-        ],
-    )
-    .with_choice(
-        "Level",
-        levels.iter().map(|(_, l)| l.clone()).collect(),
-        selected,
-        window,
-        cx,
-    );
+    let inputs = Inputs::default()
+        .with_text("Name", &name, Width::Full, window, cx)
+        .with_choice(
+            "Level",
+            levels.iter().map(|(_, l)| l.clone()).collect(),
+            selected,
+            Width::Full,
+            window,
+            cx,
+        )
+        .with_text(&fields[0], "0", Width::Third, window, cx)
+        .with_text(&fields[1], "0", Width::Third, window, cx)
+        .with_text(&fields[2], "0", Width::Third, window, cx);
     open(
         "Add node",
         "Add node",
@@ -299,25 +338,26 @@ pub fn import_underlay(
         (name, levels, selected)
     };
     let fields = ["Origin X", "Origin Y"].map(|a| label(a, Role::Length));
-    let inputs = Inputs::new(
-        window,
-        cx,
-        &[("Name", &name), (&fields[0], "0"), (&fields[1], "0")],
-    )
-    .with_choice(
-        "Level",
-        levels.iter().map(|(_, l)| l.clone()).collect(),
-        selected,
-        window,
-        cx,
-    )
-    .with_choice(
-        "Drawing units",
-        crate::cad::UNITS.iter().map(|(u, _)| (*u).into()).collect(),
-        drawing.unit,
-        window,
-        cx,
-    );
+    let inputs = Inputs::default()
+        .with_text("Name", &name, Width::Full, window, cx)
+        .with_choice(
+            "Level",
+            levels.iter().map(|(_, l)| l.clone()).collect(),
+            selected,
+            Width::Half,
+            window,
+            cx,
+        )
+        .with_choice(
+            "Drawing units",
+            crate::cad::UNITS.iter().map(|(u, _)| (*u).into()).collect(),
+            drawing.unit,
+            Width::Half,
+            window,
+            cx,
+        )
+        .with_text(&fields[0], "0", Width::Half, window, cx)
+        .with_text(&fields[1], "0", Width::Half, window, cx);
     open(
         "Import CAD underlay",
         "Import",
@@ -381,14 +421,16 @@ pub fn add_material_from_library(document: Entity<Document>, window: &mut Window
         .iter()
         .map(|m| m.designation.clone().into())
         .collect();
-    let name = unused_name::<Material>(document.read(cx).model(), "MAT");
-    let inputs = Inputs::new(window, cx, &[("Name", &name)]).with_choice(
-        "Library material",
-        designations,
-        Some(0),
-        window,
-        cx,
-    );
+    let inputs = Inputs::default()
+        .with_choice(
+            "Library material",
+            designations,
+            Some(0),
+            Width::Full,
+            window,
+            cx,
+        )
+        .with_optional_name("Same as the library material", window, cx);
     open(
         "Add material from library",
         "Add material",
@@ -401,10 +443,12 @@ pub fn add_material_from_library(document: Entity<Document>, window: &mut Window
                 return false;
             };
             let designation = library.materials[ix].designation.clone();
+            let model = document.read(cx).model();
+            let name = name_or::<Material>(model, inputs.text("Name", cx), &designation);
             let material = library
-                .material(&designation, inputs.text("Name", cx))
+                .material(&designation, name)
                 .expect("designation from the list");
-            let id = document.read(cx).model().next_id;
+            let id = model.next_id;
             apply(
                 &document,
                 Command::AddMaterial {
@@ -421,16 +465,11 @@ pub fn add_material_from_library(document: Entity<Document>, window: &mut Window
 pub fn add_custom_material(document: Entity<Document>, window: &mut Window, cx: &mut App) {
     let name = unused_name::<Material>(document.read(cx).model(), "MAT");
     let (young, density) = (label("E", Role::Stress), label("Density", Role::Density));
-    let inputs = Inputs::new(
-        window,
-        cx,
-        &[
-            ("Name", &name),
-            (&young, "29000"),
-            ("Poisson's ratio", "0.3"),
-            (&density, "490"),
-        ],
-    );
+    let inputs = Inputs::default()
+        .with_text("Name", &name, Width::Full, window, cx)
+        .with_text(&young, "29000", Width::Third, window, cx)
+        .with_text("Poisson's ratio", "0.3", Width::Third, window, cx)
+        .with_text(&density, "490", Width::Third, window, cx);
     open(
         "Add material",
         "Add material",
@@ -478,14 +517,16 @@ pub fn add_section_from_library(document: Entity<Document>, window: &mut Window,
         .into_iter()
         .map(|s| s.to_string().into())
         .collect();
-    let name = unused_name::<Section>(document.read(cx).model(), "SEC");
-    let inputs = Inputs::new(window, cx, &[("Name", &name)]).with_choice(
-        "Library section",
-        designations,
-        Some(0),
-        window,
-        cx,
-    );
+    let inputs = Inputs::default()
+        .with_choice(
+            "Library section",
+            designations,
+            Some(0),
+            Width::Full,
+            window,
+            cx,
+        )
+        .with_optional_name("Same as the library section", window, cx);
     open(
         "Add section from library",
         "Add section",
@@ -498,10 +539,12 @@ pub fn add_section_from_library(document: Entity<Document>, window: &mut Window,
                 return false;
             };
             let designation = library.sections[ix].designation.clone();
+            let model = document.read(cx).model();
+            let name = name_or::<Section>(model, inputs.text("Name", cx), &designation);
             let section = library
-                .section(&designation, inputs.text("Name", cx))
+                .section(&designation, name)
                 .expect("designation from the list");
-            let id = document.read(cx).model().next_id;
+            let id = model.next_id;
             apply(
                 &document,
                 Command::AddSection {
@@ -519,17 +562,12 @@ pub fn add_custom_section(document: Entity<Document>, window: &mut Window, cx: &
     let name = unused_name::<Section>(document.read(cx).model(), "SEC");
     let area = label("Area", Role::Area);
     let moments = ["Iy", "Iz", "J"].map(|l| label(l, Role::SecondMoment));
-    let inputs = Inputs::new(
-        window,
-        cx,
-        &[
-            ("Name", &name),
-            (&area, "10"),
-            (&moments[0], "50"),
-            (&moments[1], "200"),
-            (&moments[2], "1"),
-        ],
-    );
+    let inputs = Inputs::default()
+        .with_text("Name", &name, Width::Full, window, cx)
+        .with_text(&area, "10", Width::Full, window, cx)
+        .with_text(&moments[0], "50", Width::Third, window, cx)
+        .with_text(&moments[1], "200", Width::Third, window, cx)
+        .with_text(&moments[2], "1", Width::Third, window, cx);
     open(
         "Add section",
         "Add section",
@@ -587,7 +625,7 @@ pub fn add_asce_load_case(document: Entity<Document>, window: &mut Window, cx: &
         .iter()
         .map(|t| crate::loads::type_label(*t).into())
         .collect();
-    let inputs = Inputs::new(window, cx, &[]).with_choice("Load", options, Some(0), window, cx);
+    let inputs = Inputs::default().with_choice("Load", options, Some(0), Width::Full, window, cx);
     open(
         "Add ASCE 7 load case",
         "Add load case",
@@ -601,11 +639,7 @@ pub fn add_asce_load_case(document: Entity<Document>, window: &mut Window, cx: &
             };
             let load_type = types[ix];
             let model = document.read(cx).model();
-            let base = load_type.label();
-            let name = std::iter::once(base.to_string())
-                .chain((2..).map(|n| format!("{base} {n}")))
-                .find(|name| model.find::<LoadCase>(name).is_none())
-                .expect("unbounded");
+            let name = name_or::<LoadCase>(model, String::new(), load_type.label());
             let mut load_case = LoadCase::new(name).with_type(load_type);
             let carries_self_weight = model.load_cases.values().any(|c| c.self_weight != [0.0; 3]);
             if load_type == LoadType::Dead && !carries_self_weight {
@@ -626,18 +660,15 @@ pub fn add_asce_load_case(document: Entity<Document>, window: &mut Window, cx: &
 /// the chosen edition and method, skipping any the model already has.
 pub fn generate_combinations(document: Entity<Document>, window: &mut Window, cx: &mut App) {
     if document.read(cx).model().load_cases.is_empty() {
-        notify_error(
-            window,
-            cx,
-            "Define a load case first (Define > Load cases and combinations)",
-        );
+        notify_error(window, cx, "Define a load case first (Define > Load cases)");
         return;
     }
-    let inputs = Inputs::new(window, cx, &[])
+    let inputs = Inputs::default()
         .with_choice(
             "Edition",
             vec!["ASCE 7-16".into(), "ASCE 7-22".into()],
             Some(1),
+            Width::Half,
             window,
             cx,
         )
@@ -645,6 +676,7 @@ pub fn generate_combinations(document: Entity<Document>, window: &mut Window, cx
             "Method",
             vec!["Strength (LRFD)".into(), "Allowable stress (ASD)".into()],
             Some(0),
+            Width::Half,
             window,
             cx,
         );
@@ -718,7 +750,7 @@ pub fn add_nodal_load(document: Entity<Document>, window: &mut Window, cx: &mut 
         )
     };
     if cases.is_empty() {
-        notify_error(window, cx, "Define a load case first (Define > Load case)");
+        notify_error(window, cx, "Define a load case first (Define > Load cases)");
         return;
     }
     if nodes.is_empty() {
@@ -727,19 +759,11 @@ pub fn add_nodal_load(document: Entity<Document>, window: &mut Window, cx: &mut 
     }
     let forces = ["Fx", "Fy", "Fz"].map(|l| label(l, Role::Force));
     let moments = ["Mx", "My", "Mz"].map(|l| label(l, Role::Moment));
-    let inputs = Inputs::new(
-        window,
-        cx,
-        &[
-            (&forces[0], "0"),
-            (&forces[1], "0"),
-            (&forces[2], "0"),
-            (&moments[0], "0"),
-            (&moments[1], "0"),
-            (&moments[2], "0"),
-        ],
-    )
-    .with_choice("Load case", cases, selected_case, window, cx);
+    let mut inputs =
+        Inputs::default().with_choice("Load case", cases, selected_case, Width::Full, window, cx);
+    for label in forces.iter().chain(&moments) {
+        inputs = inputs.with_text(label, "0", Width::Third, window, cx);
+    }
     open(
         "Add nodal load to selected nodes",
         "Add load",
@@ -813,7 +837,7 @@ pub fn add_distributed_load(document: Entity<Document>, window: &mut Window, cx:
         )
     };
     if cases.is_empty() {
-        notify_error(window, cx, "Define a load case first (Define > Load case)");
+        notify_error(window, cx, "Define a load case first (Define > Load cases)");
         return;
     }
     if frames.is_empty() {
@@ -821,19 +845,19 @@ pub fn add_distributed_load(document: Entity<Document>, window: &mut Window, cx:
         return;
     }
     let loads = ["wx", "wy", "wz"].map(|l| label(l, Role::LineLoad));
-    let inputs = Inputs::new(
-        window,
-        cx,
-        &[(&loads[0], "0"), (&loads[1], "0"), (&loads[2], "-1")],
-    )
-    .with_choice("Load case", cases, selected_case, window, cx)
-    .with_choice(
-        "Axes",
-        vec!["Global".into(), "Local".into()],
-        Some(0),
-        window,
-        cx,
-    );
+    let inputs = Inputs::default()
+        .with_choice("Load case", cases, selected_case, Width::Half, window, cx)
+        .with_choice(
+            "Axes",
+            vec!["Global".into(), "Local".into()],
+            Some(0),
+            Width::Half,
+            window,
+            cx,
+        )
+        .with_text(&loads[0], "0", Width::Third, window, cx)
+        .with_text(&loads[1], "0", Width::Third, window, cx)
+        .with_text(&loads[2], "-1", Width::Third, window, cx);
     open(
         "Add uniform load to selected frames",
         "Add load",
@@ -902,4 +926,21 @@ fn frame_length(model: &Model, frame: &Frame) -> Option<f64> {
             .sum::<f64>()
             .sqrt(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::name_or;
+    use oa_model::{Library, Material, Model};
+
+    #[test]
+    fn a_blank_name_takes_the_designation_numbered_on() {
+        let mut model = Model::default();
+        let typed = name_or::<Material>(&model, "Steel".into(), "A992");
+        assert_eq!(typed, "Steel");
+        assert_eq!(name_or::<Material>(&model, "  ".into(), "A992"), "A992");
+        let library = Library::starter();
+        model.insert(library.material("A992", "A992").unwrap());
+        assert_eq!(name_or::<Material>(&model, String::new(), "A992"), "A992 2");
+    }
 }
