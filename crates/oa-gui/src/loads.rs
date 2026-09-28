@@ -12,7 +12,6 @@ use crate::text::{fmt_num, parse_num};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_kit::component::table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow};
 use gpui_kit::component::{
@@ -506,7 +505,7 @@ impl LoadPanel {
                 .child(
                     TableCell::new().child(
                         Button::new(("remove-case", ix))
-                            .xsmall()
+                            .small()
                             .danger()
                             .outline()
                             .label("Remove")
@@ -546,7 +545,7 @@ impl LoadPanel {
             tr.child(
                 TableCell::new().child(
                     Button::new(("remove-combo", ix))
-                        .xsmall()
+                        .small()
                         .danger()
                         .outline()
                         .label("Remove")
@@ -607,11 +606,8 @@ impl Render for LoadPanel {
                         ),
                 ),
         };
-        v_flex()
-            .id("loads-scroll")
-            .size_full()
-            .overflow_scrollbar()
-            .child(content)
+        // The dialog around the table scrolls it.
+        content
     }
 }
 

@@ -20,6 +20,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{
     Command as CommandPalette, CommandGroup, CommandItem, CommandState,
 };
+use gpui_kit::component::dialog::Dialog;
 use gpui_kit::component::menu::AppMenuBar;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::status_bar::StatusBar;
@@ -855,64 +856,61 @@ impl Workspace {
 
     // MARK: Pop-up panels
 
-    /// The property editor for the selection, in a dialog.
+    /// The property editor for the selection, in a dialog named for it.
     pub fn show_properties(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.document.read(cx).selection().is_empty() {
             return self.info("Select something to edit first", window, cx);
         }
         let properties = self.properties.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .w(px(460.))
-                .footer(div())
-                .child(div().h(px(560.)).child(properties.clone()))
+        window.open_dialog(cx, move |dialog, window, cx| {
+            panel_dialog(dialog, 480., window)
+                .title(properties.read(cx).title(cx))
+                .child(properties.clone())
         });
     }
     /// The load cases table, in a dialog.
     pub fn show_load_cases(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self.load_cases.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
+        window.open_dialog(cx, move |dialog, window, _| {
+            panel_dialog(dialog, 720., window)
                 .title("Load cases")
-                .w(px(760.))
-                .footer(div())
-                // Enter commits a cell and must not confirm the dialog.
-                .on_ok(|_, _, _| false)
-                .child(div().h(px(480.)).child(panel.clone()))
+                .child(panel.clone())
         });
     }
     /// The levels table, in a dialog.
     pub fn show_levels(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self.levels.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
+        window.open_dialog(cx, move |dialog, window, _| {
+            panel_dialog(dialog, 720., window)
                 .title("Levels")
-                .w(px(960.))
-                .footer(div())
-                .on_ok(|_, _, _| false)
-                .child(div().h(px(420.)).child(panel.clone()))
+                .child(panel.clone())
         });
     }
-    /// The load combinations matrix, in a dialog.
+    /// The load combinations matrix, in a dialog as wide as its columns
+    /// need, a name and one factor per load case.
     pub fn show_combinations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self.combinations.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
+        let document = self.document.clone();
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let cases = document.read(cx).model().load_cases.len() as f32;
+            let widest = f32::from(window.viewport_size().width) - 64.;
+            let width = (320. + 120. * cases).clamp(560., widest.max(560.));
+            panel_dialog(dialog, width, window)
                 .title("Load combinations")
-                .w(px(920.))
-                .footer(div())
-                .on_ok(|_, _, _| false)
-                .child(div().h(px(480.)).child(panel.clone()))
+                .child(panel.clone())
         });
     }
-    /// The model tree, in a dialog. Click selects, double-click edits.
+    /// The model tree, in a dialog. Click selects, double-click edits. The
+    /// sections holding the selection open, so it is in sight.
     pub fn show_model_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = self.document.read(cx).selection().to_vec();
+        self.explorer
+            .update(cx, |explorer, cx| explorer.reveal(&selection, cx));
         let explorer = self.explorer.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .w(px(380.))
-                .footer(div())
-                .child(div().h(px(560.)).child(explorer.clone()))
+        window.open_dialog(cx, move |dialog, window, _| {
+            panel_dialog(dialog, 400., window)
+                .title("Model browser")
+                .child(explorer.clone())
         });
     }
 
@@ -1305,7 +1303,7 @@ impl Workspace {
         }
     }
     pub fn about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        window.open_dialog(cx, |dialog, _, cx| {
+        window.open_dialog(cx, |dialog, window, cx| {
             let muted = cx.theme().muted_foreground;
             let heading = move |text: &'static str| {
                 div()
@@ -1318,12 +1316,14 @@ impl Workspace {
             let row = move |keys: &'static str, what: &'static str| {
                 h_flex()
                     .gap_3()
-                    .child(div().w(px(150.)).text_color(muted).child(keys))
-                    .child(what)
+                    .items_start()
+                    .child(div().w(px(168.)).flex_shrink_0().text_color(muted).child(keys))
+                    .child(div().flex_1().min_w_0().child(what))
             };
             dialog
                 .title("Guide")
-                .w(px(480.))
+                .w(px(560.))
+                .max_h(window.viewport_size().height * 0.8)
                 .child(
                     v_flex()
                         .gap_1()
@@ -1349,6 +1349,8 @@ impl Workspace {
                         .child(row("Esc", "Stop drawing, then back to Select, then deselect"))
                         .child(heading("Levels"))
                         .child("Z is up. Every node belongs to a level, at an offset above its elevation; Define > Levels adds, moves, and removes levels. The active level is where the Node tool places nodes and what the level views show; moving a level carries its nodes with it.")
+                        .child(heading("Results"))
+                        .child("After a run, a row under the view controls turns the deformed shape on and off, draws a section force along every member, and steps through the combinations. Results > Member results plots the shear, moment, and deflection of one selected frame. Any edit drops the results until the next run.")
                         .child(heading("Drawing"))
                         .child("Node places a node where you click, on the active level. Frame joins node I to node J and carries on from J. Shell takes four nodes in order around it. The draw tools snap to the ends, midpoints, and intersections of frames, shell edges, and underlay lines, and to the foot of the perpendicular from the last point; a snapped point lands on the active level, and Frame and Shell make a node there if none stands on it. The icons at the right of the status bar, or Draw > Snap, switch each snap on and off. With nodes already selected, Frame and Shell draw on them at once. Loads go on the selected nodes or frames."),
                 )
@@ -1508,6 +1510,18 @@ impl Workspace {
             .right(div().text_xs().text_color(muted).child(view))
             .right(snaps)
     }
+}
+
+/// A dialog holding a live panel rather than a form. It has no buttons,
+/// since every edit commits as it is made, and Enter, which commits a
+/// field, must not close it. It grows with its content to most of the
+/// window's height and then scrolls, so a short table leaves no blank space
+/// and a long one stays on screen.
+fn panel_dialog(dialog: Dialog, width: f32, window: &Window) -> Dialog {
+    dialog
+        .w(px(width))
+        .max_h(window.viewport_size().height * 0.8)
+        .on_ok(|_, _, _| false)
 }
 
 /// The status bar's icon for a snap: the marker the view draws at one.

@@ -3,7 +3,6 @@
 //! viewport's selection. Shown in a dialog from View > Model browser.
 use crate::actions::ShowProperties;
 use crate::document::Document;
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -90,6 +89,14 @@ impl Explorer {
         }
     }
 
+    /// Opens the sections that hold these entities.
+    pub fn reveal(&mut self, ids: &[EntityId], cx: &mut Context<Self>) {
+        let model = self.document.read(cx).model();
+        self.expanded
+            .extend(ids.iter().filter_map(|id| model.kind_of(*id)));
+        cx.notify();
+    }
+
     fn toggle_section(&mut self, kind: EntityKind, cx: &mut Context<Self>) {
         if !self.expanded.remove(&kind) {
             self.expanded.insert(kind);
@@ -116,9 +123,10 @@ impl Explorer {
             .map(|(id, _)| document.is_selected(*id))
             .collect();
         let theme = cx.theme();
-        let (hover, active, muted, border) = (
+        let (hover, active, accent, muted, border) = (
             theme.list_hover,
             theme.list_active,
+            theme.primary,
             theme.muted_foreground,
             theme.border,
         );
@@ -165,7 +173,11 @@ impl Explorer {
                             .whitespace_nowrap()
                             .overflow_hidden()
                             .text_ellipsis()
-                            .when(is_selected, |s| s.bg(active))
+                            .when(is_selected, |s| {
+                                s.bg(active)
+                                    .text_color(accent)
+                                    .font_weight(FontWeight::MEDIUM)
+                            })
                             .hover(|s| s.bg(hover))
                             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                                 this.select(id, event.modifiers().shift, cx);
@@ -193,31 +205,11 @@ impl Explorer {
 
 impl Render for Explorer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let (bg, fg) = (theme.sidebar, theme.sidebar_foreground);
         let sections: Vec<AnyElement> = KINDS
             .iter()
             .map(|kind| self.render_section(*kind, cx))
             .collect();
-        v_flex()
-            .size_full()
-            .bg(bg)
-            .text_color(fg)
-            .child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Model"),
-            )
-            .child(
-                v_flex()
-                    .id("explorer-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scrollbar()
-                    .children(sections),
-            )
+        // The dialog around the tree gives it its title and scrolls it.
+        v_flex().pb_1().children(sections)
     }
 }

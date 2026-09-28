@@ -66,6 +66,16 @@ pub fn parse_num(label: &str, text: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("{label}: {text:?} is not a number"))
 }
 
+/// "Frame" from "frame", or "Invalid model: no nodes" from a message that
+/// starts in lower case.
+pub fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 /// The precision is process-wide, so tests that depend on it take turns
 /// through this guard, which puts the default back when it drops.
 #[cfg(test)]
@@ -93,7 +103,8 @@ impl Drop for TestPrecision {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_PRECISION, TestPrecision, fmt_num, fmt_q, label, parse_num, parse_q, set_precision,
+        DEFAULT_PRECISION, TestPrecision, capitalize, fmt_num, fmt_q, label, parse_num, parse_q,
+        set_precision,
     };
     use oa_model::Role;
 
@@ -135,5 +146,15 @@ mod tests {
         assert!((parse_q(Role::Length, "X", "10").unwrap() - 3.048).abs() < 1e-12);
         assert!((parse_q(Role::Force, "F", "1").unwrap() - 4_448.221_615_260_5).abs() < 1e-9);
         assert!(parse_q(Role::Force, "F", "ten").is_err());
+    }
+
+    #[test]
+    fn capitalizes_only_the_first_letter() {
+        assert_eq!(
+            capitalize("invalid model: no nodes"),
+            "Invalid model: no nodes"
+        );
+        assert_eq!(capitalize("frame"), "Frame");
+        assert_eq!(capitalize(""), "");
     }
 }
