@@ -44,15 +44,24 @@ crates/oa-gui/src/
 There is no ribbon and no docked side panel: the window is the menu bar, a
 prompt strip, the 3D view, and a status bar. Every command lives in the menu
 bar, which reads in the order a model is built (File, Edit, View, Define,
-Draw, Assign, Analyze, Help), and in the command palette (Ctrl+K), which
-lists every action with its gate reason. Commands that need something first
-are disabled through the shared `Gates`. The model tree (Ctrl+B) and the
-property editor (Ctrl+E, or a double-click on an entity in the view or the
-tree) open as dialogs over the view. The status bar says whether the results
-are current, out of date after an edit, or absent. A prompt strip above the
-view says what the current tool wants next. View presets, fit, and the up
-axis sit in the top-right corner of the view as text buttons labelled with
-their keys; an empty model shows a start card in the view.
+Draw, Assign, Analyze, Results, Help), and in the command palette (Ctrl+K),
+which lists every action with its gate reason. Commands that need something
+first are disabled through the shared `Gates`. The model tree (Ctrl+B) and
+the property editor (Ctrl+E, or a double-click on an entity in the view or
+the tree) open as dialogs over the view, titled with what they show ("Frame
+F7", "18 nodes, 26 frames"). Those dialogs and the tables from the Define
+menu hold live panels with no buttons, since every edit commits as it is
+made; they grow with their content to 80% of the window's height and then
+scroll. The status bar says whether the model is valid (or empty), whether
+the results are current, out of date after an edit, or absent, the active
+level with its elevation, the units, and the snaps. A prompt strip above the
+view says what the current tool wants next. View presets, fit, the up axis,
+the view mode, and the active level sit in the top-right corner of the view
+as text buttons, each followed by its key in a quieter colour; once there
+are results a third row switches the deformed shape, picks the diagram, and
+steps or picks the combination shown. A legend in the top-left corner names
+what is drawn, each series behind a swatch of its colour. An empty model
+shows a start card in the view.
 
 The interface is keyboard first. Single letters and digits are bound in the
 `Viewport` key context, so they act while the view has focus and never fight
@@ -66,7 +75,8 @@ item shows its key. The visual system is set in `main.rs`: Switzer (three
 weights embedded from `assets/fonts`), 14px base with three text styles
 (20 Medium titles, 14 Regular body, 12 Medium labels), an 8px radius on
 every control, sizes on an 8px grid, indigo as the accent of both kit
-themes, and no icons in the chrome. Destructive controls (remove, delete,
+themes, and no icons in the chrome. Notifications rise from the bottom-right
+corner, clear of the view controls and the prompt strip. Destructive controls (remove, delete,
 x) always use the kit's red danger variant, outlined where they sit in a
 table row, so the colour alone says what the button does. The kit's title bar is 34px, the one
 size off the grid. The Paper file "open-analysis GUI", page "v2 · Menus and
@@ -106,8 +116,11 @@ Actions are routed to `Workspace` methods in `main.rs`.
   axial behaviour), shells, materials, sections, load cases (self weight
   plus a loads list with removal), combinations (terms), diaphragms
   (normal, master, nodes from selection), groups (members from selection).
-  Text fields commit on Enter or blur; choices and checkboxes commit at
-  once. Every commit is an undoable command.
+  Fields are laid out in the order `properties::specs` lists them on a
+  six-column grid, so X, Y, and Z share a row, Node I sits beside Node J,
+  and each combination term puts its case beside its factor. Text fields
+  commit on Enter or blur; choices and checkboxes commit at once. Every
+  commit is an undoable command. Delete in the editor closes it.
 - Multi-selection: assign a section or material to all selected frames, set
   restraints on all selected nodes, delete.
 - Levels (Define > Levels, Ctrl+K "Levels"): a table of named datums at
@@ -127,7 +140,8 @@ Actions are routed to `Workspace` methods in `main.rs`.
 - Delete cascades: frames and shells on deleted nodes go too, and loads and
   diaphragm entries that reference deleted entities are trimmed first, all
   in one batch that rolls back on failure.
-- Define materials and sections from the starter library or by value; add
+- Define materials and sections from the starter library or by value (a
+  library entry left unnamed takes its designation, numbered on if taken); add
   load cases, combinations, groups, diaphragms; add nodal loads to selected
   nodes and uniform loads to selected frames.
 - Load cases (Ctrl+L) and load combinations (Ctrl+Shift+L) as two dialogs
@@ -146,8 +160,11 @@ Actions are routed to `Workspace` methods in `main.rs`.
   skipped.
 - Static analysis of every combination through `oa-core`, with the deformed
   shape drawn for a chosen combination and auto-scaled to 5% of the model
-  extent. Results are dropped on any edit so a stale shape cannot be shown.
-- Validation problems from `compile` in the status bar.
+  extent. The combination is picked in the view's results row, the Results
+  menu, or Ctrl+] and Ctrl+[. Results are dropped on any edit so a stale
+  shape cannot be shown.
+- Validation problems from `compile` in the status bar. A model with no
+  nodes yet reads as empty rather than invalid.
 - US customary units everywhere a number is shown or typed: coordinates in
   ft, section properties and shell thickness in in, forces in kip, moments
   in kip·ft, line loads in kip/ft, pressures in psf, E and stresses in ksi,
@@ -214,6 +231,13 @@ Actions are routed to `Workspace` methods in `main.rs`.
 - `cargo test -p oa-gui` covers the camera projection, pan, zoom, and fit,
   number formatting and parsing, unused-name generation, and that the
   example frame compiles and solves.
+- 2026-09-28 UI pass: on Linux (Hyprland) the binary was launched on a
+  headless output with a throwaway hook that dispatched actions at startup,
+  and every dialog, the empty model, results, and the dark theme were
+  captured with grim. It found that opening the command palette panicked
+  (its dialog builder read the workspace during the workspace's own render);
+  the entries are now gathered before the dialog opens. Menus, clicks, and
+  typing were still not exercised this way.
 - Rendering was checked by launching the built binary and capturing its
   window (PrintWindow). The action path that menus, toolbar buttons, and
   shortcuts use was checked by dispatching label toggles and the analysis

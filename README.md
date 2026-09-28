@@ -87,8 +87,9 @@ cargo run -p oa-core --bin oa -- examples/cantilever.json
 
 `oa-gui` is an ETABS-style editor built on [GPUI Kit](https://gpui-kit.com).
 It opens with an example frame; use File to start empty or open a saved
-`.oa.json` model. The window has a menu bar, a toolbar, the model tree on the
-left, the 3D view in the middle, and the property panel on the right.
+`.oa.json` model. The window has a menu bar, a prompt strip, the 3D view, and
+a status bar; the model browser (Ctrl+B) and the property editor (Ctrl+E)
+open as dialogs over the view, and Ctrl+K searches every command.
 
 ```bash
 cargo run -p oa-gui
