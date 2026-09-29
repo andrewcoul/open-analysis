@@ -120,9 +120,13 @@ the view draws the deformed shape of an agent's run.
   changes. The user would lose work that undo cannot restore. The headless
   server keeps its current behaviour.
 - An agent's `undo` or `redo` is refused when anyone else has edited since
-  the agent's own last change. Otherwise an agent that means to take back its
-  own edit could silently undo the user's. The refusal says to use Ctrl+Z in
-  the GUI.
+  the agent's own last change, or when the step it would act on is not its
+  own. The session records who made each entry on the undo and redo stacks,
+  so an agent that has undone all its own changes stops at the user's.
+  Otherwise an agent that means to take back its own edit could silently
+  undo the user's. The refusal says to use Ctrl+Z in the GUI.
+- Each connection is its own agent, so one agent cannot undo another's
+  change either.
 - When attached, the server's instructions tell the agent that a person is
   watching the model and shares its undo history.
 
@@ -193,7 +197,11 @@ Decided while building:
 - A tool call that panics on the GUI thread is caught and reported to the
   agent, so it cannot take the window and the person's unsaved work with
   it.
+- A named pipe cannot half-close. On Windows the bridge therefore exits as
+  soon as the agent closes stdin, which closes the pipe and tells the GUI
+  the agent has gone. On Unix it half-closes and waits for the GUI to
+  finish answering.
 
-Not yet verified: the Windows named-pipe code compiles only under
-`cfg(windows)` and has not been built, because this machine has no Windows
-target.
+Built and tested on Windows (`x86_64-pc-windows-gnu`) on 2026-09-29, where
+`attach.rs` runs end to end over the named pipe. The GUI itself has not been
+exercised by hand on Windows.

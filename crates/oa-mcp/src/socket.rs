@@ -140,7 +140,8 @@ fn in_use(address: &str) -> io::Error {
 }
 
 /// Joins this process's stdin and stdout to the GUI's socket, byte for byte,
-/// and returns when the GUI closes the connection.
+/// and returns when the GUI closes the connection, or on Windows as soon as
+/// the agent closes stdin.
 pub async fn bridge(address: &str) -> io::Result<()> {
     use tokio::io::AsyncWriteExt;
     let stream = connect(address).await.map_err(|e| {
@@ -153,14 +154,29 @@ pub async fn bridge(address: &str) -> io::Result<()> {
         )
     })?;
     let (mut from_gui, mut to_gui) = tokio::io::split(stream);
-    // The agent closing stdin ends the session from its side; the GUI then
-    // closes the connection, which ends the copy below.
-    tokio::spawn(async move {
-        let _ = tokio::io::copy(&mut tokio::io::stdin(), &mut to_gui).await;
-        let _ = to_gui.shutdown().await;
-    });
     let mut stdout = tokio::io::stdout();
-    tokio::io::copy(&mut from_gui, &mut stdout).await?;
+    {
+        let mut to_agent = std::pin::pin!(tokio::io::copy(&mut from_gui, &mut stdout));
+        let from_agent = async {
+            let _ = tokio::io::copy(&mut tokio::io::stdin(), &mut to_gui).await;
+            let _ = to_gui.shutdown().await;
+        };
+        tokio::select! {
+            copied = &mut to_agent => {
+                copied?;
+            }
+            () = from_agent => {
+                // The agent closing stdin ends the session from its side. A
+                // Unix socket half-closes, so the GUI sees that, and closes
+                // the connection once it has answered, which ends the copy.
+                // A named pipe cannot half-close, and the GUI would wait for
+                // more input forever, so end here instead: that closes the
+                // pipe.
+                #[cfg(unix)]
+                to_agent.await?;
+            }
+        }
+    }
     stdout.flush().await
 }
 

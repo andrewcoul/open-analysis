@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// One tool call's work on the session.
@@ -43,6 +44,9 @@ impl Host for Mutex<Session> {
 #[derive(Clone)]
 pub struct Server {
     host: Arc<dyn Host>,
+    /// Tells this server's agent from others sharing the session, so each
+    /// undoes only its own changes.
+    agent: u64,
 }
 
 fn ok(value: Value) -> Result<CallToolResult, McpError> {
@@ -208,7 +212,11 @@ fn twenty() -> usize {
 
 impl Server {
     pub fn new(host: Arc<dyn Host>) -> Self {
-        Self { host }
+        static NEXT_AGENT: AtomicU64 = AtomicU64::new(1);
+        Self {
+            host,
+            agent: NEXT_AGENT.fetch_add(1, Ordering::Relaxed),
+        }
     }
     /// A server over a session of its own, for the headless binary.
     pub fn headless() -> Self {
@@ -218,6 +226,8 @@ impl Server {
         &self,
         job: impl FnOnce(&mut Session) -> crate::Result<Value> + Send + 'static,
     ) -> Result<CallToolResult, McpError> {
+        let agent = self.agent;
+        let job = move |s: &mut Session| s.as_agent(agent, job);
         ok(self.host.run(Box::new(job)).await.map_err(fail)?)
     }
 }

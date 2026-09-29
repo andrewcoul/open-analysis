@@ -147,7 +147,7 @@ fn an_agent_cannot_undo_a_persons_edit() {
     })
     .unwrap();
     let err = s.undo().unwrap_err().to_string();
-    assert!(err.contains("edited in the GUI"), "{err}");
+    assert!(err.contains("not yours"), "{err}");
     assert!(s.redo().is_err());
     assert_eq!(s.model().materials.len(), 2, "nothing was undone");
     // The person can undo their own edit, and the agent, once it has made
@@ -160,6 +160,23 @@ fn an_agent_cannot_undo_a_persons_edit() {
     .unwrap();
     assert!(s.undo().unwrap());
     assert!(s.model().groups.is_empty());
+}
+
+#[test]
+fn an_agents_undo_stops_at_a_persons_edit() {
+    let mut s = Session::default();
+    let named = |name: &str| cmd(json!({"command": "set_metadata", "metadata": {"name": name}}));
+    s.user_apply(named("person's")).unwrap();
+    s.apply(vec![named("agent's")]).unwrap();
+    // The agent's own undo leaves the person's edit on top of the stack,
+    // and a second undo must not take it.
+    assert!(s.undo().unwrap());
+    let err = s.undo().unwrap_err().to_string();
+    assert!(err.contains("not yours"), "{err}");
+    assert_eq!(s.model().metadata.name, "person's");
+    // The agent's undone change is still its own to redo.
+    assert!(s.redo().unwrap());
+    assert_eq!(s.model().metadata.name, "agent's");
 }
 
 #[test]

@@ -140,6 +140,8 @@ pub type Result<T> = std::result::Result<T, SessionError>;
 /// model, as in the GUI, their edits go through [`Session::user_apply`],
 /// [`Session::user_undo`], and [`Session::user_redo`], so the session can
 /// tell the two apart and keep an agent from undoing the person's work.
+/// Several agents can share a session; [`Session::as_agent`] tells them
+/// apart.
 pub struct Session {
     editor: Editor,
     path: Option<PathBuf>,
@@ -148,8 +150,14 @@ pub struct Session {
     spectrum: Option<oa_core::SpectrumResult>,
     /// Bumped by every change to the model, whoever makes it.
     revision: u64,
-    /// The revision the agent's own last change left.
-    agent_revision: u64,
+    /// The agent whose call is running; see [`Session::as_agent`].
+    agent: u64,
+    /// Who made each entry on the editor's undo and redo stacks, kept in
+    /// step with them.
+    undo_authors: Vec<Author>,
+    redo_authors: Vec<Author>,
+    /// Who made the last change of any kind.
+    last_author: Option<Author>,
     /// The revision at the last load or save.
     saved_revision: u64,
     /// Bumped when the whole model is replaced by a new or loaded one.
@@ -167,6 +175,13 @@ impl Default for Session {
     fn default() -> Self {
         Self::new(Model::default())
     }
+}
+
+/// Who made a change to the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Author {
+    User,
+    Agent(u64),
 }
 
 /// Copies each combination into memory on its way to the store.
@@ -218,7 +233,10 @@ impl Session {
             store: None,
             spectrum: None,
             revision: 0,
-            agent_revision: 0,
+            agent: 0,
+            undo_authors: vec![],
+            redo_authors: vec![],
+            last_author: None,
             saved_revision: 0,
             generation: 0,
             protect_unsaved: false,
@@ -270,30 +288,67 @@ impl Session {
         Some((self.compiled.clone()?, results))
     }
 
+    /// Runs `f` as agent `agent`, so the history knows its changes from
+    /// other agents'. Each connection to the GUI is its own agent; calls
+    /// made outside this are agent 0.
+    pub fn as_agent<T>(&mut self, agent: u64, f: impl FnOnce(&mut Self) -> T) -> T {
+        let outer = std::mem::replace(&mut self.agent, agent);
+        let result = f(self);
+        self.agent = outer;
+        result
+    }
+    fn this_agent(&self) -> Author {
+        Author::Agent(self.agent)
+    }
+
     /// A change to the model: bumps the revision and drops everything
     /// derived from the old model.
-    fn changed(&mut self) {
+    fn changed(&mut self, author: Author) {
         self.revision += 1;
+        self.last_author = Some(author);
         self.compiled = None;
         self.store = None;
         self.spectrum = None;
         self.fresh = None;
     }
-    /// A change the agent made.
-    fn agent_changed(&mut self) {
-        self.changed();
-        self.agent_revision = self.revision;
+    /// Every edit, undo, and redo goes through these three, which keep the
+    /// authors in step with the editor's stacks.
+    fn edit(&mut self, author: Author, command: Command) -> std::result::Result<(), ModelError> {
+        self.editor.apply(command)?;
+        self.undo_authors.push(author);
+        self.redo_authors.clear();
+        self.changed(author);
+        Ok(())
     }
-    /// Refuses when someone else has edited since the agent's last change,
-    /// so the agent's undo and redo only ever take back its own work.
-    fn check_history_is_agents(&self, what: &str) -> Result<()> {
-        if self.revision == self.agent_revision {
+    fn undo_as(&mut self, author: Author) -> std::result::Result<bool, ModelError> {
+        let done = self.editor.undo()?;
+        if done {
+            self.redo_authors.extend(self.undo_authors.pop());
+            self.changed(author);
+        }
+        Ok(done)
+    }
+    fn redo_as(&mut self, author: Author) -> std::result::Result<bool, ModelError> {
+        let done = self.editor.redo()?;
+        if done {
+            self.undo_authors.extend(self.redo_authors.pop());
+            self.changed(author);
+        }
+        Ok(done)
+    }
+    /// Refuses unless nobody else has changed the model since this agent
+    /// last did, and the step `what` would act on, if any, is this agent's
+    /// own, so an agent's undo and redo only ever take back its own work.
+    fn check_history_is_agents(&self, what: &str, next: Option<&Author>) -> Result<()> {
+        let me = self.this_agent();
+        let mine = |author: Option<&Author>| author.is_none_or(|a| *a == me);
+        if mine(self.last_author.as_ref()) && mine(next) {
             return Ok(());
         }
         Err(SessionError::Invalid(format!(
-            "the model has been edited in the GUI since your last change, so {what} would act on \
-             the user's edit rather than yours; ask the user to use Ctrl+Z or Ctrl+Y in the GUI, \
-             or make a new change that reverses yours"
+            "the step {what} would act on is not yours, or the user or another agent has edited \
+             since your last change; ask the user to use Ctrl+Z or Ctrl+Y in the GUI, or make a \
+             new change that reverses yours"
         )))
     }
     /// Replaces the whole model, refusing when that would discard a person's
@@ -308,7 +363,7 @@ impl Session {
         }
         let replacement = Self {
             revision: self.revision + 1,
-            agent_revision: self.revision + 1,
+            agent: self.agent,
             saved_revision: self.revision + 1,
             generation: self.generation + 1,
             protect_unsaved: self.protect_unsaved,
@@ -321,23 +376,13 @@ impl Session {
 
     /// Applies a command, in SI, on behalf of the person rather than the agent.
     pub fn user_apply(&mut self, command: Command) -> std::result::Result<(), ModelError> {
-        self.editor.apply(command)?;
-        self.changed();
-        Ok(())
+        self.edit(Author::User, command)
     }
     pub fn user_undo(&mut self) -> std::result::Result<bool, ModelError> {
-        let done = self.editor.undo()?;
-        if done {
-            self.changed();
-        }
-        Ok(done)
+        self.undo_as(Author::User)
     }
     pub fn user_redo(&mut self) -> std::result::Result<bool, ModelError> {
-        let done = self.editor.redo()?;
-        if done {
-            self.changed();
-        }
-        Ok(done)
+        self.redo_as(Author::User)
     }
 
     /// Sizes and names an agent needs before it can do anything else.
@@ -515,27 +560,18 @@ impl Session {
         for command in &mut commands {
             command.map_quantities(&mut |role, v| UNITS.from_display(role, v));
         }
-        self.editor.apply(Command::Batch { commands })?;
-        self.agent_changed();
+        self.edit(self.this_agent(), Command::Batch { commands })?;
         Ok(json!({"applied": count, "counts": self.describe()["counts"]}))
     }
-    /// Undoes the agent's last batch. Refused when someone else has edited
-    /// since, because the batch on top of the stack is then theirs.
+    /// Undoes the agent's last batch. Refused when the batch on top of the
+    /// stack is someone else's, or someone else has edited since.
     pub fn undo(&mut self) -> Result<bool> {
-        self.check_history_is_agents("undo")?;
-        let done = self.editor.undo()?;
-        if done {
-            self.agent_changed();
-        }
-        Ok(done)
+        self.check_history_is_agents("undo", self.undo_authors.last())?;
+        Ok(self.undo_as(self.this_agent())?)
     }
     pub fn redo(&mut self) -> Result<bool> {
-        self.check_history_is_agents("redo")?;
-        let done = self.editor.redo()?;
-        if done {
-            self.agent_changed();
-        }
-        Ok(done)
+        self.check_history_is_agents("redo", self.redo_authors.last())?;
+        Ok(self.redo_as(self.this_agent())?)
     }
     pub fn new_model(&mut self, name: &str) -> Result<()> {
         let mut model = Model::default();
@@ -570,8 +606,7 @@ impl Session {
                 SessionError::Invalid(format!("no section {designation:?} in the library"))
             })?;
         let id = self.editor.model.allocate();
-        self.editor.apply(Command::AddSection { id, section })?;
-        self.agent_changed();
+        self.edit(self.this_agent(), Command::AddSection { id, section })?;
         Ok(id)
     }
     pub fn add_material_from_library(&mut self, designation: &str, name: &str) -> Result<EntityId> {
@@ -581,8 +616,7 @@ impl Session {
                 SessionError::Invalid(format!("no material {designation:?} in the library"))
             })?;
         let id = self.editor.model.allocate();
-        self.editor.apply(Command::AddMaterial { id, material })?;
-        self.agent_changed();
+        self.edit(self.this_agent(), Command::AddMaterial { id, material })?;
         Ok(id)
     }
     /// Adds the ASCE 7 combinations the load cases can form and the model
@@ -614,8 +648,7 @@ impl Session {
             };
             return Ok(json!({"added": names, "note": note}));
         }
-        self.editor.apply(Command::Batch { commands })?;
-        self.agent_changed();
+        self.edit(self.this_agent(), Command::Batch { commands })?;
         Ok(json!({"added": names}))
     }
     /// Validates and compiles. Problems come back named, never as indices.
