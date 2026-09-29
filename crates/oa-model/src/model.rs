@@ -397,6 +397,9 @@ impl Model {
                     young: x.young,
                     poisson: x.poisson,
                     density: x.density,
+                    fy: None,
+                    fu: None,
+                    fc: None,
                     provenance: None,
                 })
             })

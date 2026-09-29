@@ -28,6 +28,14 @@ pub struct MaterialEntry {
     pub young: f64,
     pub poisson: f64,
     pub density: f64,
+    /// Specified minimum yield and tensile strengths, for steel, and
+    /// compressive strength, for concrete, in the library's stress unit.
+    #[serde(default)]
+    pub fy: Option<f64>,
+    #[serde(default)]
+    pub fu: Option<f64>,
+    #[serde(default)]
+    pub fc: Option<f64>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -113,6 +121,9 @@ impl Library {
             young: Pressure::from_si(self.si(Role::Stress, e.young)),
             poisson: e.poisson,
             density: MassDensity::from_si(self.si(Role::Density, e.density)),
+            fy: e.fy.map(|v| Pressure::from_si(self.si(Role::Stress, v))),
+            fu: e.fu.map(|v| Pressure::from_si(self.si(Role::Stress, v))),
+            fc: e.fc.map(|v| Pressure::from_si(self.si(Role::Stress, v))),
             provenance: Some(self.provenance(designation)),
         })
     }

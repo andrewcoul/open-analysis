@@ -307,6 +307,27 @@ fn check_level(model: &Model, id: EntityId, level: &Level) -> Result<()> {
     }
     Ok(())
 }
+/// A strength a material gives must be positive and finite, and its
+/// tensile strength no less than its yield stress.
+fn check_material(material: &Material) -> Result<()> {
+    for (name, strength) in [
+        ("Fy", material.fy),
+        ("Fu", material.fu),
+        ("f'c", material.fc),
+    ] {
+        if strength.is_some_and(|s| !(s.si().is_finite() && s.si() > 0.0)) {
+            return Err(ModelError::Invalid(format!(
+                "material {name} must be positive and finite"
+            )));
+        }
+    }
+    if matches!((material.fy, material.fu), (Some(fy), Some(fu)) if fu.si() < fy.si()) {
+        return Err(ModelError::Invalid(
+            "material Fu must be at least Fy".into(),
+        ));
+    }
+    Ok(())
+}
 /// An underlay is drawn as it is stored, so every coordinate must be finite.
 fn check_underlay(underlay: &Underlay) -> Result<()> {
     let finite = |p: &[Length; 2]| p.iter().all(|v| v.si().is_finite());
@@ -384,13 +405,17 @@ impl Command {
                 removal_inverse(AddNode { id, node: entity }, groups)
             }
             AddMaterial { id, material } => {
+                check_material(&material)?;
                 add(model, id, material)?;
                 RemoveMaterial { id }
             }
-            UpdateMaterial { id, material } => UpdateMaterial {
-                id,
-                material: update(model, id, material)?,
-            },
+            UpdateMaterial { id, material } => {
+                check_material(&material)?;
+                UpdateMaterial {
+                    id,
+                    material: update(model, id, material)?,
+                }
+            }
             RemoveMaterial { id } => {
                 let (entity, groups) = remove(model, id)?;
                 removal_inverse(

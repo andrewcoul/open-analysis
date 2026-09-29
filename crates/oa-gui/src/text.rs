@@ -43,6 +43,14 @@ pub fn parse_q(role: Role, label: &str, text: &str) -> Result<f64, String> {
     parse_num(label, text).map(|v| UNITS.from_display(role, v))
 }
 
+/// Parses a quantity that may be left out: blank text is none.
+pub fn parse_opt_q(role: Role, label: &str, text: &str) -> Result<Option<f64>, String> {
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    parse_q(role, label, text).map(Some)
+}
+
 /// A plain number at the current [`precision`]. Magnitudes too small or too
 /// large to read as fixed text stay in scientific notation.
 pub fn fmt_num(v: f64) -> String {

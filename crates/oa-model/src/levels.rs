@@ -344,6 +344,9 @@ mod tests {
             young: oa_core::units::Pressure::from_si(2e11),
             poisson: 0.3,
             density: Default::default(),
+            fy: None,
+            fu: None,
+            fc: None,
             provenance: None,
         });
         let sec = m.insert(Section {

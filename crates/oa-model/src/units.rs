@@ -44,7 +44,7 @@ pub enum Role {
     MomentPerLength,
     /// Surface pressure on a shell.
     Pressure,
-    /// Stress and elastic modulus.
+    /// Stress, elastic modulus, and material strength.
     Stress,
     Mass,
     MassInertia,
@@ -218,6 +218,12 @@ impl MapQuantities for Material {
     fn map_quantities(&mut self, f: &mut dyn FnMut(Role, f64) -> f64) {
         remap!(f, Role::Stress, self.young, Pressure);
         remap!(f, Role::Density, self.density, MassDensity);
+        for strength in [&mut self.fy, &mut self.fu, &mut self.fc]
+            .into_iter()
+            .flatten()
+        {
+            remap!(f, Role::Stress, *strength, Pressure);
+        }
     }
 }
 impl MapQuantities for Section {

@@ -1,8 +1,8 @@
 {
   "name": "oa-starter",
-  "version": "2026-09-16",
+  "version": "2026-09-29",
   "units": "us_customary",
-  "note": "Sample entries for development and examples, in AISC table units: in² and in⁴ for sections, ksi and pcf for materials. iz is the strong axis (AISC Ix), iy the weak axis (AISC Iy). Values are common published figures but have not been checked against the current AISC tables. Verify before design use. Full library tables are a separate import.",
+  "note": "Sample entries for development and examples, in AISC table units: in² and in⁴ for sections, ksi and pcf for materials. Steel fy and fu are the ASTM specified minimum yield and tensile strengths as AISC Manual Table 2-4 lists them; A500 Grade C differs between round and rectangular HSS, so it has an entry for each. Concrete fc is f'c. iz is the strong axis (AISC Ix), iy the weak axis (AISC Iy). Values are common published figures but have not been checked against the current AISC tables. Verify before design use. Full library tables are a separate import.",
   "sections": [
     { "designation": "W8x31", "area": 9.13, "iy": 37.1, "iz": 110, "torsion": 0.536 },
     { "designation": "W10x33", "area": 9.71, "iy": 36.6, "iz": 171, "torsion": 0.583 },
@@ -16,10 +16,13 @@
     { "designation": "HSS8x8x1/2", "area": 13.5, "iy": 125, "iz": 125, "torsion": 204 }
   ],
   "materials": [
-    { "designation": "A992", "young": 29000, "poisson": 0.3, "density": 490 },
-    { "designation": "A36", "young": 29000, "poisson": 0.3, "density": 490 },
-    { "designation": "A500 Gr. C", "young": 29000, "poisson": 0.3, "density": 490 },
-    { "designation": "Concrete 4 ksi", "young": 3605, "poisson": 0.2, "density": 150 },
-    { "designation": "Concrete 5 ksi", "young": 4031, "poisson": 0.2, "density": 150 }
+    { "designation": "A992", "young": 29000, "poisson": 0.3, "density": 490, "fy": 50, "fu": 65 },
+    { "designation": "A36", "young": 29000, "poisson": 0.3, "density": 490, "fy": 36, "fu": 58 },
+    { "designation": "A572 Gr. 50", "young": 29000, "poisson": 0.3, "density": 490, "fy": 50, "fu": 65 },
+    { "designation": "A500 Gr. C rectangular", "young": 29000, "poisson": 0.3, "density": 490, "fy": 50, "fu": 62 },
+    { "designation": "A500 Gr. C round", "young": 29000, "poisson": 0.3, "density": 490, "fy": 46, "fu": 62 },
+    { "designation": "A53 Gr. B", "young": 29000, "poisson": 0.3, "density": 490, "fy": 35, "fu": 60 },
+    { "designation": "Concrete 4 ksi", "young": 3605, "poisson": 0.2, "density": 150, "fc": 4 },
+    { "designation": "Concrete 5 ksi", "young": 4031, "poisson": 0.2, "density": 150, "fc": 5 }
   ]
 }

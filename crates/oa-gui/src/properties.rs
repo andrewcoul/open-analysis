@@ -6,7 +6,7 @@ use crate::document::Document;
 use crate::explorer::rows_of;
 use crate::prompt::selection_summary;
 use crate::results::{Plane, render_member_results};
-use crate::text::{UNITS, fmt_num, fmt_q, label, parse_num, parse_q};
+use crate::text::{UNITS, fmt_num, fmt_q, label, parse_num, parse_opt_q, parse_q};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::form::{Field, Form};
@@ -93,6 +93,14 @@ fn num(key: &str, label: &str, value: f64) -> FieldSpec {
 /// A quantity field: labelled with its unit, showing the SI value converted.
 fn qty(key: &str, name: &str, role: Role, si: f64) -> FieldSpec {
     text(key, &label(name, role), fmt_q(role, si))
+}
+/// A quantity field that may be blank, meaning none.
+fn opt_qty(key: &str, name: &str, role: Role, si: Option<f64>) -> FieldSpec {
+    text(
+        key,
+        &label(name, role),
+        si.map_or(String::new(), |v| fmt_q(role, v)),
+    )
 }
 fn check(key: String, group: &str, label: &str, value: bool) -> FieldSpec {
     FieldSpec::Check {
@@ -288,6 +296,9 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
             f.push(qty("young", "E", Role::Stress, e.young.si()).span(THIRD));
             f.push(num("poisson", "Poisson's ratio", e.poisson).span(THIRD));
             f.push(qty("density", "Density", Role::Density, e.density.si()).span(THIRD));
+            f.push(opt_qty("fy", "Fy", Role::Stress, e.fy.map(Pressure::si)).span(THIRD));
+            f.push(opt_qty("fu", "Fu", Role::Stress, e.fu.map(Pressure::si)).span(THIRD));
+            f.push(opt_qty("fc", "f'c", Role::Stress, e.fc.map(Pressure::si)).span(THIRD));
         }
         EntityKind::Section => {
             let e = &model.sections[&id];
@@ -395,6 +406,20 @@ impl Values {
             return Ok(current);
         }
         parse_q(role, label, &self.text(key))
+    }
+    /// A quantity that may be blank, as SI or none, or `current` when the
+    /// field was not edited.
+    fn opt_qty(
+        &self,
+        key: &str,
+        role: Role,
+        label: &str,
+        current: Option<f64>,
+    ) -> Result<Option<f64>, String> {
+        if !self.changed(key) {
+            return Ok(current);
+        }
+        parse_opt_q(role, label, &self.text(key))
     }
     fn check(&self, key: &str) -> bool {
         self.checks.get(key).copied().unwrap_or(false)
@@ -537,6 +562,16 @@ fn command_for(
             e.poisson = v.num("poisson", "Poisson's ratio", e.poisson)?;
             e.density =
                 MassDensity::from_si(v.qty("density", Role::Density, "Density", e.density.si())?);
+            for (key, name, strength) in [
+                ("fy", "Fy", &mut e.fy),
+                ("fu", "Fu", &mut e.fu),
+                ("fc", "f'c", &mut e.fc),
+            ] {
+                let current = strength.map(Pressure::si);
+                *strength = v
+                    .opt_qty(key, Role::Stress, name, current)?
+                    .map(Pressure::from_si);
+            }
             (e != model.materials[&id]).then_some(Command::UpdateMaterial { id, material: e })
         }
         EntityKind::Section => {
@@ -1823,5 +1858,38 @@ mod tests {
         };
         assert_eq!(scope, ElevationScope::ThisLevel);
         assert!((elevation.si() - Length::from_feet(14.0).si()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn material_strengths_show_blank_when_absent_and_clear_when_blanked() {
+        let _p = TestPrecision::of(DEFAULT_PRECISION);
+        let mut model = Model::default();
+        let steel = oa_model::Library::starter()
+            .material("A992", "steel")
+            .unwrap();
+        let id = model.insert(steel.clone());
+        let v = values_for(&model, id);
+        assert_eq!(v.texts["fy"], "50.00");
+        assert_eq!(v.texts["fc"], "");
+        assert_eq!(
+            command_for(&model, id, EntityKind::Material, &v).unwrap(),
+            None
+        );
+
+        // Blanking Fu removes it; typing f'c sets it in ksi.
+        let mut v = values_for(&model, id);
+        v.texts.insert("fu".into(), " ".into());
+        v.texts.insert("fc".into(), "4".into());
+        let Some(Command::UpdateMaterial { material, .. }) =
+            command_for(&model, id, EntityKind::Material, &v).unwrap()
+        else {
+            panic!("an edited strength is a command");
+        };
+        assert_eq!(material.fy, steel.fy);
+        assert_eq!(material.fu, None);
+        assert!((material.fc.unwrap().si() - 4.0 * 6.894_757_293_168e6).abs() < 1e-3);
+        let mut v = values_for(&model, id);
+        v.texts.insert("fy".into(), "fifty".into());
+        assert!(command_for(&model, id, EntityKind::Material, &v).is_err());
     }
 }
