@@ -291,3 +291,31 @@ fn library_lists_aisc_shapes_and_copies_their_design_properties() {
     assert_eq!(got["provenance"]["designation"], "W14X90");
     assert!((got["shape"]["properties"]["Sx"].as_f64().unwrap() - 143.0).abs() < 1e-9);
 }
+
+#[test]
+fn materials_carry_strengths_in_ksi() {
+    let mut s = Session::default();
+    s.new_model("strengths").unwrap();
+    let steel = s.add_material_from_library("A992", "steel").unwrap();
+    let got = &s.get(steel).unwrap()["entity"];
+    assert!((got["fy"].as_f64().unwrap() - 50.0).abs() < 1e-9);
+    assert!((got["fu"].as_f64().unwrap() - 65.0).abs() < 1e-9);
+    assert!(got.get("fc").is_none());
+
+    let [concrete, bad] = <[_; 2]>::try_from(s.next_ids(2)).unwrap();
+    s.apply(vec![cmd(
+        json!({"command": "add_material", "id": concrete, "material":
+        {"name": "concrete", "young": 3605, "poisson": 0.2, "density": 150, "fc": 4}}),
+    )])
+    .unwrap();
+    let got = &s.get(concrete).unwrap()["entity"];
+    assert!((got["fc"].as_f64().unwrap() - 4.0).abs() < 1e-9);
+    let err = s
+        .apply(vec![cmd(
+            json!({"command": "add_material", "id": bad, "material":
+            {"name": "bad", "young": 29000, "poisson": 0.3, "fy": 50, "fu": 40}}),
+        )])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("Fu must be at least Fy"), "{err}");
+}

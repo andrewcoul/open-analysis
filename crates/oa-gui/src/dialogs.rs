@@ -2,7 +2,7 @@
 //! state in an entity; the dialog builder only renders it, so the same
 //! inputs survive re-renders of the overlay.
 use crate::document::{Document, unused_name};
-use crate::text::{label, parse_num, parse_q};
+use crate::text::{label, parse_num, parse_opt_q, parse_q};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::{Cancel, Confirm, DialogFooter};
 use gpui_kit::component::form::{Field, Form};
@@ -64,6 +64,26 @@ impl Inputs {
             .push((label.to_string().into(), Widget::Text(input), width));
         self
     }
+    /// A text input that may be left blank, saying what a blank one means.
+    fn with_optional_text(
+        mut self,
+        label: &str,
+        value: &str,
+        blank: &str,
+        width: Width,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
+        let (value, blank) = (value.to_string(), blank.to_string());
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(value)
+                .placeholder(blank)
+        });
+        self.fields
+            .push((label.to_string().into(), Widget::Text(input), width));
+        self
+    }
     /// A name that may be left blank, saying what a blank one becomes.
     fn with_optional_name(mut self, blank: &str, window: &mut Window, cx: &mut App) -> Self {
         let blank = blank.to_string();
@@ -113,6 +133,10 @@ impl Inputs {
     /// A quantity typed in display units, as SI.
     fn qty(&self, label: &str, role: Role, cx: &App) -> Result<f64, String> {
         parse_q(role, label, &self.text(label, cx))
+    }
+    /// A quantity that may be left blank, as SI, or none when blank.
+    fn opt_qty(&self, label: &str, role: Role, cx: &App) -> Result<Option<f64>, String> {
+        parse_opt_q(role, label, &self.text(label, cx))
     }
     fn choice(&self, label: &str, cx: &App) -> Option<usize> {
         self.fields
@@ -468,11 +492,15 @@ pub fn add_material_from_library(document: Entity<Document>, window: &mut Window
 pub fn add_custom_material(document: Entity<Document>, window: &mut Window, cx: &mut App) {
     let name = unused_name::<Material>(document.read(cx).model(), "MAT");
     let (young, density) = (label("E", Role::Stress), label("Density", Role::Density));
+    let [fy, fu, fc] = ["Fy", "Fu", "f'c"].map(|name| label(name, Role::Stress));
     let inputs = Inputs::default()
         .with_text("Name", &name, Width::Full, window, cx)
         .with_text(&young, "29000", Width::Third, window, cx)
         .with_text("Poisson's ratio", "0.3", Width::Third, window, cx)
-        .with_text(&density, "490", Width::Third, window, cx);
+        .with_text(&density, "490", Width::Third, window, cx)
+        .with_optional_text(&fy, "50", "None", Width::Third, window, cx)
+        .with_optional_text(&fu, "65", "None", Width::Third, window, cx)
+        .with_optional_text(&fc, "", "None", Width::Third, window, cx);
     open(
         "Add material",
         "Add material",
@@ -492,11 +520,26 @@ pub fn add_custom_material(document: Entity<Document>, window: &mut Window, cx: 
                     return false;
                 }
             };
+            let strengths = (
+                inputs.opt_qty(&fy, Role::Stress, cx),
+                inputs.opt_qty(&fu, Role::Stress, cx),
+                inputs.opt_qty(&fc, Role::Stress, cx),
+            );
+            let (fy, fu, fc) = match strengths {
+                (Ok(fy), Ok(fu), Ok(fc)) => (fy, fu, fc),
+                (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
+                    notify_error(window, cx, e);
+                    return false;
+                }
+            };
             let material = Material {
                 name: inputs.text("Name", cx),
                 young: Pressure::from_si(young),
                 poisson,
                 density: MassDensity::from_si(density),
+                fy: fy.map(Pressure::from_si),
+                fu: fu.map(Pressure::from_si),
+                fc: fc.map(Pressure::from_si),
                 provenance: None,
             };
             let id = document.read(cx).model().next_id;

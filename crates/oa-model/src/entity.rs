@@ -87,6 +87,16 @@ pub struct Material {
     pub poisson: f64,
     #[serde(default)]
     pub density: MassDensity,
+    /// Specified minimum yield stress, for steel. The solver never reads
+    /// the strengths; design checks do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fy: Option<Pressure>,
+    /// Specified minimum tensile strength, for steel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fu: Option<Pressure>,
+    /// Specified compressive strength, f'c, for concrete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fc: Option<Pressure>,
     #[serde(default)]
     pub provenance: Option<Provenance>,
 }

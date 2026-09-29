@@ -1332,3 +1332,125 @@ fn aisc_library_copies_design_properties_in_si() {
     assert!(round.properties.contains_key(&SectionProperty::OutsideDiameter));
     assert!(!round.properties.contains_key(&SectionProperty::Cw));
 }
+
+#[test]
+fn format_v5_fixture_loads_with_material_strengths() {
+    let model = from_json(include_str!("fixtures/format_v5.json")).unwrap();
+    let steel = &model.materials[&EntityId(3)];
+    assert_eq!(steel.fy, Some(Pressure::from_si(345e6)));
+    assert_eq!(steel.fu, Some(Pressure::from_si(450e6)));
+    assert_eq!(steel.fc, None);
+    assert_eq!(from_json(&to_json(&model)).unwrap(), model);
+    // Without strengths the document is the version 4 fixture, and a
+    // material without them is written as before.
+    let mut bare = model.clone();
+    let m = bare.materials.get_mut(&EntityId(3)).unwrap();
+    (m.fy, m.fu) = (None, None);
+    assert_eq!(
+        bare,
+        from_json(include_str!("fixtures/format_v4.json")).unwrap()
+    );
+    let json = to_json(&bare);
+    assert!(!json.contains("\"fy\"") && !json.contains("\"fu\"") && !json.contains("\"fc\""));
+}
+
+#[test]
+fn starter_library_materials_carry_strengths_in_si() {
+    let library = Library::starter();
+    let ksi = 6.894_757_293_168e6;
+    let steel = library.material("A992", "steel").unwrap();
+    assert!((steel.fy.unwrap().si() - 50.0 * ksi).abs() < 1e-3);
+    assert!((steel.fu.unwrap().si() - 65.0 * ksi).abs() < 1e-3);
+    assert_eq!(steel.fc, None);
+    let round = library.material("A500 Gr. C round", "tube").unwrap();
+    let rectangular = library.material("A500 Gr. C rectangular", "tube").unwrap();
+    assert!(round.fy.unwrap().si() < rectangular.fy.unwrap().si());
+    let concrete = library.material("Concrete 4 ksi", "slab").unwrap();
+    assert!((concrete.fc.unwrap().si() - 4.0 * ksi).abs() < 1e-3);
+    assert_eq!((concrete.fy, concrete.fu), (None, None));
+    // Every steel entry has both strengths, every concrete one f'c.
+    for e in &library.materials {
+        let concrete = e.designation.starts_with("Concrete");
+        assert_eq!(e.fc.is_some(), concrete, "{}", e.designation);
+        assert_eq!(
+            e.fy.is_some() && e.fu.is_some(),
+            !concrete,
+            "{}",
+            e.designation
+        );
+    }
+    // Shown in US units, the strengths read back as tabulated.
+    let shown = UnitSystem::UsCustomary.display(&steel);
+    assert!((shown.fy.unwrap().si() - 50.0).abs() < 1e-9);
+    assert!((shown.fu.unwrap().si() - 65.0).abs() < 1e-9);
+}
+
+#[test]
+fn material_strengths_are_validated_and_undone() {
+    let mut editor = Editor::new(Model::default());
+    let id = editor.model.allocate();
+    let invalid = |material: Material| {
+        let mut probe = editor.model.clone();
+        Command::AddMaterial { id, material }
+            .apply(&mut probe)
+            .unwrap_err()
+            .to_string()
+    };
+    let ksi = |v: f64| Some(Pressure::from_si(v * 6.894_757_293_168e6));
+    for (fy, fu, fc) in [
+        (ksi(0.0), None, None),
+        (ksi(-36.0), None, None),
+        (None, Some(Pressure::from_si(f64::NAN)), None),
+        (None, None, ksi(-4.0)),
+    ] {
+        let err = invalid(Material {
+            fy,
+            fu,
+            fc,
+            ..steel()
+        });
+        assert!(err.contains("must be positive and finite"), "{err}");
+    }
+    let err = invalid(Material {
+        fy: ksi(65.0),
+        fu: ksi(50.0),
+        ..steel()
+    });
+    assert!(err.contains("Fu must be at least Fy"), "{err}");
+    assert!(editor.model.materials.is_empty());
+
+    // A material with no strengths is still valid, and an update that
+    // changes them is undone like any other.
+    let bare = Material {
+        fy: None,
+        fu: None,
+        ..steel()
+    };
+    editor
+        .apply(Command::AddMaterial { id, material: bare })
+        .unwrap();
+    let graded = Material {
+        fy: ksi(50.0),
+        fu: ksi(65.0),
+        ..steel()
+    };
+    editor
+        .apply(Command::UpdateMaterial {
+            id,
+            material: graded.clone(),
+        })
+        .unwrap();
+    assert_eq!(editor.model.materials[&id], graded);
+    let err = editor
+        .apply(Command::UpdateMaterial {
+            id,
+            material: Material {
+                fu: ksi(40.0),
+                ..graded.clone()
+            },
+        })
+        .unwrap_err();
+    assert!(err.to_string().contains("Fu must be at least Fy"), "{err}");
+    assert!(editor.undo().unwrap());
+    assert_eq!(editor.model.materials[&id].fy, None);
+}

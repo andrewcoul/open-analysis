@@ -1102,7 +1102,7 @@ pub struct SpectrumRequest {
 /// minimal JSON example. Kept as data so the agent can read it once.
 pub const COMMAND_REFERENCE: &str = r#"Each command is a JSON object with a "command" field. Ids come from next_ids.
 Units are US customary: coordinates, elevations and load positions in ft, shell thickness in in, section area in in² and
-moments of area in in⁴, E in ksi, density in pcf, forces in kip, moments in kip·ft, line loads in kip/ft,
+moments of area in in⁴, E and material strengths in ksi, density in pcf, forces in kip, moments in kip·ft, line loads in kip/ft,
 surface pressure in psf, springs in kip/ft and kip·ft/rad, nodal mass in kip·s²/ft, prescribed displacements
 in in and rad, roll in degrees, gravity in ft/s².
 Z is up. X and Y are the plan axes. A level is a plane of constant Z, and every node binds to one level: its
@@ -1125,7 +1125,9 @@ add_node      {"command":"add_node","id":1,"node":{"name":"N1","level":11,"posit
               spring_translation [kip/ft x3], spring_rotation
 update_node   {"command":"update_node","id":1,"node":{...full node...}}
 remove_node   {"command":"remove_node","id":1}     (refused while a frame, shell, diaphragm or load references it)
-add_material  {"command":"add_material","id":2,"material":{"name":"steel","young":29000,"poisson":0.3,"density":490}}
+add_material  {"command":"add_material","id":2,"material":{"name":"steel","young":29000,"poisson":0.3,"density":490,"fy":50,"fu":65}}
+              optional strengths, kept for design and unused by the solver: fy and fu for steel (fu at least fy),
+              fc (f'c) for concrete. add_material_from_library fills them for the bundled grades
 add_section   {"command":"add_section","id":3,"section":{"name":"col","area":26.5,"iy":362,"iz":999,"torsion":4.06}}
 add_frame     {"command":"add_frame","id":4,"frame":{"name":"C1","nodes":[1,5],"material":2,"section":3}}
               optional: releases [12 bools], behavior "tension_only"|"compression_only", roll, local_y
