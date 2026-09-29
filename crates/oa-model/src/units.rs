@@ -30,6 +30,11 @@ pub enum Role {
     Area,
     /// Second moment of area and torsion constant.
     SecondMoment,
+    /// A section's dimensions and radii of gyration.
+    SectionLength,
+    /// Elastic and plastic section moduli, and the HSS torsional constant.
+    SectionModulus,
+    WarpingConstant,
     Force,
     Moment,
     /// Force per length along a member, and shell membrane and shear
@@ -53,7 +58,7 @@ pub enum Role {
     Acceleration,
 }
 impl Role {
-    pub const ALL: [Role; 19] = [
+    pub const ALL: [Role; 22] = [
         Role::Length,
         Role::Thickness,
         Role::Displacement,
@@ -61,6 +66,9 @@ impl Role {
         Role::Angle,
         Role::Area,
         Role::SecondMoment,
+        Role::SectionLength,
+        Role::SectionModulus,
+        Role::WarpingConstant,
         Role::Force,
         Role::Moment,
         Role::LineLoad,
@@ -115,6 +123,9 @@ impl UnitSystem {
                 Role::Angle => ("deg", std::f64::consts::PI / 180.0),
                 Role::Area => ("in²", INCH * INCH),
                 Role::SecondMoment => ("in⁴", INCH.powi(4)),
+                Role::SectionLength => ("in", INCH),
+                Role::SectionModulus => ("in³", INCH.powi(3)),
+                Role::WarpingConstant => ("in⁶", INCH.powi(6)),
                 Role::Force => ("kip", KIP),
                 Role::Moment => ("kip·ft", KIP * FOOT),
                 Role::LineLoad => ("kip/ft", KIP / FOOT),
@@ -215,6 +226,32 @@ impl MapQuantities for Section {
         remap!(f, Role::SecondMoment, self.iy, SecondMoment);
         remap!(f, Role::SecondMoment, self.iz, SecondMoment);
         remap!(f, Role::SecondMoment, self.torsion, SecondMoment);
+        if let Some(shape) = &mut self.shape {
+            for (property, value) in &mut shape.properties {
+                if let Some(role) = property.role() {
+                    *value = f(role, *value);
+                }
+            }
+        }
+    }
+}
+impl SectionProperty {
+    /// The role of the property's value; none for a slenderness ratio or
+    /// the flexural constant, which have no unit.
+    pub fn role(self) -> Option<Role> {
+        use SectionProperty::*;
+        match self {
+            Depth | HssDepth | HssFlatDepth | OutsideDiameter | FlangeWidth | HssWidth
+            | HssFlatWidth | InsideDiameter | WebThickness | FlangeThickness
+            | NominalWallThickness | DesignWallThickness | Kdes | CentroidX | CentroidY
+            | ShearCentre | PlasticAxisX | PlasticAxisY | Rx | Ry | Ro | Rts | Ho => {
+                Some(Role::SectionLength)
+            }
+            Zx | Sx | Zy | Sy | HssTorsionalConstant => Some(Role::SectionModulus),
+            Cw => Some(Role::WarpingConstant),
+            FlangeSlenderness | LegSlenderness | HssWidthSlenderness | WebSlenderness
+            | HssDepthSlenderness | DiameterSlenderness | FlexuralConstant => None,
+        }
     }
 }
 impl MapQuantities for Frame {

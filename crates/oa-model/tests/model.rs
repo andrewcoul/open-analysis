@@ -1263,3 +1263,72 @@ fn format_v3_fixture_loads_with_its_underlay() {
         Err(oa_model::format::FormatError::Corrupt(_))
     ));
 }
+
+#[test]
+fn format_v4_fixture_loads_with_a_section_shape() {
+    let model = from_json(include_str!("fixtures/format_v4.json")).unwrap();
+    let shape = model.sections[&EntityId(4)].shape.as_ref().unwrap();
+    assert_eq!(shape.kind, ShapeKind::W);
+    assert_eq!(shape.properties[&SectionProperty::Zx], 0.00257);
+    assert_eq!(shape.properties[&SectionProperty::FlangeSlenderness], 10.2);
+    assert_eq!(from_json(&to_json(&model)).unwrap(), model);
+    // Without its shape the document is the version 3 fixture, and a
+    // section without one is written as before.
+    let mut bare = model.clone();
+    bare.sections.get_mut(&EntityId(4)).unwrap().shape = None;
+    assert_eq!(
+        bare,
+        from_json(include_str!("fixtures/format_v3.json")).unwrap()
+    );
+    assert!(!to_json(&bare).contains("shape"));
+}
+
+#[test]
+fn aisc_library_copies_design_properties_in_si() {
+    let library = Library::aisc();
+    assert_eq!(library.sections.len(), 1523);
+    assert!(library.materials.is_empty());
+    for e in &library.sections {
+        let shape = e.shape.as_ref();
+        assert!(shape.is_some(), "{} has no shape", e.designation);
+        assert!(
+            [e.area, e.iy, e.iz, e.torsion].iter().all(|v| *v > 0.0),
+            "{} needs positive stiffness properties",
+            e.designation
+        );
+    }
+    assert!(library.section_entry("L4X4X1/2").is_none());
+    assert!(library.section_entry("2L4X4X1/2").is_none());
+
+    // The model's spelling finds AISC's, and the copy records AISC's.
+    let s = library.section("W14x90", "column").unwrap();
+    let p = s.provenance.as_ref().unwrap();
+    assert_eq!(p.library, "aisc-shapes");
+    assert_eq!(p.version, "16.0");
+    assert_eq!(p.designation, "W14X90");
+    let inch = 0.0254_f64;
+    assert!((s.area.si() - 26.5 * inch.powi(2)).abs() < 1e-12);
+    assert!((s.iz.si() - 999.0 * inch.powi(4)).abs() < 1e-12);
+    let shape = s.shape.as_ref().unwrap();
+    assert_eq!(shape.kind, ShapeKind::W);
+    let value = |p: SectionProperty| shape.properties[&p];
+    assert!((value(SectionProperty::Depth) - 14.0 * inch).abs() < 1e-12);
+    assert!((value(SectionProperty::Zx) - 157.0 * inch.powi(3)).abs() < 1e-12);
+    assert!((value(SectionProperty::Cw) - 16_000.0 * inch.powi(6)).abs() < 1e-15);
+    assert_eq!(value(SectionProperty::FlangeSlenderness), 10.2);
+
+    // Shown in US units, every property reads back as tabulated.
+    let shown = UnitSystem::UsCustomary.display(&s);
+    let table = &library.section_entry("W14X90").unwrap().shape;
+    for (property, tabulated) in &table.as_ref().unwrap().properties {
+        let back = shown.shape.as_ref().unwrap().properties[property];
+        assert!((back - tabulated).abs() <= 1e-9 * tabulated.abs(), "{property:?}");
+    }
+
+    // A round HSS has a diameter and no warping constant.
+    let round = library.section("HSS8.625X0.500", "brace").unwrap();
+    let round = round.shape.unwrap();
+    assert_eq!(round.kind, ShapeKind::HSS);
+    assert!(round.properties.contains_key(&SectionProperty::OutsideDiameter));
+    assert!(!round.properties.contains_key(&SectionProperty::Cw));
+}

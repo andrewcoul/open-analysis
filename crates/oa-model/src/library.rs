@@ -1,11 +1,10 @@
 //! Section and material libraries, shipped as data. An entry is copied into
 //! the model on use and records where it came from. A library says which
 //! units its numbers are in, so tables can be typed in as published.
-use crate::entity::{Material, Provenance, Section};
+use crate::entity::{Material, Provenance, Section, Shape};
 use crate::units::{Role, UnitSystem};
 use oa_core::units::*;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -16,9 +15,9 @@ pub struct SectionEntry {
     pub iy: f64,
     pub iz: f64,
     pub torsion: f64,
-    /// Properties the solver does not need yet, such as plastic moduli, kept for design.
+    /// Design properties in the library's units, for a steel shape.
     #[serde(default)]
-    pub extra: BTreeMap<String, f64>,
+    pub shape: Option<Shape>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,6 +54,11 @@ impl Library {
     pub fn starter() -> Self {
         Self::from_json(include_str!("../data/starter.json")).expect("bundled library parses")
     }
+    /// The AISC Shapes Database v16.0, less single and double angles, with
+    /// design properties, in AISC table units. It holds sections only.
+    pub fn aisc() -> Self {
+        Self::from_json(include_str!("../data/aisc_v16.json")).expect("bundled library parses")
+    }
     fn provenance(&self, designation: &str) -> Provenance {
         Provenance {
             library: self.name.clone(),
@@ -69,19 +73,34 @@ impl Library {
             Some(units) => units.from_display(role, value),
         }
     }
-    /// Copies a section out of the library under the given model name.
-    pub fn section(&self, designation: &str, name: impl Into<String>) -> Option<Section> {
-        let e = self
-            .sections
+    /// The entry with this designation, ignoring case, so "W14x90" finds
+    /// AISC's "W14X90".
+    pub fn section_entry(&self, designation: &str) -> Option<&SectionEntry> {
+        self.sections
             .iter()
-            .find(|s| s.designation == designation)?;
+            .find(|s| s.designation.eq_ignore_ascii_case(designation))
+    }
+    /// Copies a section out of the library under the given model name. The
+    /// provenance records the library's spelling of the designation.
+    pub fn section(&self, designation: &str, name: impl Into<String>) -> Option<Section> {
+        let e = self.section_entry(designation)?;
+        let shape = e.shape.as_ref().map(|shape| {
+            let mut shape = shape.clone();
+            for (property, value) in &mut shape.properties {
+                if let Some(role) = property.role() {
+                    *value = self.si(role, *value);
+                }
+            }
+            shape
+        });
         Some(Section {
             name: name.into(),
             area: Area::from_si(self.si(Role::Area, e.area)),
             iy: SecondMoment::from_si(self.si(Role::SecondMoment, e.iy)),
             iz: SecondMoment::from_si(self.si(Role::SecondMoment, e.iz)),
             torsion: SecondMoment::from_si(self.si(Role::SecondMoment, e.torsion)),
-            provenance: Some(self.provenance(designation)),
+            shape,
+            provenance: Some(self.provenance(&e.designation)),
         })
     }
     pub fn material(&self, designation: &str, name: impl Into<String>) -> Option<Material> {

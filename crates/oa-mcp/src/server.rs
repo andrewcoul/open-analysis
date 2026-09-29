@@ -110,6 +110,18 @@ struct OptionalPathArgs {
     path: Option<String>,
 }
 #[derive(Deserialize, schemars::JsonSchema)]
+struct LibraryArgs {
+    /// Case-insensitive substring of the section designation, such as "W14X".
+    filter: Option<String>,
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+#[derive(Deserialize, schemars::JsonSchema)]
+struct DesignationArgs {
+    /// Section designation, such as "W14X90"; case is ignored.
+    designation: String,
+}
+#[derive(Deserialize, schemars::JsonSchema)]
 struct LibraryPickArgs {
     /// Designation in the library, such as "W14x90" or "A992".
     designation: String,
@@ -334,9 +346,24 @@ impl Server {
         self.call(move |s| s.save(a.path.map(Into::into)).map(|p| json!({"path": p})))
             .await
     }
-    #[tool(description = "Section and material designations available in the bundled library.")]
-    async fn library(&self) -> Result<CallToolResult, McpError> {
-        self.call(|s| Ok(s.library())).await
+    #[tool(
+        description = "Section designations from the bundled AISC Shapes Database v16.0 (no single or double angles), filtered by substring and capped, and the bundled material designations."
+    )]
+    async fn library(
+        &self,
+        Parameters(a): Parameters<LibraryArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.call(move |s| Ok(s.library(a.filter.as_deref(), a.limit)))
+            .await
+    }
+    #[tool(
+        description = "One library section as add_section_from_library would copy it: area, second moments, and AISC design properties (d, bf, tf, tw, Zx, Sx, rx, Cw, ...) with their units. x is the axis of iz."
+    )]
+    async fn library_section(
+        &self,
+        Parameters(a): Parameters<DesignationArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.call(move |s| s.library_section(&a.designation)).await
     }
     #[tool(description = "Copy a library section into the model under a name; returns its id.")]
     async fn add_section_from_library(
