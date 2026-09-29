@@ -591,20 +591,55 @@ impl Session {
         self.mark_saved(path.clone());
         Ok(path)
     }
-    pub fn library(&self) -> Value {
-        let lib = Library::starter();
+    /// Section designations from the AISC shape table, optionally filtered
+    /// by a case-insensitive substring and capped at `limit`, and the
+    /// starter library's materials.
+    pub fn library(&self, filter: Option<&str>, limit: usize) -> Value {
+        let sections = Library::aisc();
+        let materials = Library::starter();
+        let filter = filter.map(str::to_ascii_uppercase);
+        let matching: Vec<&str> = sections
+            .section_designations()
+            .into_iter()
+            .filter(|d| {
+                filter
+                    .as_ref()
+                    .is_none_or(|f| d.to_ascii_uppercase().contains(f))
+            })
+            .collect();
         json!({
-            "library": lib.name, "version": lib.version, "note": lib.note,
-            "sections": lib.section_designations(),
-            "materials": lib.materials.iter().map(|m| m.designation.as_str()).collect::<Vec<_>>(),
+            "sections": {
+                "library": sections.name, "version": sections.version, "note": sections.note,
+                "total": matching.len(),
+                "designations": matching.iter().take(limit).collect::<Vec<_>>(),
+                "truncated": matching.len() > limit,
+            },
+            "materials": {
+                "library": materials.name, "version": materials.version, "note": materials.note,
+                "designations": materials.materials.iter().map(|m| m.designation.as_str()).collect::<Vec<_>>(),
+            },
         })
     }
-    pub fn add_section_from_library(&mut self, designation: &str, name: &str) -> Result<EntityId> {
-        let section = Library::starter()
-            .section(designation, name)
+    /// One library section as it would be copied into the model, in
+    /// display units, with the unit of each design property.
+    pub fn library_section(&self, designation: &str) -> Result<Value> {
+        let section = Library::aisc()
+            .section(designation, designation)
             .ok_or_else(|| {
                 SessionError::Invalid(format!("no section {designation:?} in the library"))
             })?;
+        let units: std::collections::BTreeMap<_, _> = section
+            .shape
+            .iter()
+            .flat_map(|shape| shape.properties.keys())
+            .map(|p| (*p, p.role().map_or("", |role| UNITS.symbol(role))))
+            .collect();
+        Ok(json!({"section": UNITS.display(&section), "property_units": units}))
+    }
+    pub fn add_section_from_library(&mut self, designation: &str, name: &str) -> Result<EntityId> {
+        let section = Library::aisc().section(designation, name).ok_or_else(|| {
+            SessionError::Invalid(format!("no section {designation:?} in the library"))
+        })?;
         let id = self.editor.model.allocate();
         self.edit(self.this_agent(), Command::AddSection { id, section })?;
         Ok(id)

@@ -3,7 +3,7 @@
 use oa_core::units::*;
 pub use oa_core::{Axes, AxialBehavior, Axis, PrescribedDisplacement, ShellFormulation};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Allocated once per model and never reused, across every entity kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -99,8 +99,143 @@ pub struct Section {
     pub iy: SecondMoment,
     pub iz: SecondMoment,
     pub torsion: SecondMoment,
+    /// Design properties, present when the section was copied from a steel
+    /// shape table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<Shape>,
     #[serde(default)]
     pub provenance: Option<Provenance>,
+}
+
+/// A rolled or built-up steel shape's type and design properties, as the
+/// AISC Shapes Database tabulates them. Properties a shape type does not
+/// have are absent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Shape {
+    pub kind: ShapeKind,
+    pub properties: BTreeMap<SectionProperty, f64>,
+}
+
+/// The AISC shape types a frame section can be. Single and double angles
+/// are not among them: a single angle bends about inclined principal axes,
+/// and the AISC table gives double angles no torsion constant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShapeKind {
+    W,
+    M,
+    S,
+    HP,
+    C,
+    MC,
+    WT,
+    MT,
+    ST,
+    /// Rectangular, square, and round HSS.
+    HSS,
+    PIPE,
+}
+
+/// A design property, named as in the AISC Shapes Database. `x` is the axis
+/// of the section's `iz` (AISC Ix) and `y` that of its `iy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum SectionProperty {
+    /// Overall depth.
+    #[serde(rename = "d")]
+    Depth,
+    /// Overall depth of square HSS, or the longer wall of rectangular HSS.
+    #[serde(rename = "Ht")]
+    HssDepth,
+    /// Flat depth of the longer HSS wall.
+    #[serde(rename = "h")]
+    HssFlatDepth,
+    /// Outside diameter of round HSS and pipe.
+    #[serde(rename = "OD")]
+    OutsideDiameter,
+    /// Flange width.
+    #[serde(rename = "bf")]
+    FlangeWidth,
+    /// Overall width of square HSS, or the shorter wall of rectangular HSS.
+    #[serde(rename = "B")]
+    HssWidth,
+    /// Flat width of the shorter HSS wall.
+    #[serde(rename = "b")]
+    HssFlatWidth,
+    /// Inside diameter of pipe.
+    #[serde(rename = "ID")]
+    InsideDiameter,
+    #[serde(rename = "tw")]
+    WebThickness,
+    #[serde(rename = "tf")]
+    FlangeThickness,
+    /// Nominal HSS and pipe wall thickness.
+    #[serde(rename = "tnom")]
+    NominalWallThickness,
+    /// Design HSS and pipe wall thickness.
+    #[serde(rename = "tdes")]
+    DesignWallThickness,
+    /// Outer face of flange to web toe of fillet, for design.
+    #[serde(rename = "kdes")]
+    Kdes,
+    /// Horizontal distance from the designated edge to the centroid.
+    #[serde(rename = "x")]
+    CentroidX,
+    /// Vertical distance from the designated edge to the centroid.
+    #[serde(rename = "y")]
+    CentroidY,
+    /// Horizontal distance from the designated edge to the shear centre.
+    #[serde(rename = "eo")]
+    ShearCentre,
+    /// Horizontal distance from the designated edge to the plastic neutral axis.
+    #[serde(rename = "xp")]
+    PlasticAxisX,
+    /// Vertical distance from the designated edge to the plastic neutral axis.
+    #[serde(rename = "yp")]
+    PlasticAxisY,
+    #[serde(rename = "bf/2tf")]
+    FlangeSlenderness,
+    /// Angle leg or channel flange slenderness.
+    #[serde(rename = "b/t")]
+    LegSlenderness,
+    #[serde(rename = "b/tdes")]
+    HssWidthSlenderness,
+    #[serde(rename = "h/tw")]
+    WebSlenderness,
+    #[serde(rename = "h/tdes")]
+    HssDepthSlenderness,
+    /// Round HSS and pipe slenderness, or tee stem slenderness.
+    #[serde(rename = "D/t")]
+    DiameterSlenderness,
+    #[serde(rename = "Zx")]
+    Zx,
+    #[serde(rename = "Sx")]
+    Sx,
+    #[serde(rename = "rx")]
+    Rx,
+    #[serde(rename = "Zy")]
+    Zy,
+    #[serde(rename = "Sy")]
+    Sy,
+    #[serde(rename = "ry")]
+    Ry,
+    /// Warping constant.
+    #[serde(rename = "Cw")]
+    Cw,
+    /// HSS torsional constant, a modulus.
+    #[serde(rename = "C")]
+    HssTorsionalConstant,
+    /// Polar radius of gyration about the shear centre.
+    #[serde(rename = "ro")]
+    Ro,
+    /// Flexural constant.
+    #[serde(rename = "H")]
+    FlexuralConstant,
+    /// Effective radius of gyration.
+    #[serde(rename = "rts")]
+    Rts,
+    /// Distance between flange centroids.
+    #[serde(rename = "ho")]
+    Ho,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

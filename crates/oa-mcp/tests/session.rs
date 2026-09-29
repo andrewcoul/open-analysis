@@ -257,3 +257,37 @@ fn save_and_load_round_trip_through_the_session() {
     assert_eq!(described["counts"]["levels"], 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn library_lists_aisc_shapes_and_copies_their_design_properties() {
+    let mut s = Session::default();
+    s.new_model("library").unwrap();
+    let listed = s.library(Some("w14x9"), 50);
+    assert_eq!(listed["sections"]["library"], "aisc-shapes");
+    let found = listed["sections"]["designations"].as_array().unwrap();
+    assert!(found.contains(&json!("W14X90")));
+    assert_eq!(listed["sections"]["truncated"], false);
+    let capped = s.library(None, 5);
+    assert_eq!(
+        capped["sections"]["designations"].as_array().unwrap().len(),
+        5
+    );
+    assert_eq!(capped["sections"]["total"], 1523);
+    assert_eq!(capped["sections"]["truncated"], true);
+    let materials = capped["materials"]["designations"].as_array().unwrap();
+    assert!(materials.contains(&json!("A992")));
+
+    let entry = s.library_section("w14x90").unwrap();
+    let shape = &entry["section"]["shape"];
+    assert_eq!(shape["kind"], "W");
+    assert!((shape["properties"]["Zx"].as_f64().unwrap() - 157.0).abs() < 1e-9);
+    assert_eq!(entry["property_units"]["Zx"], "in³");
+    assert_eq!(entry["property_units"]["Cw"], "in⁶");
+    assert_eq!(entry["property_units"]["bf/2tf"], "");
+    assert!(s.library_section("W99X999").is_err());
+
+    let id = s.add_section_from_library("W14x90", "column").unwrap();
+    let got = &s.get(id).unwrap()["entity"];
+    assert_eq!(got["provenance"]["designation"], "W14X90");
+    assert!((got["shape"]["properties"]["Sx"].as_f64().unwrap() - 143.0).abs() < 1e-9);
+}

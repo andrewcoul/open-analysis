@@ -352,6 +352,7 @@ mod tests {
             iy: oa_core::units::SecondMoment::from_si(1e-5),
             iz: oa_core::units::SecondMoment::from_si(1e-5),
             torsion: oa_core::units::SecondMoment::from_si(1e-5),
+            shape: None,
             provenance: None,
         });
         let [n0, n12, n24] = [0.0, 12.0, 24.0].map(|z| m.find::<Node>(&format!("N{z}")).unwrap());

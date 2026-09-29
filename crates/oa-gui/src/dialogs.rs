@@ -81,6 +81,8 @@ impl Inputs {
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
+        // A list too long to scan, such as the AISC shapes, gets a search box.
+        let searchable = options.len() > 20;
         let select = cx.new(|cx| {
             SelectState::new(
                 SearchableVec::from(options),
@@ -88,6 +90,7 @@ impl Inputs {
                 window,
                 cx,
             )
+            .searchable(searchable)
         });
         self.fields
             .push((label.to_string().into(), Widget::Choice(select), width));
@@ -511,7 +514,7 @@ pub fn add_custom_material(document: Entity<Document>, window: &mut Window, cx: 
 }
 
 pub fn add_section_from_library(document: Entity<Document>, window: &mut Window, cx: &mut App) {
-    let library = Library::starter();
+    let library = Library::aisc();
     let designations: Vec<SharedString> = library
         .section_designations()
         .into_iter()
@@ -597,6 +600,7 @@ pub fn add_custom_section(document: Entity<Document>, window: &mut Window, cx: &
                 iy: SecondMoment::from_si(v[1]),
                 iz: SecondMoment::from_si(v[2]),
                 torsion: SecondMoment::from_si(v[3]),
+                shape: None,
                 provenance: None,
             };
             let id = document.read(cx).model().next_id;

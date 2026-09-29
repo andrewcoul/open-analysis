@@ -412,6 +412,7 @@ impl Model {
                     iy: x.iy,
                     iz: x.iz,
                     torsion: x.torsion,
+                    shape: None,
                     provenance: None,
                 })
             })

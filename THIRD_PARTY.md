@@ -42,6 +42,26 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## AISC Shapes Database
+
+`crates/oa-model/data/aisc_v16.json` is converted from the AISC Shapes
+Database v16.0 (August 2023), published by the American Institute of Steel
+Construction at
+<https://www.aisc.org/aisc/publications/steel-construction-manual/aisc-shapes-database-v160/>
+and consistent with the AISC *Steel Construction Manual*, 16th Edition.
+`scripts/import_aisc_shapes.ps1` regenerates the file
+from the workbook `aisc-shapes-database-v160-2.xlsx` (SHA-256
+`82d0ceb96a0d938ae1a6bd9637cb10a1e269225b5d668dce5b0bdc8d86013496`). It keeps
+the US customary columns of every shape except single and double angles, and
+drops detailing, fire, and gage values. Values are as tabulated, apart from
+removing binary rounding noise such as 16.100000000000001.
+
+The workbook's readme carries AISC's disclaimer: the information is not to be
+relied upon for any specific application without competent professional
+examination and verification by a licensed engineer or architect, AISC makes
+no warranty that it is suitable for any use, and anyone using it assumes all
+liability arising from that use.
+
 ## Published references
 
 The shell element formulations follow:

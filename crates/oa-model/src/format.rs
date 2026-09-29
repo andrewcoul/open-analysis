@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
@@ -153,6 +153,9 @@ fn migrate(from: u32, mut value: serde_json::Value) -> Result<serde_json::Value,
         // and needs no change; the bump keeps an older build from opening a
         // document whose underlays it would not understand.
         2 => Ok(value),
+        // Version 4 lets a section carry a steel shape's design properties.
+        // A version 3 section has none and needs no change.
+        3 => Ok(value),
         _ => Ok(value),
     }
 }
