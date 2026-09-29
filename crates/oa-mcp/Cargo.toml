@@ -19,4 +19,11 @@ schemars = "1"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+tokio = { version = "1", features = ["rt-multi-thread", "io-std", "io-util", "macros", "net", "time"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+rmcp = { version = "3", features = ["client"] }
+tokio = { version = "1", features = ["macros", "process"] }

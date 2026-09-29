@@ -36,6 +36,7 @@ examples/           sample JSON request and Python usage
 docs/solver/        solver design plan and benchmarks
 docs/model/         model layer design plan
 docs/gui/           desktop GUI design plan and status
+docs/mcp/           agent interface plan: the GUI attach mode and phase M7 tools
 ```
 
 The model layer is the intended surface for both a GUI and AI agents: every
@@ -117,9 +118,27 @@ cargo build --release -p oa-mcp
 
 An agent then calls `describe_model`, reads `command_reference`, builds a
 model with `apply_commands`, runs `compile` and `analyze`, and asks for
-`envelope`, `group_envelope`, `drift`, or `query_results`. Every edit
+`envelope`, `group_envelope`, `drift`, or `query_results`.
+`generate_combinations` adds the ASCE 7 load combinations, and `modal`,
+`response_spectrum`, and `spectrum_peaks` cover dynamics. Every edit
 returns its inverse, so `undo` and `redo` work, and any edit discards
 results so stale numbers can never be read back.
+
+To let an agent work on the model open in the desktop GUI instead, give
+the client `--attach`:
+
+```json
+{ "mcpServers": { "open-analysis": { "command": "target/release/oa-mcp", "args": ["--attach"] } } }
+```
+
+The GUI serves the same tools on a per-user local socket, and `--attach`
+joins the agent's stdio to it. The agent's edits appear in the view as it
+makes them and share the undo history with the person at the keyboard, its
+analyses are drawn like one run with Ctrl+R, and it cannot replace a model
+that has unsaved changes. The status bar shows when an agent is attached.
+`OA_SOCKET` sets the socket path on both sides, and `OA_SOCKET=off` stops
+the GUI from serving agents. The design is in
+[docs/mcp/PLAN.md](docs/mcp/PLAN.md).
 
 ### Python
 

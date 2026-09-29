@@ -13,7 +13,7 @@
 //! combinations, 0.15 in the seismic one, and 0.7 (0.525 as a companion,
 //! 0.1 with earthquake) for allowable stress, where 7-16 used 1.6, 0.5,
 //! 0.2, 1.0, and 0.75.
-use crate::{Combination, EntityId, LoadType, Model};
+use crate::{Combination, Command, EntityId, LoadType, Model};
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,6 +311,19 @@ pub fn generate(model: &Model, edition: Edition, method: Method) -> Vec<Combinat
         }
     }
     out
+}
+
+/// [`generate`] as `add_combination` commands with fresh ids, for the GUI
+/// and the agent to apply as one batch, so the whole set is one undo step.
+pub fn commands(model: &Model, edition: Edition, method: Method) -> Vec<Command> {
+    generate(model, edition, method)
+        .into_iter()
+        .enumerate()
+        .map(|(i, combination)| Command::AddCombination {
+            id: EntityId(model.next_id + i as u64),
+            combination,
+        })
+        .collect()
 }
 
 #[cfg(test)]

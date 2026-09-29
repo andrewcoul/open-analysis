@@ -12,8 +12,11 @@ path = "src/main.rs"
 
 [dependencies]
 dxf = "0.6.1"
+futures = "0.3"
 gpui-kit = "0.6.1"
 oa-core = { workspace = true, features = ["parallel"] }
+oa-mcp = { path = "../oa-mcp" }
 oa-model = { workspace = true, features = ["store"] }
 serde.workspace = true
 serde_json.workspace = true
+tokio = { version = "1", features = ["rt"] }

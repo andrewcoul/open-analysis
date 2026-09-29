@@ -4,6 +4,7 @@
 //! menu bar, command palette, and key bindings dispatch actions, and this file routes
 //! each one to a workspace method.
 mod actions;
+mod agent;
 mod cad;
 mod camera;
 mod dialogs;

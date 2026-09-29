@@ -6,12 +6,16 @@
 //! converted to SI before they touch the model, entities are converted on
 //! the way out, and the result store is read through views that rescale
 //! each column, so raw SQL sees the same units as the envelope tools.
-use oa_core::StaticOptions;
+use oa_core::units::Acceleration;
+use oa_core::{InMemoryResults, ResultConsumer, StaticOptions};
 use oa_model::{compile::Compiled, *};
 use oa_results::ResultStore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
+
+pub mod server;
+pub mod socket;
 
 /// The units of the whole agent surface.
 pub const UNITS: UnitSystem = UnitSystem::UsCustomary;
@@ -131,15 +135,66 @@ pub enum SessionError {
 pub type Result<T> = std::result::Result<T, SessionError>;
 
 /// One open model, its last compilation, and its current results.
+///
+/// The agent edits through the methods here. When a person edits the same
+/// model, as in the GUI, their edits go through [`Session::user_apply`],
+/// [`Session::user_undo`], and [`Session::user_redo`], so the session can
+/// tell the two apart and keep an agent from undoing the person's work.
+/// Several agents can share a session; [`Session::as_agent`] tells them
+/// apart.
 pub struct Session {
-    pub editor: Editor,
-    pub path: Option<PathBuf>,
+    editor: Editor,
+    path: Option<PathBuf>,
     compiled: Option<Compiled>,
     store: Option<ResultStore>,
+    spectrum: Option<oa_core::SpectrumResult>,
+    /// Bumped by every change to the model, whoever makes it.
+    revision: u64,
+    /// The agent whose call is running; see [`Session::as_agent`].
+    agent: u64,
+    /// Who made each entry on the editor's undo and redo stacks, kept in
+    /// step with them.
+    undo_authors: Vec<Author>,
+    redo_authors: Vec<Author>,
+    /// Who made the last change of any kind.
+    last_author: Option<Author>,
+    /// The revision at the last load or save.
+    saved_revision: u64,
+    /// Bumped when the whole model is replaced by a new or loaded one.
+    generation: u64,
+    /// Refuse to replace a model that has unsaved changes. The GUI sets it,
+    /// since a person's unsaved work cannot be undone back.
+    pub protect_unsaved: bool,
+    /// Keep a copy of every static result in memory beside the store. The
+    /// GUI sets it to draw the results; the headless server does not, so
+    /// its memory stays bounded.
+    pub keep_in_memory: bool,
+    fresh: Option<InMemoryResults>,
 }
 impl Default for Session {
     fn default() -> Self {
         Self::new(Model::default())
+    }
+}
+
+/// Who made a change to the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Author {
+    User,
+    Agent(u64),
+}
+
+/// Copies each combination into memory on its way to the store.
+struct Tee<'a> {
+    store: &'a mut ResultStore,
+    copy: Option<&'a mut InMemoryResults>,
+}
+impl ResultConsumer for Tee<'_> {
+    fn consume(&mut self, result: oa_core::CombinationResult) -> oa_core::Result<()> {
+        if let Some(copy) = &mut self.copy {
+            copy.consume(result.clone())?;
+        }
+        self.store.consume(result)
     }
 }
 
@@ -176,14 +231,158 @@ impl Session {
             path: None,
             compiled: None,
             store: None,
+            spectrum: None,
+            revision: 0,
+            agent: 0,
+            undo_authors: vec![],
+            redo_authors: vec![],
+            last_author: None,
+            saved_revision: 0,
+            generation: 0,
+            protect_unsaved: false,
+            keep_in_memory: false,
+            fresh: None,
         }
     }
-    fn invalidate(&mut self) {
+    /// A session over a model read from, or about to be saved to, `path`.
+    pub fn with_path(model: Model, path: Option<PathBuf>) -> Self {
+        Self {
+            path,
+            ..Self::new(model)
+        }
+    }
+    pub fn model(&self) -> &Model {
+        &self.editor.model
+    }
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
+    }
+    pub fn can_undo(&self) -> bool {
+        self.editor.can_undo()
+    }
+    pub fn can_redo(&self) -> bool {
+        self.editor.can_redo()
+    }
+    /// Counts changes to the model, whoever makes them.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    /// Counts replacements of the whole model by `new_model` or `load`.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    /// Whether the model has changed since it was last loaded or saved.
+    pub fn is_dirty(&self) -> bool {
+        self.revision != self.saved_revision
+    }
+    /// Records that the model now matches the file at `path`.
+    pub fn mark_saved(&mut self, path: PathBuf) {
+        self.path = Some(path);
+        self.saved_revision = self.revision;
+    }
+    /// The static results of the last `analyze` when [`Session::keep_in_memory`]
+    /// is set, with the compilation they belong to. Each run's results are
+    /// handed out once.
+    pub fn take_fresh_results(&mut self) -> Option<(Compiled, InMemoryResults)> {
+        let results = self.fresh.take()?;
+        Some((self.compiled.clone()?, results))
+    }
+
+    /// Runs `f` as agent `agent`, so the history knows its changes from
+    /// other agents'. Each connection to the GUI is its own agent; calls
+    /// made outside this are agent 0.
+    pub fn as_agent<T>(&mut self, agent: u64, f: impl FnOnce(&mut Self) -> T) -> T {
+        let outer = std::mem::replace(&mut self.agent, agent);
+        let result = f(self);
+        self.agent = outer;
+        result
+    }
+    fn this_agent(&self) -> Author {
+        Author::Agent(self.agent)
+    }
+
+    /// A change to the model: bumps the revision and drops everything
+    /// derived from the old model.
+    fn changed(&mut self, author: Author) {
+        self.revision += 1;
+        self.last_author = Some(author);
         self.compiled = None;
         self.store = None;
+        self.spectrum = None;
+        self.fresh = None;
     }
-    fn model(&self) -> &Model {
-        &self.editor.model
+    /// Every edit, undo, and redo goes through these three, which keep the
+    /// authors in step with the editor's stacks.
+    fn edit(&mut self, author: Author, command: Command) -> std::result::Result<(), ModelError> {
+        self.editor.apply(command)?;
+        self.undo_authors.push(author);
+        self.redo_authors.clear();
+        self.changed(author);
+        Ok(())
+    }
+    fn undo_as(&mut self, author: Author) -> std::result::Result<bool, ModelError> {
+        let done = self.editor.undo()?;
+        if done {
+            self.redo_authors.extend(self.undo_authors.pop());
+            self.changed(author);
+        }
+        Ok(done)
+    }
+    fn redo_as(&mut self, author: Author) -> std::result::Result<bool, ModelError> {
+        let done = self.editor.redo()?;
+        if done {
+            self.undo_authors.extend(self.redo_authors.pop());
+            self.changed(author);
+        }
+        Ok(done)
+    }
+    /// Refuses unless nobody else has changed the model since this agent
+    /// last did, and the step `what` would act on, if any, is this agent's
+    /// own, so an agent's undo and redo only ever take back its own work.
+    fn check_history_is_agents(&self, what: &str, next: Option<&Author>) -> Result<()> {
+        let me = self.this_agent();
+        let mine = |author: Option<&Author>| author.is_none_or(|a| *a == me);
+        if mine(self.last_author.as_ref()) && mine(next) {
+            return Ok(());
+        }
+        Err(SessionError::Invalid(format!(
+            "the step {what} would act on is not yours, or the user or another agent has edited \
+             since your last change; ask the user to use Ctrl+Z or Ctrl+Y in the GUI, or make a \
+             new change that reverses yours"
+        )))
+    }
+    /// Replaces the whole model, refusing when that would discard a person's
+    /// unsaved work.
+    fn replace_model(&mut self, model: Model, path: Option<PathBuf>) -> Result<()> {
+        if self.protect_unsaved && self.is_dirty() {
+            return Err(SessionError::Invalid(
+                "the model open in the GUI has unsaved changes; ask the user to save or discard \
+                 them before a new model replaces it"
+                    .into(),
+            ));
+        }
+        let replacement = Self {
+            revision: self.revision + 1,
+            agent: self.agent,
+            saved_revision: self.revision + 1,
+            generation: self.generation + 1,
+            protect_unsaved: self.protect_unsaved,
+            keep_in_memory: self.keep_in_memory,
+            ..Self::with_path(model, path)
+        };
+        *self = replacement;
+        Ok(())
+    }
+
+    /// Applies a command, in SI, on behalf of the person rather than the agent.
+    pub fn user_apply(&mut self, command: Command) -> std::result::Result<(), ModelError> {
+        self.edit(Author::User, command)
+    }
+    pub fn user_undo(&mut self) -> std::result::Result<bool, ModelError> {
+        self.undo_as(Author::User)
+    }
+    pub fn user_redo(&mut self) -> std::result::Result<bool, ModelError> {
+        self.redo_as(Author::User)
     }
 
     /// Sizes and names an agent needs before it can do anything else.
@@ -216,8 +415,10 @@ impl Session {
             "load_cases": names(m.load_cases.values().map(|c| c.name.as_str()).collect()),
             "combinations": names(m.combinations.values().map(|c| c.name.as_str()).collect()),
             "groups": m.groups.iter().map(|(id, g)| json!({"id": id, "name": g.name, "size": g.members.len()})).collect::<Vec<_>>(),
+            "unsaved_changes": self.is_dirty(),
             "compiled": self.compiled.is_some(),
             "results": self.store.as_ref().map(|s| json!({"combinations": s.combinations(), "current": true})),
+            "spectrum_results": self.spectrum.is_some(),
             "can_undo": self.editor.can_undo(),
             "can_redo": self.editor.can_redo(),
         })
@@ -359,33 +560,27 @@ impl Session {
         for command in &mut commands {
             command.map_quantities(&mut |role, v| UNITS.from_display(role, v));
         }
-        self.editor.apply(Command::Batch { commands })?;
-        self.invalidate();
+        self.edit(self.this_agent(), Command::Batch { commands })?;
         Ok(json!({"applied": count, "counts": self.describe()["counts"]}))
     }
+    /// Undoes the agent's last batch. Refused when the batch on top of the
+    /// stack is someone else's, or someone else has edited since.
     pub fn undo(&mut self) -> Result<bool> {
-        let done = self.editor.undo()?;
-        if done {
-            self.invalidate();
-        }
-        Ok(done)
+        self.check_history_is_agents("undo", self.undo_authors.last())?;
+        Ok(self.undo_as(self.this_agent())?)
     }
     pub fn redo(&mut self) -> Result<bool> {
-        let done = self.editor.redo()?;
-        if done {
-            self.invalidate();
-        }
-        Ok(done)
+        self.check_history_is_agents("redo", self.redo_authors.last())?;
+        Ok(self.redo_as(self.this_agent())?)
     }
-    pub fn new_model(&mut self, name: &str) {
+    pub fn new_model(&mut self, name: &str) -> Result<()> {
         let mut model = Model::default();
         model.metadata.name = name.into();
-        *self = Self::new(model);
+        self.replace_model(model, None)
     }
     pub fn load(&mut self, path: PathBuf) -> Result<Value> {
         let model = from_json(&std::fs::read_to_string(&path)?)?;
-        *self = Self::new(model);
-        self.path = Some(path);
+        self.replace_model(model, Some(path))?;
         Ok(self.describe())
     }
     pub fn save(&mut self, path: Option<PathBuf>) -> Result<PathBuf> {
@@ -393,7 +588,7 @@ impl Session {
             .or_else(|| self.path.clone())
             .ok_or_else(|| SessionError::Invalid("no path given and the model has none".into()))?;
         oa_model::save_json(self.model(), &path)?;
-        self.path = Some(path.clone());
+        self.mark_saved(path.clone());
         Ok(path)
     }
     pub fn library(&self) -> Value {
@@ -411,8 +606,7 @@ impl Session {
                 SessionError::Invalid(format!("no section {designation:?} in the library"))
             })?;
         let id = self.editor.model.allocate();
-        self.editor.apply(Command::AddSection { id, section })?;
-        self.invalidate();
+        self.edit(self.this_agent(), Command::AddSection { id, section })?;
         Ok(id)
     }
     pub fn add_material_from_library(&mut self, designation: &str, name: &str) -> Result<EntityId> {
@@ -422,9 +616,40 @@ impl Session {
                 SessionError::Invalid(format!("no material {designation:?} in the library"))
             })?;
         let id = self.editor.model.allocate();
-        self.editor.apply(Command::AddMaterial { id, material })?;
-        self.invalidate();
+        self.edit(self.this_agent(), Command::AddMaterial { id, material })?;
         Ok(id)
+    }
+    /// Adds the ASCE 7 combinations the load cases can form and the model
+    /// does not have yet, as one undo step. Cases are matched by load type.
+    pub fn generate_combinations(
+        &mut self,
+        edition: asce7::Edition,
+        method: asce7::Method,
+    ) -> Result<Value> {
+        let commands = asce7::commands(self.model(), edition, method);
+        let names: Vec<String> = commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::AddCombination { combination, .. } => Some(combination.name.clone()),
+                _ => None,
+            })
+            .collect();
+        if names.is_empty() {
+            let typed = self
+                .model()
+                .load_cases
+                .values()
+                .any(|c| c.load_type != LoadType::Other);
+            let note = if typed {
+                "no new combinations: the model already has every one its load cases can form"
+            } else {
+                "no load case has a load_type the generator uses; give the cases one (dead, live, \
+                 wind, ...) with update_load_case, then generate again"
+            };
+            return Ok(json!({"added": names, "note": note}));
+        }
+        self.edit(self.this_agent(), Command::Batch { commands })?;
+        Ok(json!({"added": names}))
     }
     /// Validates and compiles. Problems come back named, never as indices.
     pub fn compile(&mut self) -> Result<Value> {
@@ -466,7 +691,13 @@ impl Session {
             Some(p) => ResultStore::create(p, &compiled.solver, &options)?,
             None => ResultStore::create_in_memory(&compiled.solver, &options)?,
         };
-        oa_core::analyze_static_into(&compiled.solver, &options, &mut store)?;
+        let mut copy = self.keep_in_memory.then(InMemoryResults::default);
+        let mut tee = Tee {
+            store: &mut store,
+            copy: copy.as_mut(),
+        };
+        oa_core::analyze_static_into(&compiled.solver, &options, &mut tee)?;
+        self.fresh = copy;
         oa_model::store::attach(&compiled, &store)?;
         for (name, select) in unit_views() {
             store.define_view(&name, &select)?;
@@ -627,6 +858,209 @@ impl Session {
             })
             .collect())
     }
+
+    /// Natural modes: periods, frequencies, and mass participation. Mode
+    /// shapes are left out; they grow with the model.
+    pub fn modal(&mut self, modes: usize) -> Result<Value> {
+        let options = oa_core::ModalOptions {
+            modes,
+            ..Default::default()
+        };
+        let result = oa_core::analyze_modal(&self.compiled()?.solver, &options)?;
+        Ok(modal_summary(&result))
+    }
+    /// A response-spectrum run along one direction. The peaks are kept for
+    /// [`Session::spectrum_peaks`] until the model changes.
+    pub fn response_spectrum(&mut self, request: &SpectrumRequest) -> Result<Value> {
+        let g = self.model().gravity.si();
+        let direction = request.direction.vector()?;
+        let options = oa_core::SpectrumOptions {
+            modal: oa_core::ModalOptions {
+                modes: request.modes,
+                ..Default::default()
+            },
+            spectrum: request
+                .spectrum
+                .iter()
+                .map(|&[period_seconds, sa]| oa_core::SpectrumPoint {
+                    period_seconds,
+                    acceleration: Acceleration::from_si(sa * g),
+                })
+                .collect(),
+            direction,
+            damping: request.damping,
+            combination: match request.combination {
+                ModalSum::Cqc => oa_core::ModalCombination::Cqc,
+                ModalSum::Srss => oa_core::ModalCombination::Srss,
+            },
+            minimum_mass_ratio: request.minimum_mass_ratio,
+            ..Default::default()
+        };
+        let result = oa_core::analyze_spectrum(&self.compiled()?.solver, &options)?;
+        let base: Vec<f64> = result
+            .base_reaction
+            .iter()
+            .enumerate()
+            .map(|(i, v)| display(if i < 3 { Role::Force } else { Role::Moment }, *v))
+            .collect();
+        let mut summary = json!({
+            "direction": result.direction,
+            "combination": request.combination,
+            "captured_mass_ratio": result.captured_mass_ratio,
+            "base_reaction": {
+                "fx": base[0], "fy": base[1], "fz": base[2],
+                "mx": base[3], "my": base[4], "mz": base[5],
+                "units": [UNITS.symbol(Role::Force), UNITS.symbol(Role::Moment)],
+            },
+            "modal": modal_summary(&result.modal),
+        });
+        self.spectrum = Some(result);
+        summary["largest_displacements"] = ["ux", "uy", "uz"]
+            .iter()
+            .map(|c| self.spectrum_peaks(Quantity::Displacement, c, None, None, 1))
+            .collect::<Result<Vec<_>>>()?
+            .into();
+        Ok(summary)
+    }
+    /// Peaks from the last response-spectrum run, largest first, for one
+    /// entity, a group's members, or every node or frame. Peaks from a modal
+    /// combination carry no sign, so they are magnitudes.
+    pub fn spectrum_peaks(
+        &self,
+        quantity: Quantity,
+        component: &str,
+        id: Option<EntityId>,
+        group: Option<EntityId>,
+        limit: usize,
+    ) -> Result<Value> {
+        let (Some(compiled), Some(result)) = (&self.compiled, &self.spectrum) else {
+            return Err(SessionError::Invalid(
+                "no current spectrum results; run response_spectrum first (edits discard results)"
+                    .into(),
+            ));
+        };
+        let c = component_index(quantity, component)?;
+        let ids: Vec<EntityId> = match (id, group) {
+            (Some(id), _) => vec![id],
+            (None, Some(group)) => self.model().group_members(group),
+            (None, None) => match quantity {
+                Quantity::FrameForce => compiled.mapping.frame_index.keys().copied().collect(),
+                _ => compiled.mapping.node_index.keys().copied().collect(),
+            },
+        };
+        let missing = || SessionError::Invalid(format!("the run kept no {quantity:?} results"));
+        let mut rows = vec![];
+        for member in ids {
+            let index = match self.index_of(compiled, member, quantity) {
+                Ok(index) => index,
+                Err(e) if id.is_some() => return Err(e),
+                // A group can mix kinds; members of the other kind are skipped.
+                Err(_) => continue,
+            };
+            let value = match quantity {
+                Quantity::Displacement => result.displacements.as_ref().ok_or_else(missing)?[index][c],
+                Quantity::Reaction => result.reactions.as_ref().ok_or_else(missing)?[index][c],
+                Quantity::FrameForce => result.frame_end_forces.as_ref().ok_or_else(missing)?[index][c],
+            };
+            rows.push((member, value.abs()));
+        }
+        rows.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let role = role_of(quantity, c);
+        let total = rows.len();
+        Ok(json!({
+            "component": component, "unit": UNITS.symbol(role), "total": total,
+            "rows": rows.into_iter().take(limit.max(1)).map(|(id, v)| json!({
+                "id": id, "name": self.model().name_of(id), "peak": display(role, v),
+            })).collect::<Vec<_>>(),
+        }))
+    }
+}
+
+fn modal_summary(r: &oa_core::ModalResult) -> Value {
+    json!({
+        "units": {"period": "s", "frequency": "Hz", "mass": UNITS.symbol(Role::Mass)},
+        "modes": r.modes.iter().enumerate().map(|(i, m)| json!({
+            "mode": i + 1,
+            "period": m.period_seconds,
+            "frequency": m.frequency_hz,
+            "mass_ratio": {"x": m.mass_ratio[0], "y": m.mass_ratio[1], "z": m.mass_ratio[2]},
+        })).collect::<Vec<_>>(),
+        "cumulative_mass_ratio": {
+            "x": r.cumulative_mass_ratio[0], "y": r.cumulative_mass_ratio[1], "z": r.cumulative_mass_ratio[2],
+        },
+        "total_free_mass": r.total_free_mass.map(|m| display(Role::Mass, m)),
+        "maximum_mass_orthogonality_error": r.maximum_mass_orthogonality_error,
+        // The solver fails the run when the count disagrees, so a count here
+        // certifies that no lower mode was skipped.
+        "sturm_check": r.sturm_count_below_cutoff.map(|n| json!({
+            "passed": true, "modes_below_cutoff": n, "cutoff_hz": r.sturm_cutoff_hz,
+        })),
+    })
+}
+
+/// How a response-spectrum run sums its modes.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModalSum {
+    /// Complete quadratic combination, which accounts for closely spaced modes.
+    #[default]
+    Cqc,
+    /// Square root of the sum of the squares.
+    Srss,
+}
+
+/// A global direction of excitation.
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum Direction {
+    /// "x", "y", or "z".
+    Axis(String),
+    /// A global vector such as [1, 1, 0]; the solver normalizes it.
+    Vector([f64; 3]),
+}
+impl Direction {
+    fn vector(&self) -> Result<[f64; 3]> {
+        match self {
+            Self::Vector(v) => Ok(*v),
+            Self::Axis(a) => match a.to_ascii_lowercase().as_str() {
+                "x" => Ok([1.0, 0.0, 0.0]),
+                "y" => Ok([0.0, 1.0, 0.0]),
+                "z" => Ok([0.0, 0.0, 1.0]),
+                _ => Err(SessionError::Invalid(format!(
+                    "direction {a:?}; use \"x\", \"y\", \"z\", or a vector"
+                ))),
+            },
+        }
+    }
+}
+
+fn default_damping() -> f64 {
+    0.05
+}
+fn default_spectrum_modes() -> usize {
+    12
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct SpectrumRequest {
+    /// The design spectrum as [period in s, spectral acceleration as a
+    /// fraction of g] pairs with periods strictly increasing. It must span
+    /// every computed mode's period, so start it at 0 s.
+    pub spectrum: Vec<[f64; 2]>,
+    /// "x", "y", "z", or a global vector such as [1, 1, 0].
+    pub direction: Direction,
+    /// The damping ratio the spectrum is for, which CQC also uses. Default 0.05.
+    #[serde(default = "default_damping")]
+    pub damping: f64,
+    /// "cqc" (default) or "srss".
+    #[serde(default)]
+    pub combination: ModalSum,
+    /// Modes to compute and combine. Default 12.
+    #[serde(default = "default_spectrum_modes")]
+    pub modes: usize,
+    /// Refuse the run when the mass captured along the direction is below
+    /// this ratio, such as 0.9.
+    pub minimum_mass_ratio: Option<f64>,
 }
 
 /// Reference text for the `apply_commands` tool: one entry per command with a
@@ -662,11 +1096,19 @@ add_frame     {"command":"add_frame","id":4,"frame":{"name":"C1","nodes":[1,5],"
               optional: releases [12 bools], behavior "tension_only"|"compression_only", roll, local_y
 add_shell     {"command":"add_shell","id":6,"shell":{"name":"S1","nodes":[1,2,3,4],"material":2,"thickness":8}}
 add_diaphragm {"command":"add_diaphragm","id":7,"diaphragm":{"name":"D1","nodes":[5,6,7],"normal":"z"}}   master optional
-add_load_case {"command":"add_load_case","id":8,"load_case":{"name":"wind","nodal":[{"node":5,"force":[10,0,0]}],
+add_load_case {"command":"add_load_case","id":8,"load_case":{"name":"wind","load_type":"wind","nodal":[{"node":5,"force":[10,0,0]}],
                "member":[{"type":"distributed","member":4,"start":0,"end":20,"start_load":[0,0,-1],"end_load":[0,0,-1],"axes":"global"}],
-               "self_weight":[0,0,-1]}}
+               "surface":[{"shell":6,"pressure":-50}],"self_weight":[0,0,-1]}}
+              load_type is what generate_combinations matches on: dead, live, roof_live, snow, rain, wind, earthquake,
+              earth_pressure, fluid, self_straining, flood, ice, wind_on_ice, or other (the default, never generated).
+              self_weight is a multiple of g per axis. surface pressure acts along the shell normal, which follows
+              its nodes by the right-hand rule. Loads are not mass: modal mass is the members' own mass from
+              material density plus node mass.
 add_combination {"command":"add_combination","id":9,"combination":{"name":"1.2D+1.6W","terms":[[8,1.6]]}}
 add_group     {"command":"add_group","id":10,"group":{"name":"roof","members":[5,6]}}
+add_underlay  {"command":"add_underlay","id":12,"underlay":{"name":"grid","level":11,"origin":[0,0],"segments":[[[0,0],[20,0]],[[0,0],[0,20]]]}}
+              plan line work on a level, drawn by the GUI as a tracing reference; the solver never sees it
 update_*, remove_* exist for every kind. set_gravity {"command":"set_gravity","gravity":32.174}
+set_metadata  {"command":"set_metadata","metadata":{"name":"Office block"}}   replaces the whole metadata record
 batch         {"command":"batch","commands":[...]}   all or nothing (apply_commands already wraps its list in a batch)
 "#;

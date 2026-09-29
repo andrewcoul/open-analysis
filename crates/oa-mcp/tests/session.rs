@@ -13,7 +13,7 @@ fn cmd(v: serde_json::Value) -> oa_model::Command {
 #[test]
 fn agent_scenario_two_storey_frame_to_governing_drift() {
     let mut s = Session::default();
-    s.new_model("two storey");
+    s.new_model("two storey").unwrap();
     let steel = s.add_material_from_library("A992", "steel").unwrap();
     let column = s.add_section_from_library("W14x90", "column").unwrap();
     let beam = s.add_section_from_library("W12x26", "beam").unwrap();
@@ -199,7 +199,7 @@ fn agent_scenario_two_storey_frame_to_governing_drift() {
 
     // Raising L1 in feet carries the roof and every node bound to either,
     // keeps the base still, and undoes to the exact document.
-    let before = s.editor.model.clone();
+    let before = s.model().clone();
     s.apply(vec![cmd(json!({
         "command": "set_level_elevation", "id": l1, "elevation": 14.0, "scope": "this_and_above"
     }))])
@@ -214,7 +214,7 @@ fn agent_scenario_two_storey_frame_to_governing_drift() {
     assert!((level_rows["rows"][2]["elevation"].as_f64().unwrap() - 26.0).abs() < 1e-9);
     assert!((level_rows["rows"][2]["height_below"].as_f64().unwrap() - 12.0).abs() < 1e-9);
     assert!(s.undo().unwrap());
-    assert_eq!(s.editor.model, before);
+    assert_eq!(s.model(), &before);
     // A move that would cross the roof is refused and names the levels.
     let crossing = s.apply(vec![cmd(json!({
         "command": "set_level_elevation", "id": l1, "elevation": 30.0, "scope": "this_level"
@@ -245,7 +245,7 @@ fn save_and_load_round_trip_through_the_session() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("model.json");
     let mut s = Session::default();
-    s.new_model("saved");
+    s.new_model("saved").unwrap();
     let steel = s.add_material_from_library("A36", "steel").unwrap();
     assert!(steel.0 > 0);
     let saved = s.save(Some(path.clone())).unwrap();

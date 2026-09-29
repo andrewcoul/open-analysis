@@ -222,6 +222,7 @@ Decisions made while building M6:
 | M4 Groups | Done | Groups hold any entity kind; removal strips membership and the inverse restores it; `Compiled::group_indices` maps a group to solver indices. |
 | M5 Bindings | Done | `apply_commands_json`, `compile_json`, `solve_json` exposed through wasm-bindgen. PyO3 not extended, by decision. |
 | M6 Agent interface | Done | `crates/oa-mcp`: stdio MCP server over a transport-independent `Session`. 22 tools covering describe, list, get, find, ids, command reference, atomic apply, undo, redo, new, load, save, library, compile, analyze, envelope, group envelope, drift, read-only SQL, and index translation. The acceptance scenario, a two-storey frame built from commands through to governing drift, runs as a test against the session. |
+| M7 Agent interface catch-up | Done | See [docs/mcp/PLAN.md](../mcp/PLAN.md). The command reference is tested against the command enum, and the tools, 26 in all, add ASCE 7 combinations, modal, response spectrum, and spectrum peaks. `oa-mcp --attach` joins an agent to the model open in the GUI, sharing its undo history. |
 
 Decisions made during implementation:
 

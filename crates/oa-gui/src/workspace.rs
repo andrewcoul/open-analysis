@@ -3,9 +3,10 @@
 //! as an action; the model tree and the property editor open as dialogs.
 //! Shapes finished with the draw tools arrive as viewport events.
 use crate::actions::*;
+use crate::agent::AgentStatus;
 use crate::camera::{UpAxis, ViewPreset};
 use crate::document::{
-    Document, ResultsState, example_frame, new_model, read_model, unused_name, write_model,
+    AgentEvent, Document, ResultsState, example_frame, new_model, read_model, unused_name, write_model,
 };
 use crate::explorer::Explorer;
 use crate::levels::LevelPanel;
@@ -66,6 +67,7 @@ impl Workspace {
             cx.new(|cx| LoadPanel::new(document.clone(), Section::Combinations, window, cx));
         let levels = cx.new(|cx| LevelPanel::new(document.clone(), window, cx));
         let menu_bar = AppMenuBar::new(cx);
+        crate::agent::start(document.clone(), cx);
         let subscriptions = vec![
             cx.observe_in(&document, window, |this, _, window, cx| {
                 window.set_window_title(&window_title(this.document.read(cx)));
@@ -78,6 +80,13 @@ impl Workspace {
             }),
             cx.subscribe_in(&viewport, window, |this, _, event, window, cx| {
                 this.on_viewport_event(event, window, cx)
+            }),
+            // Respond to an agent's model or analysis as to the person's own.
+            cx.subscribe(&document, |this, _, event: &AgentEvent, cx| match event {
+                AgentEvent::Replaced => this
+                    .viewport
+                    .update(cx, |viewport, cx| viewport.zoom_extents(cx)),
+                AgentEvent::Analyzed => this.toggle_option(|o| o.deformed = true, cx),
             }),
         ];
         let mut this = Self {
@@ -1352,7 +1361,9 @@ impl Workspace {
                         .child(heading("Results"))
                         .child("After a run, a row under the view controls turns the deformed shape on and off, draws a section force along every member, and steps through the combinations. Results > Member results plots the shear, moment, and deflection of one selected frame. Any edit drops the results until the next run.")
                         .child(heading("Drawing"))
-                        .child("Node places a node where you click, on the active level. Frame joins node I to node J and carries on from J. Shell takes four nodes in order around it. The draw tools snap to the ends, midpoints, and intersections of frames, shell edges, and underlay lines, and to the foot of the perpendicular from the last point; a snapped point lands on the active level, and Frame and Shell make a node there if none stands on it. The icons at the right of the status bar, or Draw > Snap, switch each snap on and off. With nodes already selected, Frame and Shell draw on them at once. Loads go on the selected nodes or frames."),
+                        .child("Node places a node where you click, on the active level. Frame joins node I to node J and carries on from J. Shell takes four nodes in order around it. The draw tools snap to the ends, midpoints, and intersections of frames, shell edges, and underlay lines, and to the foot of the perpendicular from the last point; a snapped point lands on the active level, and Frame and Shell make a node there if none stands on it. The icons at the right of the status bar, or Draw > Snap, switch each snap on and off. With nodes already selected, Frame and Shell draw on them at once. Loads go on the selected nodes or frames.")
+                        .child(heading("Agents"))
+                        .child("An AI agent can work on the open model through MCP. Point the client at the command oa-mcp --attach; the status bar shows when one is attached. Its edits appear here as it makes them and undo with Ctrl+Z like your own, its analyses are drawn in the view, and it cannot open or start another model while yours has unsaved changes."),
                 )
         });
     }
@@ -1448,6 +1459,19 @@ impl Workspace {
                 )
             })
             .unwrap_or_else(|| "No level".into());
+        let (agent, agent_hint) = document.agent().describe();
+        let agent_color = match document.agent() {
+            AgentStatus::Ready { connected, .. } if *connected > 0 => primary,
+            _ => muted,
+        };
+        let agent = Button::new("agent-status")
+            .xsmall()
+            .ghost()
+            .compact()
+            .label(agent)
+            .text_color(agent_color)
+            .tooltip(agent_hint)
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(About), cx));
         let modes = viewport.options().snaps;
         let snaps = h_flex().gap_0p5().children(snap::Kind::ALL.map(|kind| {
             let on = modes.has(kind);
@@ -1494,6 +1518,7 @@ impl Workspace {
                     .child(div().size(px(7.)).rounded_full().bg(results_color))
                     .child(results),
             )
+            .right(agent)
             .right(div().text_xs().text_color(muted).child(level))
             .right(div().text_xs().text_color(muted).child("kip, ft, in"))
             .right(snaps)

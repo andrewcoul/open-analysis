@@ -12,9 +12,10 @@ application; this phase covers the basics of viewing and editing a model.
 - Builds and runs on the repository's `windows-gnu` toolchain through
   `scripts/cargo.ps1`. The linker prints a harmless "multiple non-default
   manifests" warning from the GPUI and Kit resource files.
-- The application depends on `oa-model` and `oa-core` only. The GUI issues
-  the same commands an agent does through `oa-mcp`; no edit bypasses the
-  command interface.
+- The application depends on `oa-model`, `oa-core`, and `oa-mcp`, whose
+  `Session` holds the open model so that an attached agent and the person
+  share one model and one undo history. The GUI issues the same commands an
+  agent does; no edit bypasses the command interface.
 
 ## Structure
 
@@ -22,7 +23,9 @@ application; this phase covers the basics of viewing and editing a model.
 crates/oa-gui/src/
   main.rs        bootstrap, key bindings, routing of every action to the workspace
   actions.rs     the command set: one GPUI action per menu item / shortcut
-  document.rs    Editor + path + dirty flag + selection + problems + last analysis
+  document.rs    session (model, history, file) + selection + problems + last analysis,
+                 and the attached agent's calls, run on this thread
+  agent.rs       serves the MCP tools on a local socket for oa-mcp --attach
   cad.rs         DXF reader: model-space line work flattened to plan segments
   camera.rs      orthographic orbit camera, pure arithmetic with tests
   viewport.rs    3D canvas: nodes, frames, shells, labels, deformed shape, picking,
