@@ -56,16 +56,30 @@ impl FrameElement {
         y = y * frame.roll.si().cos() + x.cross(&y) * frame.roll.si().sin();
         let r = rotation(x, y);
         let t = block_rotation(&r);
-        let (ei_z, ei_y) = (m.young.si() * s.iz.si(), m.young.si() * s.iy.si());
-        let phi = |ei: f64, shear: Option<Area>| {
+        // Modifiers scale the stiffness only; mass and the geometric
+        // stiffness's polar radius of gyration keep the section's values.
+        let md = &frame.modifiers;
+        let (ei_z, ei_y) = (
+            m.young.si() * s.iz.si() * md.iz,
+            m.young.si() * s.iy.si() * md.iy,
+        );
+        let phi = |ei: f64, shear: Option<Area>, modifier: f64| {
             shear.map_or(0.0, |a| {
-                12.0 * ei / (m.shear_modulus() * a.si() * length * length)
+                12.0 * ei / (m.shear_modulus() * a.si() * modifier * length * length)
             })
         };
-        let phi = [phi(ei_z, s.shear_y), phi(ei_y, s.shear_z)];
+        let phi = [
+            phi(ei_z, s.shear_y, md.shear_y),
+            phi(ei_y, s.shear_z, md.shear_z),
+        ];
         let mut k = M12::zeros();
-        pair(&mut k, 0, 6, m.young.si() * s.area.si() / length);
-        pair(&mut k, 3, 9, m.shear_modulus() * s.torsion.si() / length);
+        pair(&mut k, 0, 6, m.young.si() * s.area.si() * md.area / length);
+        pair(
+            &mut k,
+            3,
+            9,
+            m.shear_modulus() * s.torsion.si() * md.torsion / length,
+        );
         bending(&mut k, [1, 5, 7, 11], ei_z, length, 1.0, phi[0]);
         bending(&mut k, [2, 4, 8, 10], ei_y, length, -1.0, phi[1]);
         let mut kg = M12::zeros();

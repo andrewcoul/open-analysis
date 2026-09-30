@@ -142,6 +142,8 @@ pub struct Frame {
     pub releases: [bool; 12],
     #[serde(default)]
     pub behavior: AxialBehavior,
+    #[serde(default, skip_serializing_if = "FrameModifiers::is_unmodified")]
+    pub modifiers: FrameModifiers,
 }
 impl Frame {
     pub fn new(nodes: [NodeId; 2], material: MaterialId, section: SectionId) -> Self {
@@ -153,7 +155,82 @@ impl Frame {
             roll: Angle::ZERO,
             releases: [false; 12],
             behavior: AxialBehavior::Both,
+            modifiers: FrameModifiers::default(),
         }
+    }
+}
+
+/// Stiffness modifiers for one frame, as ETABS and SAP2000 assign them. Each
+/// multiplies the section property it names in the stiffness only: mass and
+/// self-weight keep the section's area. ACI 318 cracked sections, for
+/// example, take 0.35 on iy and iz for beams and 0.70 for columns.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FrameModifiers {
+    pub area: f64,
+    pub shear_y: f64,
+    pub shear_z: f64,
+    pub torsion: f64,
+    pub iy: f64,
+    pub iz: f64,
+}
+impl Default for FrameModifiers {
+    fn default() -> Self {
+        Self {
+            area: 1.0,
+            shear_y: 1.0,
+            shear_z: 1.0,
+            torsion: 1.0,
+            iy: 1.0,
+            iz: 1.0,
+        }
+    }
+}
+impl FrameModifiers {
+    pub fn is_unmodified(&self) -> bool {
+        *self == Self::default()
+    }
+    pub fn values(&self) -> [f64; 6] {
+        [
+            self.area,
+            self.shear_y,
+            self.shear_z,
+            self.torsion,
+            self.iy,
+            self.iz,
+        ]
+    }
+}
+
+/// Stiffness modifiers for one shell, in its local axes. `membrane` scales
+/// the in-plane normal stiffness (f11 and f22 in ETABS), `membrane_shear` the
+/// in-plane shear stiffness (f12), and `bending` the plate bending stiffness
+/// (m11, m22 and m12). Transverse shear, mass and self-weight are unchanged.
+/// With `membrane` and `membrane_shear` equal the element stays isotropic in
+/// its plane; otherwise the result depends on the local axes, which for a
+/// rectangle lie along its sides.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ShellModifiers {
+    pub membrane: f64,
+    pub membrane_shear: f64,
+    pub bending: f64,
+}
+impl Default for ShellModifiers {
+    fn default() -> Self {
+        Self {
+            membrane: 1.0,
+            membrane_shear: 1.0,
+            bending: 1.0,
+        }
+    }
+}
+impl ShellModifiers {
+    pub fn is_unmodified(&self) -> bool {
+        *self == Self::default()
+    }
+    pub fn values(&self) -> [f64; 3] {
+        [self.membrane, self.membrane_shear, self.bending]
     }
 }
 
@@ -179,6 +256,8 @@ pub struct Shell {
     pub formulation: ShellFormulation,
     #[serde(default = "default_drilling")]
     pub drilling_ratio: f64,
+    #[serde(default, skip_serializing_if = "ShellModifiers::is_unmodified")]
+    pub modifiers: ShellModifiers,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -508,6 +587,15 @@ impl Model {
             if !l.is_finite() || l <= 1e-12 {
                 return fail(format!("frame {i}: zero or invalid length"));
             }
+            if f.modifiers
+                .values()
+                .iter()
+                .any(|x| !x.is_finite() || *x <= 0.0)
+            {
+                return fail(format!(
+                    "frame {i}: stiffness modifiers must be positive and finite"
+                ));
+            }
         }
         for (i, s) in self.shells.iter().enumerate() {
             if s.nodes.iter().any(|n| n.0 >= self.nodes.len())
@@ -523,6 +611,15 @@ impl Model {
             {
                 return fail(format!(
                     "shell {i}: invalid thickness or drilling_ratio (0, 0.01]"
+                ));
+            }
+            if s.modifiers
+                .values()
+                .iter()
+                .any(|x| !x.is_finite() || *x <= 0.0)
+            {
+                return fail(format!(
+                    "shell {i}: stiffness modifiers must be positive and finite"
                 ));
             }
         }

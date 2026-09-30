@@ -799,6 +799,7 @@ fn compile_reports_element_geometry_problems_by_entity() {
         thickness: Length::from_si(0.1),
         formulation: ShellFormulation::Dkmq,
         drilling_ratio: 1e-3,
+        modifiers: ShellModifiers::default(),
     });
     m.insert(LoadCase::new("empty"));
     let problems = compile(&m).unwrap_err();
@@ -1565,4 +1566,91 @@ fn shear_areas_are_validated_and_undone() {
     assert_eq!(editor.model.sections[&id], sheared);
     assert!(editor.undo().unwrap());
     assert_eq!(editor.model.sections[&id].shear_y, None);
+}
+
+#[test]
+fn format_v7_fixture_loads_with_stiffness_modifiers() {
+    let model = from_json(include_str!("fixtures/format_v7.json")).unwrap();
+    let beam = &model.frames[&EntityId(5)];
+    let cracked = FrameModifiers {
+        iy: 0.35,
+        iz: 0.35,
+        ..Default::default()
+    };
+    assert_eq!(beam.modifiers, cracked);
+    assert_eq!(from_json(&to_json(&model)).unwrap(), model);
+    // They reach the solver, and without them the document is the version
+    // 6 fixture, written as before.
+    assert_eq!(compile(&model).unwrap().solver.frames[0].modifiers, cracked);
+    let mut bare = model.clone();
+    bare.frames.get_mut(&EntityId(5)).unwrap().modifiers = FrameModifiers::default();
+    assert_eq!(
+        bare,
+        from_json(include_str!("fixtures/format_v6.json")).unwrap()
+    );
+    assert!(!to_json(&bare).contains("modifiers"));
+}
+
+#[test]
+fn stiffness_modifiers_are_validated_and_undone() {
+    let mut editor = Editor::new(Model::default());
+    portal(&mut editor);
+    let (&frame, _) = editor
+        .model
+        .frames
+        .iter()
+        .find(|(_, f)| f.name == "C1")
+        .unwrap();
+    let mut shell_probe = editor.model.clone();
+    let shell_id = shell_probe.allocate();
+    for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let mut probe = editor.model.clone();
+        let mut edited = probe.frames[&frame].clone();
+        edited.modifiers.torsion = bad;
+        let err = Command::UpdateFrame {
+            id: frame,
+            frame: edited,
+        }
+        .apply(&mut probe)
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("stiffness modifiers must be positive"),
+            "{err}"
+        );
+        let err = Command::AddShell {
+            id: shell_id,
+            shell: Shell {
+                name: "wall".into(),
+                nodes: [frame; 4],
+                material: frame,
+                thickness: Length::from_si(0.2),
+                formulation: ShellFormulation::Dkmq,
+                drilling_ratio: 1e-3,
+                modifiers: ShellModifiers {
+                    bending: bad,
+                    ..Default::default()
+                },
+            },
+        }
+        .apply(&mut shell_probe)
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("stiffness modifiers must be positive"),
+            "{err}"
+        );
+    }
+    let mut column = editor.model.frames[&frame].clone();
+    column.modifiers.iy = 0.7;
+    column.modifiers.iz = 0.7;
+    editor
+        .apply(Command::UpdateFrame {
+            id: frame,
+            frame: column.clone(),
+        })
+        .unwrap();
+    assert_eq!(editor.model.frames[&frame], column);
+    assert!(editor.undo().unwrap());
+    assert!(editor.model.frames[&frame].modifiers.is_unmodified());
 }

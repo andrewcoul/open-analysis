@@ -1,7 +1,10 @@
 //! Model-layer entities. They mirror the solver's types but reference each
 //! other by [`EntityId`] instead of table position, and carry a name.
 use oa_core::units::*;
-pub use oa_core::{Axes, AxialBehavior, Axis, PrescribedDisplacement, ShellFormulation};
+pub use oa_core::{
+    Axes, AxialBehavior, Axis, FrameModifiers, PrescribedDisplacement, ShellFormulation,
+    ShellModifiers,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -270,6 +273,8 @@ pub struct Frame {
     pub releases: [bool; 12],
     #[serde(default)]
     pub behavior: AxialBehavior,
+    #[serde(default, skip_serializing_if = "FrameModifiers::is_unmodified")]
+    pub modifiers: FrameModifiers,
 }
 impl Frame {
     pub fn new(
@@ -287,6 +292,7 @@ impl Frame {
             roll: Angle::ZERO,
             releases: [false; 12],
             behavior: AxialBehavior::Both,
+            modifiers: FrameModifiers::default(),
         }
     }
 }
@@ -305,6 +311,8 @@ pub struct Shell {
     pub formulation: ShellFormulation,
     #[serde(default = "default_drilling")]
     pub drilling_ratio: f64,
+    #[serde(default, skip_serializing_if = "ShellModifiers::is_unmodified")]
+    pub modifiers: ShellModifiers,
 }
 
 /// Rigid diaphragm. With `master: None`, compilation creates a master node at

@@ -139,6 +139,7 @@ fn shell_self_weight_totals_density_times_volume() {
                 thickness: Length::from_si(thickness),
                 formulation: ShellFormulation::Dkmq,
                 drilling_ratio: 1e-3,
+                modifiers: Default::default(),
             });
         }
     }

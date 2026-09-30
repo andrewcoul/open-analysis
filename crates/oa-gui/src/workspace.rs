@@ -790,6 +790,7 @@ impl Workspace {
             thickness: Length::from_inches(8.0),
             formulation: Default::default(),
             drilling_ratio: 1e-3,
+            modifiers: Default::default(),
         };
         let id = EntityId(next);
         self.apply_drawn(commands, Command::AddShell { id, shell }, id, window, cx);

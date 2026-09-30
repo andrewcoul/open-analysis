@@ -42,6 +42,7 @@ fn plate(n: usize, formulation: ShellFormulation) -> Model {
                 thickness: Length::from_si(0.01),
                 formulation,
                 drilling_ratio: 1e-3,
+                modifiers: Default::default(),
             });
             case.surface.push(SurfaceLoad {
                 shell: id,

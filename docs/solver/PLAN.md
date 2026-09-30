@@ -231,6 +231,40 @@ the energy integrals of the shape functions.
 The model layer fills the shear areas for AISC library sections (see the
 model plan); sections typed in by hand have none unless given.
 
+### Stiffness modifiers (added 2026-09-30)
+
+ACI 318 (6.6.3.1.1) and ASCE 7 (12.7.3) ask for cracked concrete sections in
+lateral analysis: 0.35 Ig for beams, 0.70 Ig for columns and uncracked
+walls, 0.35 Ig for cracked walls, and 0.25 Ig for flat plates. ETABS and
+SAP2000 do this with property modifiers, and so does this solver.
+
+- **Frames** carry `modifiers` with `area`, `shear_y`, `shear_z`, `torsion`,
+  `iy` and `iz`, each multiplying that section property in the stiffness.
+  The shear parameter φ uses the modified EI and G As. The geometric
+  stiffness's torsional term, (Iy + Iz) / A, is a property of the shape and
+  keeps the section's values.
+- **Shells** carry `modifiers` with `membrane` (f11 and f22 in ETABS),
+  `membrane_shear` (f12) and `bending` (m11, m22 and m12). The first scales
+  the in-plane normal block of the plane-stress matrix, the second its
+  shear term, and the third the plate bending matrix. DKMQ's shear
+  parameter is 12 D / (Ds L²), so it scales with `bending`; transverse
+  shear rigidity is not modified. ACI walls take `membrane` 0.70 or 0.35,
+  as CSI's guidance applies those factors to f11 and f22. With `membrane` and
+  `membrane_shear` unequal the element is no longer isotropic in its plane,
+  but its response is unchanged by a quarter turn of the local axes, so a
+  rectangle gives the same answer whichever side its local x follows.
+- **Mass and self-weight** use the unmodified section and thickness.
+- **Results** are the forces in the modified structure; `frame_diagram`
+  integrates the modified EI and G As.
+
+Every modifier defaults to 1, must be positive and finite, and is left out
+of the JSON when all are 1, so existing models and their content hashes are
+unchanged. Tests: `crates/oa-core/tests/stiffness_modifiers.rs` checks a
+cantilever against the closed forms for each frame modifier, modal
+eigenvalues scaling by the factor with the mass unchanged, self-weight
+reactions, a wall mesh in and out of plane, and a uniaxial membrane
+stretch that the shear factor must not touch.
+
 ### Equilibrium check and iterative refinement (revised 2026-09-14)
 
 The linear solve originally did one step of iterative refinement and then

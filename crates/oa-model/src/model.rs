@@ -436,6 +436,7 @@ impl Model {
                     roll: f.roll,
                     releases: f.releases,
                     behavior: f.behavior,
+                    modifiers: f.modifiers,
                 })
             })
             .collect();
@@ -451,6 +452,7 @@ impl Model {
                     thickness: s.thickness,
                     formulation: s.formulation,
                     drilling_ratio: s.drilling_ratio,
+                    modifiers: s.modifiers,
                 })
             })
             .collect();

@@ -259,6 +259,7 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
             roll: f.roll,
             releases: f.releases,
             behavior: f.behavior,
+            modifiers: f.modifiers,
         });
     }
     for (id, s) in &model.shells {
@@ -270,6 +271,7 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
             thickness: s.thickness,
             formulation: s.formulation,
             drilling_ratio: s.drilling_ratio,
+            modifiers: s.modifiers,
         });
     }
     for (id, d) in &model.diaphragms {
@@ -466,6 +468,7 @@ pub fn geometry_problems(model: &Model, nodes: &BTreeSet<EntityId>) -> Vec<Probl
             roll: f.roll,
             releases: f.releases,
             behavior: f.behavior,
+            modifiers: f.modifiers,
         });
         if let Err(e) = solver.validate_frame(0) {
             problems.push(element_problem(model, *id, &e, "frame 0: "));
@@ -498,6 +501,7 @@ pub fn geometry_problems(model: &Model, nodes: &BTreeSet<EntityId>) -> Vec<Probl
             thickness: s.thickness,
             formulation: s.formulation,
             drilling_ratio: s.drilling_ratio,
+            modifiers: s.modifiers,
         });
         if let Err(e) = solver.validate_shell(0) {
             problems.push(element_problem(model, *id, &e, "shell 0: "));

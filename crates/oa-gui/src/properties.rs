@@ -22,8 +22,8 @@ use gpui_kit::*;
 use oa_core::units::Length;
 use oa_core::units::*;
 use oa_model::{
-    AxialBehavior, Axis, Command, ElevationScope, EntityId, EntityKind, Level, MemberLoad, Model,
-    Role, ShellFormulation,
+    AxialBehavior, Axis, Command, ElevationScope, EntityId, EntityKind, FrameModifiers, Level,
+    MemberLoad, Model, Role, ShellFormulation, ShellModifiers,
 };
 use std::collections::HashMap;
 
@@ -152,6 +152,37 @@ const FORMULATIONS: [(&str, ShellFormulation); 2] = [
     ("Rectangular", ShellFormulation::Rectangular),
 ];
 const AXES: [(&str, Axis); 3] = [("X", Axis::X), ("Y", Axis::Y), ("Z", Axis::Z)];
+/// Cracked-section stiffness from ACI 318 Table 6.6.3.1.1(a), assigned to
+/// every selected frame or shell at once. Each preset replaces all of a
+/// member's modifiers.
+const fn cracked_frame(i: f64) -> FrameModifiers {
+    FrameModifiers {
+        area: 1.0,
+        shear_y: 1.0,
+        shear_z: 1.0,
+        torsion: 1.0,
+        iy: i,
+        iz: i,
+    }
+}
+const FRAME_PRESETS: [(&str, FrameModifiers); 3] = [
+    ("Full stiffness", cracked_frame(1.0)),
+    ("ACI 318 beam: 0.35 Ig", cracked_frame(0.35)),
+    ("ACI 318 column: 0.70 Ig", cracked_frame(0.7)),
+];
+const fn cracked_shell(membrane: f64, bending: f64) -> ShellModifiers {
+    ShellModifiers {
+        membrane,
+        membrane_shear: 1.0,
+        bending,
+    }
+}
+const SHELL_PRESETS: [(&str, ShellModifiers); 4] = [
+    ("Full stiffness", cracked_shell(1.0, 1.0)),
+    ("ACI 318 wall, uncracked: 0.70 Ig", cracked_shell(0.7, 0.7)),
+    ("ACI 318 wall, cracked: 0.35 Ig", cracked_shell(0.35, 0.35)),
+    ("ACI 318 flat slab: 0.25 Ig", cracked_shell(1.0, 0.25)),
+];
 fn labels<T>(items: &[(&str, T)]) -> Vec<SharedString> {
     items
         .iter()
@@ -241,6 +272,17 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
                     .span(TWO_THIRDS),
             );
             f.push(qty("roll", "Roll", Role::Angle, e.roll.si()).span(THIRD));
+            let md = &e.modifiers;
+            for (key, name, value) in [
+                ("mod_iy", "Iy modifier", md.iy),
+                ("mod_iz", "Iz modifier", md.iz),
+                ("mod_torsion", "J modifier", md.torsion),
+                ("mod_area", "A modifier", md.area),
+                ("mod_shear_y", "Shear y modifier", md.shear_y),
+                ("mod_shear_z", "Shear z modifier", md.shear_z),
+            ] {
+                f.push(num(key, name, value).span(THIRD));
+            }
             for (i, dof) in DOF.iter().enumerate() {
                 f.push(check(
                     format!("rel{i}"),
@@ -289,6 +331,18 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
                 choice("formulation", "Formulation", labels(&FORMULATIONS), formulation)
                     .span(HALF),
             );
+            let md = &e.modifiers;
+            for (key, name, value) in [
+                ("mod_bending", "Bending modifier", md.bending),
+                ("mod_membrane", "Membrane modifier", md.membrane),
+                (
+                    "mod_membrane_shear",
+                    "In-plane shear modifier",
+                    md.membrane_shear,
+                ),
+            ] {
+                f.push(num(key, name, value).span(HALF));
+            }
         }
         EntityKind::Material => {
             let e = &model.materials[&id];
@@ -454,6 +508,40 @@ impl Values {
     }
 }
 
+/// Updates giving each of `frames` the modifiers of the preset labelled
+/// `name`, leaving out frames that already have them.
+fn frame_modifier_commands(model: &Model, frames: &[EntityId], name: &str) -> Vec<Command> {
+    let Some((_, modifiers)) = FRAME_PRESETS.iter().find(|(label, _)| *label == name) else {
+        return vec![];
+    };
+    frames
+        .iter()
+        .filter(|id| model.frames[id].modifiers != *modifiers)
+        .map(|&id| {
+            let mut frame = model.frames[&id].clone();
+            frame.modifiers = *modifiers;
+            Command::UpdateFrame { id, frame }
+        })
+        .collect()
+}
+
+/// Updates giving each of `shells` the modifiers of the preset labelled
+/// `name`, leaving out shells that already have them.
+fn shell_modifier_commands(model: &Model, shells: &[EntityId], name: &str) -> Vec<Command> {
+    let Some((_, modifiers)) = SHELL_PRESETS.iter().find(|(label, _)| *label == name) else {
+        return vec![];
+    };
+    shells
+        .iter()
+        .filter(|id| model.shells[id].modifiers != *modifiers)
+        .map(|&id| {
+            let mut shell = model.shells[&id].clone();
+            shell.modifiers = *modifiers;
+            Command::UpdateShell { id, shell }
+        })
+        .collect()
+}
+
 /// The command that writes the panel's values back to entity `id`, or None
 /// when nothing changed.
 fn command_for(
@@ -540,6 +628,17 @@ fn command_for(
             e.section = v.entity("section", "Section", model, EntityKind::Section)?;
             e.behavior = v.item("behavior", &BEHAVIORS, e.behavior);
             e.roll = Angle::from_si(v.qty("roll", Role::Angle, "Roll", e.roll.si())?);
+            let md = &mut e.modifiers;
+            for (key, name, value) in [
+                ("mod_iy", "Iy modifier", &mut md.iy),
+                ("mod_iz", "Iz modifier", &mut md.iz),
+                ("mod_torsion", "J modifier", &mut md.torsion),
+                ("mod_area", "A modifier", &mut md.area),
+                ("mod_shear_y", "Shear y modifier", &mut md.shear_y),
+                ("mod_shear_z", "Shear z modifier", &mut md.shear_z),
+            ] {
+                *value = v.num(key, name, *value)?;
+            }
             for i in 0..12 {
                 e.releases[i] = v.check(&format!("rel{i}"));
             }
@@ -559,6 +658,18 @@ fn command_for(
                 e.thickness.si(),
             )?);
             e.formulation = v.item("formulation", &FORMULATIONS, e.formulation);
+            let md = &mut e.modifiers;
+            for (key, name, value) in [
+                ("mod_bending", "Bending modifier", &mut md.bending),
+                ("mod_membrane", "Membrane modifier", &mut md.membrane),
+                (
+                    "mod_membrane_shear",
+                    "In-plane shear modifier",
+                    &mut md.membrane_shear,
+                ),
+            ] {
+                *value = v.num(key, name, *value)?;
+            }
             (e != model.shells[&id]).then_some(Command::UpdateShell { id, shell: e })
         }
         EntityKind::Material => {
@@ -710,6 +821,9 @@ struct Multi {
     material: Choice,
     /// The level to bind every selected node to, keeping their positions.
     level: Choice,
+    /// Stiffness modifier presets for the selected frames and shells.
+    frame_modifiers: Choice,
+    shell_modifiers: Choice,
     restraints: [bool; 6],
     _subscriptions: Vec<Subscription>,
 }
@@ -893,7 +1007,43 @@ impl PropertyEditor {
         let material =
             cx.new(|cx| SelectState::new(SearchableVec::from(materials), None, window, cx));
         let level = cx.new(|cx| SelectState::new(SearchableVec::from(levels), None, window, cx));
+        let frame_modifiers = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::from(labels(&FRAME_PRESETS)),
+                None,
+                window,
+                cx,
+            )
+        });
+        let shell_modifiers = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::from(labels(&SHELL_PRESETS)),
+                None,
+                window,
+                cx,
+            )
+        });
         let subscriptions = vec![
+            cx.subscribe_in(
+                &frame_modifiers,
+                window,
+                |this, _, event: &SelectEvent<SearchableVec<SharedString>>, window, cx| {
+                    let SelectEvent::Confirm(Some(name)) = event else {
+                        return;
+                    };
+                    this.assign_frame_modifiers(name.clone(), window, cx);
+                },
+            ),
+            cx.subscribe_in(
+                &shell_modifiers,
+                window,
+                |this, _, event: &SelectEvent<SearchableVec<SharedString>>, window, cx| {
+                    let SelectEvent::Confirm(Some(name)) = event else {
+                        return;
+                    };
+                    this.assign_shell_modifiers(name.clone(), window, cx);
+                },
+            ),
             cx.subscribe_in(
                 &level,
                 window,
@@ -929,6 +1079,8 @@ impl PropertyEditor {
             section,
             material,
             level,
+            frame_modifiers,
+            shell_modifiers,
             restraints: [false; 6],
             _subscriptions: subscriptions,
         }
@@ -1056,6 +1208,38 @@ impl PropertyEditor {
                     Command::UpdateFrame { id, frame }
                 })
                 .collect::<Vec<_>>()
+        };
+        if !commands.is_empty() {
+            self.apply(Command::Batch { commands }, window, cx);
+        }
+    }
+
+    fn assign_frame_modifiers(
+        &mut self,
+        name: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let commands = {
+            let document = self.document.read(cx);
+            let frames = document.selected_of(EntityKind::Frame);
+            frame_modifier_commands(document.model(), &frames, &name)
+        };
+        if !commands.is_empty() {
+            self.apply(Command::Batch { commands }, window, cx);
+        }
+    }
+
+    fn assign_shell_modifiers(
+        &mut self,
+        name: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let commands = {
+            let document = self.document.read(cx);
+            let shells = document.selected_of(EntityKind::Shell);
+            shell_modifier_commands(document.model(), &shells, &name)
         };
         if !commands.is_empty() {
             self.apply(Command::Batch { commands }, window, cx);
@@ -1543,6 +1727,7 @@ impl PropertyEditor {
     fn render_multi(&self, multi: &Multi, cx: &mut Context<Self>) -> AnyElement {
         let document = self.document.read(cx);
         let frames = document.selected_of(EntityKind::Frame).len();
+        let shells = document.selected_of(EntityKind::Shell).len();
         let nodes = document.selected_of(EntityKind::Node).len();
         let restraints = multi.restraints;
         let mut form = form();
@@ -1567,7 +1752,29 @@ impl PropertyEditor {
                                 .small()
                                 .placeholder("Choose a material"),
                         ),
+                )
+                .child(
+                    Field::new()
+                        .col_span(FULL)
+                        .label(format!("Stiffness modifiers of {frames} frames"))
+                        .child(
+                            Select::new(&multi.frame_modifiers)
+                                .small()
+                                .placeholder("Choose cracked-section stiffness"),
+                        ),
                 );
+        }
+        if shells > 0 {
+            form = form.child(
+                Field::new()
+                    .col_span(FULL)
+                    .label(format!("Stiffness modifiers of {shells} shells"))
+                    .child(
+                        Select::new(&multi.shell_modifiers)
+                            .small()
+                            .placeholder("Choose cracked-section stiffness"),
+                    ),
+            );
         }
         if nodes > 0 {
             let boxes = (0..6).map(|i| {
@@ -1619,7 +1826,9 @@ impl PropertyEditor {
         }
         v_flex()
             .gap_4()
-            .when(frames > 0 || nodes > 0, |this| this.child(form))
+            .when(frames > 0 || shells > 0 || nodes > 0, |this| {
+                this.child(form)
+            })
             .child(
                 h_flex().child(
                     Button::new("delete-selected")
@@ -1753,10 +1962,16 @@ impl Render for PropertyEditor {
 
 #[cfg(test)]
 mod tests {
-    use super::{FULL, FieldSpec, Values, command_for, specs};
+    use super::{
+        FULL, FieldSpec, Values, command_for, frame_modifier_commands, shell_modifier_commands,
+        specs,
+    };
     use crate::text::{DEFAULT_PRECISION, TestPrecision};
     use oa_core::units::Length;
-    use oa_model::{Command, ElevationScope, EntityKind, Model, Node};
+    use oa_model::{
+        Command, ElevationScope, EntityId, EntityKind, Frame, FrameModifiers, Model, Node, Shell,
+        ShellFormulation, ShellModifiers,
+    };
 
     /// The panel as just built: every text field shows its committed text
     /// and every choice its current selection.
@@ -1937,5 +2152,114 @@ mod tests {
         let mut v = values_for(&model, id);
         v.texts.insert("shear_z".into(), "web".into());
         assert!(command_for(&model, id, EntityKind::Section, &v).is_err());
+    }
+
+    /// A frame and a shell on four nodes, with a material and a section.
+    fn frame_and_shell() -> (Model, EntityId, EntityId) {
+        let mut model = Model::default();
+        let level = model.base_level().unwrap();
+        let library = oa_model::Library::starter();
+        let material = model.insert(library.material("Concrete 4 ksi", "concrete").unwrap());
+        let section = model.insert(library.section("W14x90", "beam").unwrap());
+        let nodes = [(0.0, 0.0), (6.0, 0.0), (6.0, 4.0), (0.0, 4.0)].map(|(x, z)| {
+            let p = [Length::from_si(x), Length::ZERO, Length::from_si(z)];
+            model.insert(Node::new("N", level, p))
+        });
+        let frame = model.insert(Frame::new("B1", [nodes[0], nodes[1]], material, section));
+        let shell = model.insert(Shell {
+            name: "W1".into(),
+            nodes,
+            material,
+            thickness: Length::from_inches(8.0),
+            formulation: ShellFormulation::Dkmq,
+            drilling_ratio: 1e-3,
+            modifiers: ShellModifiers::default(),
+        });
+        (model, frame, shell)
+    }
+
+    #[test]
+    fn stiffness_modifiers_edit_as_plain_numbers_on_whole_rows() {
+        let _p = TestPrecision::of(DEFAULT_PRECISION);
+        let (model, frame, shell) = frame_and_shell();
+        for id in [frame, shell] {
+            let (_, fields) = specs(&model, id).unwrap();
+            let mut filled = 0;
+            for f in &fields {
+                match f {
+                    FieldSpec::Text { span, .. } | FieldSpec::Choice { span, .. } => filled += span,
+                    FieldSpec::Check { .. } => {
+                        assert_eq!(filled % FULL, 0, "a row left part-filled")
+                    }
+                }
+            }
+            assert_eq!(filled % FULL, 0);
+        }
+        let v = values_for(&model, frame);
+        assert_eq!(v.texts["mod_iz"], "1.00");
+        assert_eq!(
+            command_for(&model, frame, EntityKind::Frame, &v).unwrap(),
+            None
+        );
+
+        let mut v = values_for(&model, frame);
+        v.texts.insert("mod_iz".into(), "0.35".into());
+        let Some(Command::UpdateFrame { frame: edited, .. }) =
+            command_for(&model, frame, EntityKind::Frame, &v).unwrap()
+        else {
+            panic!("an edited modifier is a command");
+        };
+        assert_eq!(
+            edited.modifiers,
+            FrameModifiers {
+                iz: 0.35,
+                ..Default::default()
+            }
+        );
+        let mut v = values_for(&model, shell);
+        v.texts.insert("mod_membrane".into(), "0.7".into());
+        let Some(Command::UpdateShell { shell: edited, .. }) =
+            command_for(&model, shell, EntityKind::Shell, &v).unwrap()
+        else {
+            panic!("an edited modifier is a command");
+        };
+        assert_eq!(edited.modifiers.membrane, 0.7);
+        assert_eq!(edited.modifiers.bending, 1.0);
+        let mut v = values_for(&model, shell);
+        v.texts.insert("mod_bending".into(), "cracked".into());
+        assert!(command_for(&model, shell, EntityKind::Shell, &v).is_err());
+    }
+
+    #[test]
+    fn presets_assign_aci_cracked_sections_to_the_selection() {
+        let (mut model, frame, shell) = frame_and_shell();
+        let commands = frame_modifier_commands(&model, &[frame], "ACI 318 beam: 0.35 Ig");
+        let [Command::UpdateFrame { frame: beam, .. }] = &commands[..] else {
+            panic!("one update per frame");
+        };
+        assert_eq!((beam.modifiers.iy, beam.modifiers.iz), (0.35, 0.35));
+        assert_eq!(beam.modifiers.area, 1.0);
+        // A frame that already has the preset is left alone.
+        model.frames.insert(frame, beam.clone());
+        assert!(frame_modifier_commands(&model, &[frame], "ACI 318 beam: 0.35 Ig").is_empty());
+        assert!(frame_modifier_commands(&model, &[frame], "no such preset").is_empty());
+
+        let commands = shell_modifier_commands(&model, &[shell], "ACI 318 flat slab: 0.25 Ig");
+        let [Command::UpdateShell { shell: slab, .. }] = &commands[..] else {
+            panic!("one update per shell");
+        };
+        assert_eq!(
+            slab.modifiers,
+            ShellModifiers {
+                bending: 0.25,
+                ..Default::default()
+            }
+        );
+        let commands = shell_modifier_commands(&model, &[shell], "ACI 318 wall, cracked: 0.35 Ig");
+        let [Command::UpdateShell { shell: wall, .. }] = &commands[..] else {
+            panic!("one update per shell");
+        };
+        assert_eq!(wall.modifiers.membrane, 0.35);
+        assert_eq!(wall.modifiers.membrane_shear, 1.0);
     }
 }

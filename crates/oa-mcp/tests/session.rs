@@ -348,3 +348,37 @@ fn sections_carry_shear_areas_in_square_inches() {
         .to_string();
     assert!(err.contains("shear areas must be positive"), "{err}");
 }
+
+#[test]
+fn frames_and_shells_carry_stiffness_modifiers() {
+    let mut s = Session::default();
+    s.new_model("cracked").unwrap();
+    let concrete = s
+        .add_material_from_library("Concrete 4 ksi", "concrete")
+        .unwrap();
+    let section = s.add_section_from_library("W14X90", "beam").unwrap();
+    let base = s.find(EntityKind::Level, "Base").unwrap();
+    let [a, b, beam, plain, bad] = <[_; 5]>::try_from(s.next_ids(5)).unwrap();
+    s.apply(vec![
+        cmd(json!({"command": "add_node", "id": a, "node": {"name": "A", "level": base, "position": [0, 0, 0]}})),
+        cmd(json!({"command": "add_node", "id": b, "node": {"name": "B", "level": base, "position": [20, 0, 0]}})),
+        cmd(json!({"command": "add_frame", "id": beam, "frame": {"name": "B1", "nodes": [a, b],
+            "material": concrete, "section": section, "modifiers": {"iy": 0.35, "iz": 0.35}}})),
+        cmd(json!({"command": "add_frame", "id": plain, "frame": {"name": "B2", "nodes": [a, b],
+            "material": concrete, "section": section}})),
+    ])
+    .unwrap();
+    let got = &s.get(beam).unwrap()["entity"]["modifiers"];
+    assert_eq!(got["iz"], json!(0.35));
+    assert_eq!(got["area"], json!(1.0));
+    assert!(s.get(plain).unwrap()["entity"].get("modifiers").is_none());
+    let err = s
+        .apply(vec![cmd(json!({"command": "add_shell", "id": bad, "shell": {"name": "W1",
+            "nodes": [a, b, b, a], "material": concrete, "thickness": 8, "modifiers": {"membrane": 0}}}))])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("stiffness modifiers must be positive"),
+        "{err}"
+    );
+}

@@ -24,6 +24,9 @@ pub(crate) struct ShellElement {
     xy: [Vector2<f64>; 4],
     thickness: f64,
     poisson: f64,
+    /// Bending stiffness modifier. DKMQ's shear parameter is the ratio of
+    /// bending to transverse shear rigidity, so it scales by the same factor.
+    bending_modifier: f64,
     rectangle_inverse: Option<SMatrix<f64, 12, 12>>,
 }
 
@@ -75,9 +78,12 @@ impl ShellElement {
         let e = material.young.si();
         let nu = material.poisson;
         let h = shell.thickness.si();
-        let dm = Matrix3::new(1.0, nu, 0.0, nu, 1.0, 0.0, 0.0, 0.0, (1.0 - nu) / 2.0)
+        let isotropic = Matrix3::new(1.0, nu, 0.0, nu, 1.0, 0.0, 0.0, 0.0, (1.0 - nu) / 2.0)
             * (e / (1.0 - nu * nu));
-        let db = dm * (h.powi(3) / 12.0);
+        let md = &shell.modifiers;
+        let mut dm = isotropic * md.membrane;
+        dm[(2, 2)] = isotropic[(2, 2)] * md.membrane_shear;
+        let db = isotropic * (h.powi(3) / 12.0 * md.bending);
         let ds = Matrix2::identity() * (5.0 / 6.0 * material.shear_modulus() * h);
         let mut out = Self {
             dofs: std::array::from_fn(|i| shell.nodes[i / 6].0 * 6 + i % 6),
@@ -91,6 +97,7 @@ impl ShellElement {
             xy,
             thickness: h,
             poisson: nu,
+            bending_modifier: md.bending,
             rectangle_inverse: None,
         };
         if shell.formulation == ShellFormulation::Rectangular {
@@ -281,7 +288,9 @@ impl ShellElement {
             let l = edge.norm();
             let c = edge.x / l;
             let s = edge.y / l;
-            let phi = 2.0 / ((5.0 / 6.0) * (1.0 - self.poisson)) * (self.thickness / l).powi(2);
+            let phi = 2.0 / ((5.0 / 6.0) * (1.0 - self.poisson))
+                * (self.thickness / l).powi(2)
+                * self.bending_modifier;
             let gradp = inv * Vector2::new(dp_r[i], dp_s[i]);
             delta[(0, i)] = gradp.x * c;
             delta[(1, i)] = gradp.y * s;
