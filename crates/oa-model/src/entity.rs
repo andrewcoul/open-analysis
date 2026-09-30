@@ -109,6 +109,13 @@ pub struct Section {
     pub iy: SecondMoment,
     pub iz: SecondMoment,
     pub torsion: SecondMoment,
+    /// Effective shear areas for shear along local y (bending with `iz`) and
+    /// local z (bending with `iy`). Absent means rigid in shear, so that
+    /// plane bends as an Euler-Bernoulli beam.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shear_y: Option<Area>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shear_z: Option<Area>,
     /// Design properties, present when the section was copied from a steel
     /// shape table.
     #[serde(default, skip_serializing_if = "Option::is_none")]

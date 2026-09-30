@@ -1,4 +1,9 @@
-use crate::{Error, Result, element::frame::FrameElement, model::*, units::Length};
+use crate::{
+    Error, Result,
+    element::frame::FrameElement,
+    model::*,
+    units::{Area, Length},
+};
 use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};
 
@@ -264,8 +269,9 @@ pub struct FrameDiagram {
 }
 
 /// Exact first-order section forces at `stations` evenly spaced points (at
-/// least two), and the Euler-Bernoulli deflection integrated from them. At a
-/// point load the station takes the right-hand limit.
+/// least two), and the deflection integrated from them, with shear strain
+/// where the section gives a shear area. At a point load the station takes
+/// the right-hand limit.
 pub fn frame_diagram(
     model: &Model,
     combination: &LoadCombination,
@@ -346,9 +352,14 @@ fn diagram(
         return Err(Error::Request("a diagram needs at least two stations".into()));
     }
     let frame = &model.frames[member.0];
-    let young = model.materials[frame.material.0].young.si();
+    let material = &model.materials[frame.material.0];
+    let young = material.young.si();
     let section = &model.sections[frame.section.0];
     let (ei_y, ei_z) = (young * section.iy.si(), young * section.iz.si());
+    // Shear flexibility 1 / (G As); zero where the section is rigid in shear.
+    let flexibility =
+        |area: Option<Area>| area.map_or(0.0, |a| 1.0 / (material.shear_modulus() * a.si()));
+    let (shear_y, shear_z) = (flexibility(section.shear_y), flexibility(section.shear_z));
     let last = stations - 1;
     let xs: Vec<f64> = (0..stations)
         .map(|k| {
@@ -369,7 +380,9 @@ fn diagram(
     // exactly: between load breakpoints and stations the moment is a
     // polynomial of degree three at most, and three-point Gauss quadrature
     // integrates (b - s) M(s) exactly. Gauss points never sit on a
-    // breakpoint, so a point moment's jump is respected.
+    // breakpoint, so a point moment's jump is respected. The end rotations
+    // are section rotations; shear strain adds Vy / (G Asy) to v' and
+    // Vz / (G Asz) to w', integrated the same way.
     let mut cuts = breakpoints(loads, e.length);
     cuts.extend(xs.iter().copied());
     cuts.sort_by(f64::total_cmp);
@@ -388,9 +401,9 @@ fn diagram(
             let f = section_forces(e, loads, result, s)?.values;
             let (kz, ky) = (f[5] / ei_z, -f[4] / ei_y);
             slope_y += wq * kz;
-            rise_y += wq * (b - s) * kz;
+            rise_y += wq * ((b - s) * kz + f[1] * shear_y);
             slope_z += wq * ky;
-            rise_z += wq * (b - s) * ky;
+            rise_z += wq * ((b - s) * ky + f[2] * shear_z);
         }
         v += dv * h + rise_y;
         dv += slope_y;

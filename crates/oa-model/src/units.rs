@@ -232,6 +232,9 @@ impl MapQuantities for Section {
         remap!(f, Role::SecondMoment, self.iy, SecondMoment);
         remap!(f, Role::SecondMoment, self.iz, SecondMoment);
         remap!(f, Role::SecondMoment, self.torsion, SecondMoment);
+        for shear in [&mut self.shear_y, &mut self.shear_z].into_iter().flatten() {
+            remap!(f, Role::Area, *shear, Area);
+        }
         if let Some(shape) = &mut self.shape {
             for (property, value) in &mut shape.properties {
                 if let Some(role) = property.role() {

@@ -328,6 +328,20 @@ fn check_material(material: &Material) -> Result<()> {
     }
     Ok(())
 }
+/// A shear area a section gives must be positive and finite; leaving it out
+/// is how a section is made rigid in shear.
+fn check_section(section: &Section) -> Result<()> {
+    if [section.shear_y, section.shear_z]
+        .into_iter()
+        .flatten()
+        .any(|a| !(a.si().is_finite() && a.si() > 0.0))
+    {
+        return Err(ModelError::Invalid(
+            "section shear areas must be positive and finite".into(),
+        ));
+    }
+    Ok(())
+}
 /// An underlay is drawn as it is stored, so every coordinate must be finite.
 fn check_underlay(underlay: &Underlay) -> Result<()> {
     let finite = |p: &[Length; 2]| p.iter().all(|v| v.si().is_finite());
@@ -427,13 +441,17 @@ impl Command {
                 )
             }
             AddSection { id, section } => {
+                check_section(&section)?;
                 add(model, id, section)?;
                 RemoveSection { id }
             }
-            UpdateSection { id, section } => UpdateSection {
-                id,
-                section: update(model, id, section)?,
-            },
+            UpdateSection { id, section } => {
+                check_section(&section)?;
+                UpdateSection {
+                    id,
+                    section: update(model, id, section)?,
+                }
+            }
             RemoveSection { id } => {
                 let (entity, groups) = remove(model, id)?;
                 removal_inverse(

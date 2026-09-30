@@ -608,12 +608,15 @@ pub fn add_custom_section(document: Entity<Document>, window: &mut Window, cx: &
     let name = unused_name::<Section>(document.read(cx).model(), "SEC");
     let area = label("Area", Role::Area);
     let moments = ["Iy", "Iz", "J"].map(|l| label(l, Role::SecondMoment));
+    let shears = ["Shear area y", "Shear area z"].map(|l| label(l, Role::Area));
     let inputs = Inputs::default()
         .with_text("Name", &name, Width::Full, window, cx)
         .with_text(&area, "10", Width::Full, window, cx)
         .with_text(&moments[0], "50", Width::Third, window, cx)
         .with_text(&moments[1], "200", Width::Third, window, cx)
-        .with_text(&moments[2], "1", Width::Third, window, cx);
+        .with_text(&moments[2], "1", Width::Third, window, cx)
+        .with_optional_text(&shears[0], "", "Rigid", Width::Half, window, cx)
+        .with_optional_text(&shears[1], "", "Rigid", Width::Half, window, cx);
     open(
         "Add section",
         "Add section",
@@ -637,12 +640,24 @@ pub fn add_custom_section(document: Entity<Document>, window: &mut Window, cx: &
                     }
                 }
             }
+            let (shear_y, shear_z) = match (
+                inputs.opt_qty(&shears[0], Role::Area, cx),
+                inputs.opt_qty(&shears[1], Role::Area, cx),
+            ) {
+                (Ok(y), Ok(z)) => (y, z),
+                (Err(e), _) | (_, Err(e)) => {
+                    notify_error(window, cx, e);
+                    return false;
+                }
+            };
             let section = Section {
                 name: inputs.text("Name", cx),
                 area: Area::from_si(v[0]),
                 iy: SecondMoment::from_si(v[1]),
                 iz: SecondMoment::from_si(v[2]),
                 torsion: SecondMoment::from_si(v[3]),
+                shear_y: shear_y.map(Area::from_si),
+                shear_z: shear_z.map(Area::from_si),
                 shape: None,
                 provenance: None,
             };

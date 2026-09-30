@@ -87,6 +87,8 @@ fn spectrum_base_shear_includes_forces_transferred_to_a_restrained_master() {
         iy: SecondMoment::from_si(2e-5),
         iz: SecondMoment::from_si(4e-5),
         torsion: SecondMoment::from_si(1e-5),
+        shear_y: None,
+        shear_z: None,
     });
     model.add_node(Node::fixed([Length::ZERO; 3]));
     let mut tip = Node::new([Length::from_si(3.0), Length::ZERO, Length::ZERO]);

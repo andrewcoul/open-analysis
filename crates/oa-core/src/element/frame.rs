@@ -1,10 +1,14 @@
-//! Euler-Bernoulli space frame. DOFs: [ux, uy, uz, rx, ry, rz] at each end.
-//! Consistent loads are integrated from displacement and rotation shape functions.
+//! Space frame. DOFs: [ux, uy, uz, rx, ry, rz] at each end.
+//! Each bending plane is a Timoshenko beam when the section gives a shear
+//! area for it and an Euler-Bernoulli beam otherwise. The shear parameter
+//! phi = 12EI / (G As L^2) is zero in the second case, and every matrix and
+//! shape function below reduces to its Euler-Bernoulli form. Consistent loads
+//! are integrated from displacement and rotation shape functions.
 use super::{GAUSS3, block_rotation, rotation};
 use crate::{
     Error, Result,
     model::*,
-    units::{Length, LineLoad},
+    units::{Area, Length, LineLoad},
 };
 use nalgebra::{DMatrix, DVector, Matrix3, SMatrix, SVector, Vector3};
 use std::ops::Deref;
@@ -22,6 +26,8 @@ pub(crate) struct FrameElement {
     pub geometric_unit: M12,
     pub releases: [bool; 12],
     pub mass: f64,
+    /// Shear parameter for bending in the local x-y plane, then x-z.
+    phi: [f64; 2],
 }
 
 impl FrameElement {
@@ -50,21 +56,22 @@ impl FrameElement {
         y = y * frame.roll.si().cos() + x.cross(&y) * frame.roll.si().sin();
         let r = rotation(x, y);
         let t = block_rotation(&r);
+        let (ei_z, ei_y) = (m.young.si() * s.iz.si(), m.young.si() * s.iy.si());
+        let phi = |ei: f64, shear: Option<Area>| {
+            shear.map_or(0.0, |a| {
+                12.0 * ei / (m.shear_modulus() * a.si() * length * length)
+            })
+        };
+        let phi = [phi(ei_z, s.shear_y), phi(ei_y, s.shear_z)];
         let mut k = M12::zeros();
         pair(&mut k, 0, 6, m.young.si() * s.area.si() / length);
         pair(&mut k, 3, 9, m.shear_modulus() * s.torsion.si() / length);
-        bending(&mut k, [1, 5, 7, 11], m.young.si() * s.iz.si(), length, 1.0);
-        bending(
-            &mut k,
-            [2, 4, 8, 10],
-            m.young.si() * s.iy.si(),
-            length,
-            -1.0,
-        );
+        bending(&mut k, [1, 5, 7, 11], ei_z, length, 1.0, phi[0]);
+        bending(&mut k, [2, 4, 8, 10], ei_y, length, -1.0, phi[1]);
         let mut kg = M12::zeros();
         // Positive N is tension; compression reduces transverse stiffness.
-        geometric(&mut kg, [1, 5, 7, 11], length, 1.0);
-        geometric(&mut kg, [2, 4, 8, 10], length, -1.0);
+        geometric(&mut kg, [1, 5, 7, 11], length, 1.0, phi[0]);
+        geometric(&mut kg, [2, 4, 8, 10], length, -1.0, phi[1]);
         pair(
             &mut kg,
             3,
@@ -80,6 +87,7 @@ impl FrameElement {
             geometric_unit: kg,
             releases: frame.releases,
             mass: m.density.si() * s.area.si() * length,
+            phi,
         })
     }
     /// Uniform global-axis line load from density, area and gravity. None when zero.
@@ -144,30 +152,21 @@ impl FrameElement {
     }
     fn load_at(&self, x: f64, f: Vector3<f64>, m: Vector3<f64>) -> V12 {
         let t = x / self.length;
-        let l = self.length;
-        let h = [
-            1.0 - 3.0 * t * t + 2.0 * t * t * t,
-            l * (t - 2.0 * t * t + t * t * t),
-            3.0 * t * t - 2.0 * t * t * t,
-            l * (-t * t + t * t * t),
-        ];
-        let dh = [
-            (-6.0 * t + 6.0 * t * t) / l,
-            1.0 - 4.0 * t + 3.0 * t * t,
-            (6.0 * t - 6.0 * t * t) / l,
-            -2.0 * t + 3.0 * t * t,
-        ];
         let mut p = V12::zeros();
         p[0] = (1.0 - t) * f.x;
         p[6] = t * f.x;
         p[3] = (1.0 - t) * m.x;
         p[9] = t * m.x;
+        // A force works through the deflection, a moment through the section
+        // rotation; with shear deformation the two differ.
+        let (h, rot) = shape(t, self.length, self.phi[0]);
         for (j, id) in [1, 5, 7, 11].into_iter().enumerate() {
-            p[id] += h[j] * f.y + dh[j] * m.z;
+            p[id] += h[j] * f.y + rot[j] * m.z;
         }
+        let (h, rot) = shape(t, self.length, self.phi[1]);
         for (j, id) in [2, 4, 8, 10].into_iter().enumerate() {
             let sign = if j % 2 == 0 { 1.0 } else { -1.0 };
-            p[id] += sign * (h[j] * f.z - dh[j] * m.y);
+            p[id] += sign * (h[j] * f.z - rot[j] * m.y);
         }
         p
     }
@@ -317,33 +316,116 @@ fn pair(k: &mut M12, a: usize, b: usize, v: f64) {
     k[(a, b)] -= v;
     k[(b, a)] -= v;
 }
-fn bending(k: &mut M12, ids: [usize; 4], ei: f64, l: f64, sign: f64) {
+/// Deflection and section-rotation shape functions at t = x / L for the
+/// [v_i, theta_i, v_j, theta_j] DOFs of one bending plane. These are exact
+/// for a Timoshenko beam without span load, so consistent loads built from
+/// them are the exact fixed-end forces.
+fn shape(t: f64, l: f64, phi: f64) -> ([f64; 4], [f64; 4]) {
+    let d = 1.0 + phi;
+    let (t2, t3) = (t * t, t * t * t);
+    let v = [
+        (1.0 + phi - phi * t - 3.0 * t2 + 2.0 * t3) / d,
+        l * ((1.0 + phi / 2.0) * t - (2.0 + phi / 2.0) * t2 + t3) / d,
+        (phi * t + 3.0 * t2 - 2.0 * t3) / d,
+        l * (-phi / 2.0 * t - (1.0 - phi / 2.0) * t2 + t3) / d,
+    ];
+    let rotation = [
+        6.0 * (t2 - t) / (d * l),
+        (1.0 + phi - (4.0 + phi) * t + 3.0 * t2) / d,
+        -6.0 * (t2 - t) / (d * l),
+        (-(2.0 - phi) * t + 3.0 * t2) / d,
+    ];
+    (v, rotation)
+}
+fn bending(k: &mut M12, ids: [usize; 4], ei: f64, l: f64, sign: f64, phi: f64) {
     let v = [
         [12.0, 6.0 * l, -12.0, 6.0 * l],
-        [6.0 * l, 4.0 * l * l, -6.0 * l, 2.0 * l * l],
+        [6.0 * l, (4.0 + phi) * l * l, -6.0 * l, (2.0 - phi) * l * l],
         [-12.0, -6.0 * l, 12.0, -6.0 * l],
-        [6.0 * l, 2.0 * l * l, -6.0 * l, 4.0 * l * l],
+        [6.0 * l, (2.0 - phi) * l * l, -6.0 * l, (4.0 + phi) * l * l],
     ];
     for i in 0..4 {
         for j in 0..4 {
-            k[(ids[i], ids[j])] += v[i][j] * ei / l.powi(3)
+            k[(ids[i], ids[j])] += v[i][j] * ei / (l.powi(3) * (1.0 + phi))
                 * (if i % 2 == 1 { sign } else { 1.0 })
                 * (if j % 2 == 1 { sign } else { 1.0 });
         }
     }
 }
-fn geometric(k: &mut M12, ids: [usize; 4], l: f64, sign: f64) {
+/// Geometric stiffness per unit axial force, the integral of the product of
+/// deflection slopes. With shear deformation this is Engesser's model: a
+/// pinned column buckles at Pe / (1 + Pe / (G As)).
+fn geometric(k: &mut M12, ids: [usize; 4], l: f64, sign: f64, phi: f64) {
+    let a = 36.0 + 60.0 * phi + 30.0 * phi * phi;
+    let b = (4.0 + 5.0 * phi + 2.5 * phi * phi) * l * l;
+    let c = -(1.0 + 5.0 * phi + 2.5 * phi * phi) * l * l;
     let v = [
-        [36.0, 3.0 * l, -36.0, 3.0 * l],
-        [3.0 * l, 4.0 * l * l, -3.0 * l, -l * l],
-        [-36.0, -3.0 * l, 36.0, -3.0 * l],
-        [3.0 * l, -l * l, -3.0 * l, 4.0 * l * l],
+        [a, 3.0 * l, -a, 3.0 * l],
+        [3.0 * l, b, -3.0 * l, c],
+        [-a, -3.0 * l, a, -3.0 * l],
+        [3.0 * l, c, -3.0 * l, b],
     ];
     for i in 0..4 {
         for j in 0..4 {
-            k[(ids[i], ids[j])] += v[i][j] / (30.0 * l)
+            k[(ids[i], ids[j])] += v[i][j] / (30.0 * l * (1.0 + phi).powi(2))
                 * (if i % 2 == 1 { sign } else { 1.0 })
                 * (if j % 2 == 1 { sign } else { 1.0 });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GAUSS3, M12, bending, geometric, shape};
+
+    /// The closed-form matrices must equal the energy integrals of the shape
+    /// functions: bending plus shear strain for the elastic stiffness, and
+    /// the product of deflection slopes for the geometric stiffness.
+    #[test]
+    fn matrices_match_shape_function_integrals() {
+        let (ei, l) = (3.0, 2.0);
+        let ids = [0, 1, 2, 3];
+        for phi in [0.0, 0.4, 3.0] {
+            let (mut k, mut kg) = (M12::zeros(), M12::zeros());
+            bending(&mut k, ids, ei, l, 1.0, phi);
+            geometric(&mut kg, ids, l, 1.0, phi);
+            // Slopes by central difference; the shape functions are cubic.
+            let h = 1e-5;
+            let derivatives = |t: f64| {
+                let (v0, r0) = shape(t - h, l, phi);
+                let (v1, r1) = shape(t + h, l, phi);
+                let dv: [f64; 4] = std::array::from_fn(|i| (v1[i] - v0[i]) / (2.0 * h * l));
+                let dr: [f64; 4] = std::array::from_fn(|i| (r1[i] - r0[i]) / (2.0 * h * l));
+                (dv, dr)
+            };
+            for i in 0..4 {
+                for j in 0..4 {
+                    let (mut elastic, mut slope) = (0.0, 0.0);
+                    for (xi, w) in GAUSS3 {
+                        let t = (xi + 1.0) / 2.0;
+                        let (dv, dr) = derivatives(t);
+                        let (_, r) = shape(t, l, phi);
+                        let shear = |n: usize| dv[n] - r[n];
+                        let ga = if phi > 0.0 {
+                            12.0 * ei / (phi * l * l)
+                        } else {
+                            0.0
+                        };
+                        elastic += w * l / 2.0 * (ei * dr[i] * dr[j] + ga * shear(i) * shear(j));
+                        slope += w * l / 2.0 * dv[i] * dv[j];
+                    }
+                    let scale = k[(i, i)].abs().max(k[(j, j)].abs());
+                    assert!(
+                        (k[(i, j)] - elastic).abs() < 1e-6 * scale,
+                        "phi {phi} k[{i}{j}]"
+                    );
+                    let scale = kg[(i, i)].abs().max(kg[(j, j)].abs());
+                    assert!(
+                        (kg[(i, j)] - slope).abs() < 1e-6 * scale,
+                        "phi {phi} kg[{i}{j}]"
+                    );
+                }
+            }
         }
     }
 }

@@ -1129,6 +1129,9 @@ add_material  {"command":"add_material","id":2,"material":{"name":"steel","young
               optional strengths, kept for design and unused by the solver: fy and fu for steel (fu at least fy),
               fc (f'c) for concrete. add_material_from_library fills them for the bundled grades
 add_section   {"command":"add_section","id":3,"section":{"name":"col","area":26.5,"iy":362,"iz":999,"torsion":4.06}}
+              optional shear_y and shear_z [in²], the shear areas along local y (bending with iz) and z: a plane with
+              one deforms in shear too (Timoshenko), one without is rigid in shear. add_section_from_library fills
+              them: d·tw along the web, 5/3·bf·tf across two flanges, 2·t·h for tube walls, (0.5+0.8·t/OD)·A if round
 add_frame     {"command":"add_frame","id":4,"frame":{"name":"C1","nodes":[1,5],"material":2,"section":3}}
               optional: releases [12 bools], behavior "tension_only"|"compression_only", roll, local_y
 add_shell     {"command":"add_shell","id":6,"shell":{"name":"S1","nodes":[1,2,3,4],"material":2,"thickness":8}}

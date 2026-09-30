@@ -199,6 +199,38 @@ Not yet done from this phase:
 - Automatic master node at the centre of mass. The model layer owns that now.
 - Rigid-body modes remain out of scope.
 
+### Shear deformation in frames (added 2026-09-30)
+
+A section may give shear areas `shear_y` and `shear_z`, for shear along
+local y (bending with `iz`) and local z (bending with `iy`). A plane with
+one is a Timoshenko beam with shear parameter φ = 12EI / (G As L²); a plane
+without one is rigid in shear and stays Euler-Bernoulli, so every existing
+model and the Pynite comparisons are unchanged.
+
+- **Stiffness.** The closed-form Timoshenko matrix. Bending terms scale by
+  1 / (1 + φ), and the rotational diagonal and coupling become (4 + φ)L²
+  and (2 − φ)L².
+- **Shape functions.** The exact homogeneous Timoshenko solutions, with
+  separate deflection and section-rotation functions. A span force works
+  through the deflection and a span moment through the rotation, so
+  consistent loads are the exact fixed-end forces.
+- **Geometric stiffness.** The integral of the product of deflection
+  slopes over those shape functions. This is Engesser's model: a pinned
+  column buckles at Pe / (1 + Pe / G As).
+- **Diagrams.** `frame_diagram` adds the shear strain V / (G As) to the
+  slope it integrates, and the end rotations it starts from are section
+  rotations.
+- **Mass** is unchanged: lumped translational mass does not depend on φ.
+
+Tests: `crates/oa-core/tests/shear_deformation.rs` checks a cantilever
+against PL³/3EI + PL/GAs, span loads on one element against a mesh with
+nodes under the loads, and P-Delta against the closed-form Engesser
+cantilever. A unit test in `element/frame.rs` checks both matrices against
+the energy integrals of the shape functions.
+
+The model layer fills the shear areas for AISC library sections (see the
+model plan); sections typed in by hand have none unless given.
+
 ### Equilibrium check and iterative refinement (revised 2026-09-14)
 
 The linear solve originally did one step of iterative refinement and then

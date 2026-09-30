@@ -75,7 +75,9 @@ The shell element formulations follow:
 
 The frame element and geometric stiffness follow standard Euler-Bernoulli
 space-frame formulations as presented in McGuire, Gallagher, and Ziemian,
-*Matrix Structural Analysis*, 2nd edition.
+*Matrix Structural Analysis*, 2nd edition. With shear areas the element is
+the Timoshenko beam of Przemieniecki, J. S., *Theory of Matrix Structural
+Analysis*, 1968.
 
 The CQC modal combination follows Der Kiureghian, A. "A Response Spectrum
 Method for Random Vibration Analysis of MDF Systems." *Earthquake Engineering

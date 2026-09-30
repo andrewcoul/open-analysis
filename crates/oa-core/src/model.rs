@@ -108,6 +108,13 @@ pub struct Section {
     pub iy: SecondMoment,
     pub iz: SecondMoment,
     pub torsion: SecondMoment,
+    /// Effective shear areas for shear along local y (bending with `iz`) and
+    /// local z (bending with `iy`). Absent means rigid in shear: that plane
+    /// bends as an Euler-Bernoulli beam.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shear_y: Option<Area>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shear_z: Option<Area>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -476,8 +483,9 @@ impl Model {
         }
         for (i, s) in self.sections.iter().enumerate() {
             if [s.area.si(), s.iy.si(), s.iz.si(), s.torsion.si()]
-                .iter()
-                .any(|x| !x.is_finite() || *x <= 0.0)
+                .into_iter()
+                .chain([s.shear_y, s.shear_z].into_iter().flatten().map(Area::si))
+                .any(|x| !x.is_finite() || x <= 0.0)
             {
                 return fail(format!(
                     "section {i}: properties must be positive and finite"

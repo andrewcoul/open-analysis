@@ -307,6 +307,12 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
             f.push(qty("torsion", "J", Role::SecondMoment, e.torsion.si()).span(HALF));
             f.push(qty("iy", "Iy", Role::SecondMoment, e.iy.si()).span(HALF));
             f.push(qty("iz", "Iz", Role::SecondMoment, e.iz.si()).span(HALF));
+            for (key, name, shear) in [
+                ("shear_y", "Shear area y", e.shear_y),
+                ("shear_z", "Shear area z", e.shear_z),
+            ] {
+                f.push(opt_qty(key, name, Role::Area, shear.map(Area::si)).span(HALF));
+            }
         }
         EntityKind::LoadCase => {
             let e = &model.load_cases[&id];
@@ -582,6 +588,15 @@ fn command_for(
             e.iz = SecondMoment::from_si(v.qty("iz", Role::SecondMoment, "Iz", e.iz.si())?);
             e.torsion =
                 SecondMoment::from_si(v.qty("torsion", Role::SecondMoment, "J", e.torsion.si())?);
+            for (key, name, shear) in [
+                ("shear_y", "Shear area y", &mut e.shear_y),
+                ("shear_z", "Shear area z", &mut e.shear_z),
+            ] {
+                let current = shear.map(Area::si);
+                *shear = v
+                    .opt_qty(key, Role::Area, name, current)?
+                    .map(Area::from_si);
+            }
             (e != model.sections[&id]).then_some(Command::UpdateSection { id, section: e })
         }
         EntityKind::LoadCase => {
@@ -1891,5 +1906,36 @@ mod tests {
         let mut v = values_for(&model, id);
         v.texts.insert("fy".into(), "fifty".into());
         assert!(command_for(&model, id, EntityKind::Material, &v).is_err());
+    }
+
+    #[test]
+    fn shear_areas_show_in_square_inches_and_clear_when_blanked() {
+        let _p = TestPrecision::of(DEFAULT_PRECISION);
+        let mut model = Model::default();
+        let beam = oa_model::Library::aisc()
+            .section("W14X90", "beam")
+            .unwrap();
+        let id = model.insert(beam.clone());
+        let v = values_for(&model, id);
+        assert_eq!(v.texts["shear_y"], "6.16");
+        assert_eq!(v.texts["shear_z"], "17.16");
+        assert_eq!(
+            command_for(&model, id, EntityKind::Section, &v).unwrap(),
+            None
+        );
+
+        // Blanking one makes that plane rigid in shear; the other stays.
+        let mut v = values_for(&model, id);
+        v.texts.insert("shear_y".into(), "".into());
+        let Some(Command::UpdateSection { section, .. }) =
+            command_for(&model, id, EntityKind::Section, &v).unwrap()
+        else {
+            panic!("an edited shear area is a command");
+        };
+        assert_eq!(section.shear_y, None);
+        assert_eq!(section.shear_z, beam.shear_z);
+        let mut v = values_for(&model, id);
+        v.texts.insert("shear_z".into(), "web".into());
+        assert!(command_for(&model, id, EntityKind::Section, &v).is_err());
     }
 }

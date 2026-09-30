@@ -1,7 +1,7 @@
 //! Section and material libraries, shipped as data. An entry is copied into
 //! the model on use and records where it came from. A library says which
 //! units its numbers are in, so tables can be typed in as published.
-use crate::entity::{Material, Provenance, Section, Shape};
+use crate::entity::{Material, Provenance, Section, SectionProperty, Shape, ShapeKind};
 use crate::units::{Role, UnitSystem};
 use oa_core::units::*;
 use serde::{Deserialize, Serialize};
@@ -101,12 +101,18 @@ impl Library {
             }
             shape
         });
+        let area = self.si(Role::Area, e.area);
+        let [shear_y, shear_z] = shape
+            .as_ref()
+            .map_or([None, None], |shape| shear_areas(shape, area));
         Some(Section {
             name: name.into(),
-            area: Area::from_si(self.si(Role::Area, e.area)),
+            area: Area::from_si(area),
             iy: SecondMoment::from_si(self.si(Role::SecondMoment, e.iy)),
             iz: SecondMoment::from_si(self.si(Role::SecondMoment, e.iz)),
             torsion: SecondMoment::from_si(self.si(Role::SecondMoment, e.torsion)),
+            shear_y,
+            shear_z,
             shape,
             provenance: Some(self.provenance(&e.designation)),
         })
@@ -133,4 +139,43 @@ impl Library {
             .map(|s| s.designation.as_str())
             .collect()
     }
+}
+
+/// Shear areas along local y (the web, for AISC Ix bending) and local z,
+/// from a shape's SI properties, as ETABS and SAP2000 take them: d tw for
+/// a web, 5/6 of each flange's bf tf, 2 t h for the walls of a rectangular
+/// tube, and (0.9 - 0.4 s) A for a round one, where s = (r - t) / r is the
+/// ratio of inner to outer radius: half the area for a thin wall, rising
+/// towards 0.9 A for a solid bar (CSI Analysis Reference, Figure 29). None
+/// where a property is missing.
+fn shear_areas(shape: &Shape, area: f64) -> [Option<Area>; 2] {
+    use SectionProperty::*;
+    let p = |property| shape.properties.get(&property).copied();
+    let product =
+        |a: SectionProperty, b: SectionProperty, factor: f64| Some(factor * p(a)? * p(b)?);
+    let web = product(Depth, WebThickness, 1.0);
+    let [y, z] = match shape.kind {
+        ShapeKind::W
+        | ShapeKind::M
+        | ShapeKind::S
+        | ShapeKind::HP
+        | ShapeKind::C
+        | ShapeKind::MC => [web, product(FlangeWidth, FlangeThickness, 5.0 / 3.0)],
+        ShapeKind::WT | ShapeKind::MT | ShapeKind::ST => {
+            [web, product(FlangeWidth, FlangeThickness, 5.0 / 6.0)]
+        }
+        ShapeKind::HSS if p(OutsideDiameter).is_none() => [
+            product(HssDepth, DesignWallThickness, 2.0),
+            product(HssWidth, DesignWallThickness, 2.0),
+        ],
+        ShapeKind::HSS | ShapeKind::PIPE => {
+            let round = (|| {
+                let r = p(OutsideDiameter)? / 2.0;
+                let s = (r - p(DesignWallThickness)?) / r;
+                Some((0.9 - 0.4 * s) * area)
+            })();
+            [round; 2]
+        }
+    };
+    [y, z].map(|a| a.map(Area::from_si))
 }

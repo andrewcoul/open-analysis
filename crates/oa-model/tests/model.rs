@@ -1454,3 +1454,115 @@ fn material_strengths_are_validated_and_undone() {
     assert!(editor.undo().unwrap());
     assert_eq!(editor.model.materials[&id].fy, None);
 }
+
+#[test]
+fn format_v6_fixture_loads_with_shear_areas() {
+    let model = from_json(include_str!("fixtures/format_v6.json")).unwrap();
+    let beam = &model.sections[&EntityId(4)];
+    assert_eq!(beam.shear_y, Some(Area::from_si(0.00397)));
+    assert_eq!(beam.shear_z, Some(Area::from_si(0.011)));
+    assert_eq!(from_json(&to_json(&model)).unwrap(), model);
+    // They reach the solver, and without them the document is the version
+    // 5 fixture, written as before.
+    let solver = &compile(&model).unwrap().solver.sections[0];
+    assert_eq!(
+        (solver.shear_y, solver.shear_z),
+        (beam.shear_y, beam.shear_z)
+    );
+    let mut bare = model.clone();
+    let s = bare.sections.get_mut(&EntityId(4)).unwrap();
+    (s.shear_y, s.shear_z) = (None, None);
+    assert_eq!(
+        bare,
+        from_json(include_str!("fixtures/format_v5.json")).unwrap()
+    );
+    assert!(!to_json(&bare).contains("shear_"));
+}
+
+#[test]
+fn aisc_library_copies_shear_areas() {
+    let library = Library::aisc();
+    let in2 = |v: f64| Area::from_square_inches(v).si();
+    let shear = |designation: &str| {
+        let s = library.section(designation, "s").unwrap();
+        (
+            s.shear_y.unwrap().si(),
+            s.shear_z.unwrap().si(),
+            s.area.si(),
+        )
+    };
+    let near = |a: f64, b: f64| (a - b).abs() <= 1e-12 * b;
+    // W14X90: d tw along the web, 5/6 of both flanges across them.
+    let (y, z, _) = shear("W14X90");
+    assert!(near(y, in2(14.0 * 0.44)) && near(z, in2(5.0 / 3.0 * 14.5 * 0.71)));
+    // A tee has one flange; its stem lies along local y as its web would.
+    let (y, z, _) = shear("WT7X45");
+    assert!(near(y, in2(7.01 * 0.44)) && near(z, in2(5.0 / 6.0 * 14.5 * 0.71)));
+    // A rectangular tube's two walls of height Ht carry shear along y.
+    let (y, z, _) = shear("HSS12X8X1/2");
+    assert!(near(y, in2(2.0 * 12.0 * 0.465)) && near(z, in2(2.0 * 8.0 * 0.465)));
+    // A round tube or pipe carries (0.5 + 0.8 t / OD) A either way, CSI's
+    // (0.9 - 0.4 s) A with s = (r - t) / r: near half for a thin wall, more
+    // for a thick one. Pipe2XXS (A 2.51, OD 2.375, tdes 0.406) is 1.598 in².
+    for (round, expected) in [
+        ("HSS8.625X0.500", (0.5 + 0.8 * 0.465 / 8.63) * 11.9),
+        ("Pipe2XXS", (0.5 + 0.8 * 0.406 / 2.375) * 2.51),
+    ] {
+        let (y, z, _) = shear(round);
+        assert!(near(y, in2(expected)) && near(z, y), "{round}");
+    }
+    let (y, _, area) = shear("Pipe2XXS");
+    assert!((y / in2(1.0) - 1.5983).abs() < 1e-4 && y > area / 2.0 * 1.27);
+    // Every shape gets both, smaller than its area; the starter library's
+    // sections carry no shape and stay rigid in shear.
+    for e in &library.sections {
+        let (y, z, area) = shear(&e.designation);
+        assert!(y > 0.0 && z > 0.0, "{}", e.designation);
+        assert!(y < area && z < area, "{}", e.designation);
+    }
+    assert_eq!(section().shear_y, None);
+    // Shown in US units they read in in².
+    let shown = UnitSystem::UsCustomary.display(&library.section("W14X90", "s").unwrap());
+    assert!((shown.shear_y.unwrap().si() - 6.16).abs() < 1e-9);
+}
+
+#[test]
+fn shear_areas_are_validated_and_undone() {
+    let mut editor = Editor::new(Model::default());
+    let id = editor.model.allocate();
+    for bad in [0.0, -1.0, f64::NAN] {
+        let mut probe = editor.model.clone();
+        let err = Command::AddSection {
+            id,
+            section: Section {
+                shear_z: Some(Area::from_si(bad)),
+                ..section()
+            },
+        }
+        .apply(&mut probe)
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("shear areas must be positive"),
+            "{err}"
+        );
+    }
+    editor
+        .apply(Command::AddSection {
+            id,
+            section: section(),
+        })
+        .unwrap();
+    let sheared = Section {
+        shear_y: Some(Area::from_square_inches(6.16)),
+        ..section()
+    };
+    editor
+        .apply(Command::UpdateSection {
+            id,
+            section: sheared.clone(),
+        })
+        .unwrap();
+    assert_eq!(editor.model.sections[&id], sheared);
+    assert!(editor.undo().unwrap());
+    assert_eq!(editor.model.sections[&id].shear_y, None);
+}

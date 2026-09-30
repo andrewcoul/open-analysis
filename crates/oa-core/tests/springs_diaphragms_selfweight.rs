@@ -24,6 +24,8 @@ fn base(density: f64) -> Model {
         iy: SecondMoment::from_si(2e-5),
         iz: SecondMoment::from_si(IZ),
         torsion: SecondMoment::from_si(J),
+        shear_y: None,
+        shear_z: None,
     });
     m
 }

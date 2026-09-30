@@ -18,6 +18,8 @@ pub fn frame_model(bx: usize, by: usize, stories: usize, combos: usize) -> Model
         iy: SecondMoment::from_si(2e-5),
         iz: SecondMoment::from_si(4e-5),
         torsion: SecondMoment::from_si(1e-5),
+        shear_y: None,
+        shear_z: None,
     });
     for k in 0..nz {
         for j in 0..ny {
@@ -303,6 +305,8 @@ fn model_whose_second_case_fails() -> Model {
         iy: SecondMoment::from_si(2e-5),
         iz: SecondMoment::from_si(4e-5),
         torsion: SecondMoment::from_si(1e-5),
+        shear_y: None,
+        shear_z: None,
     });
     m.add_node(Node::fixed([Length::ZERO; 3]));
     m.add_node(Node::new([
