@@ -24,6 +24,12 @@ pub(crate) struct ShellElement {
     xy: [Vector2<f64>; 4],
     thickness: f64,
     poisson: f64,
+    /// Bending stiffness modifier. DKMQ's shear parameter is the ratio of
+    /// bending to transverse shear rigidity, so it scales by the same factor.
+    bending_modifier: f64,
+    /// Rotates an in-plane vector from the element frame, whose x runs along
+    /// the first edge, into the shell's local axes.
+    axes: Matrix2<f64>,
     rectangle_inverse: Option<SMatrix<f64, 12, 12>>,
 }
 
@@ -72,12 +78,51 @@ impl ShellElement {
                 "shell {id}: rectangular formulation requires a rectangle"
             )));
         }
+        // The element is built in the edge frame, which the rectangular
+        // formulation needs; the local axes are that frame turned in plane
+        // by the angle whose cosine and sine are (c, s).
+        let (c, s) = match shell.local_x {
+            None => (1.0, 0.0),
+            Some(v) => {
+                let v = Vector3::from(v);
+                let (vx, vy) = (x.dot(&v), y.dot(&v));
+                let norm = vx.hypot(vy);
+                if norm <= 1e-10 * v.norm().max(1.0) {
+                    return Err(Error::Model(format!(
+                        "shell {id}: local_x is normal to the shell or zero"
+                    )));
+                }
+                (vx / norm, vy / norm)
+            }
+        };
+        // Engineering strain (and curvature) from the edge frame to local axes.
+        let te = Matrix3::new(
+            c * c,
+            s * s,
+            c * s,
+            s * s,
+            c * c,
+            -c * s,
+            -2.0 * c * s,
+            2.0 * c * s,
+            c * c - s * s,
+        );
         let e = material.young.si();
         let nu = material.poisson;
         let h = shell.thickness.si();
-        let dm = Matrix3::new(1.0, nu, 0.0, nu, 1.0, 0.0, 0.0, 0.0, (1.0 - nu) / 2.0)
+        let isotropic = Matrix3::new(1.0, nu, 0.0, nu, 1.0, 0.0, 0.0, 0.0, (1.0 - nu) / 2.0)
             * (e / (1.0 - nu * nu));
-        let db = dm * (h.powi(3) / 12.0);
+        let md = &shell.modifiers;
+        let scale = Matrix3::from_diagonal(&Vector3::new(
+            md.membrane_x.sqrt(),
+            md.membrane_y.sqrt(),
+            md.membrane_shear.sqrt(),
+        ));
+        // Membrane rigidity in local axes, then carried to the edge frame.
+        let dm_local = scale * isotropic * scale;
+        let dm = te.transpose() * dm_local * te;
+        // Bending stays isotropic, so it is the same in either frame.
+        let db = isotropic * (h.powi(3) / 12.0 * md.bending);
         let ds = Matrix2::identity() * (5.0 / 6.0 * material.shear_modulus() * h);
         let mut out = Self {
             dofs: std::array::from_fn(|i| shell.nodes[i / 6].0 * 6 + i % 6),
@@ -91,6 +136,8 @@ impl ShellElement {
             xy,
             thickness: h,
             poisson: nu,
+            bending_modifier: md.bending,
+            axes: Matrix2::new(c, s, -s, c),
             rectangle_inverse: None,
         };
         if shell.formulation == ShellFormulation::Rectangular {
@@ -152,10 +199,11 @@ impl ShellElement {
         for i in 0..4 {
             out.k[(6 * i + 5, 6 * i + 5)] = kd;
         }
+        // Recovered in local axes.
         let (bb, bs) = out.bending(0.0, 0.0)?;
-        out.stress_op = dm * out.membrane(0.0, 0.0)?;
-        out.moment_op = db * bb;
-        out.shear_op = ds * bs;
+        out.stress_op = dm_local * te * out.membrane(0.0, 0.0)?;
+        out.moment_op = db * te * bb;
+        out.shear_op = out.axes * ds * bs;
         Ok(out)
     }
     fn geometry(&self, xi: f64, eta: f64) -> Result<([f64; 4], [Vector2<f64>; 4], f64)> {
@@ -281,7 +329,9 @@ impl ShellElement {
             let l = edge.norm();
             let c = edge.x / l;
             let s = edge.y / l;
-            let phi = 2.0 / ((5.0 / 6.0) * (1.0 - self.poisson)) * (self.thickness / l).powi(2);
+            let phi = 2.0 / ((5.0 / 6.0) * (1.0 - self.poisson))
+                * (self.thickness / l).powi(2)
+                * self.bending_modifier;
             let gradp = inv * Vector2::new(dp_r[i], dp_s[i]);
             delta[(0, i)] = gradp.x * c;
             delta[(1, i)] = gradp.y * s;
@@ -352,7 +402,12 @@ impl ShellElement {
     }
     pub fn recover(&self, global_d: &[f64], pressure: f64) -> Result<crate::results::ShellResult> {
         let d = self.t * V24::from_fn(|i, _| global_d[self.dofs[i]]);
-        let f = self.k * d - self.pressure_load * pressure;
+        let mut f = self.k * d - self.pressure_load * pressure;
+        // End forces and moments into local axes, a node's pair at a time.
+        for i in (0..24).step_by(3) {
+            let v = self.axes * Vector2::new(f[i], f[i + 1]);
+            (f[i], f[i + 1]) = (v.x, v.y);
+        }
         let stress = self.stress_op * d;
         let moment = self.moment_op * d;
         let shear = self.shear_op * d;

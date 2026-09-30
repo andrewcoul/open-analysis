@@ -163,6 +163,11 @@ struct AnalyzeArgs {
     combinations: Vec<String>,
     /// File to write the SQLite result store to; omitted keeps results in memory.
     store_path: Option<String>,
+    /// Multiplies every flexural stiffness modifier below 1 (frame iy and iz,
+    /// shell membrane_x, membrane_y and bending), capped at 1, for this run
+    /// only. 1.4 gives ACI 318 6.6.3.2.2 service-level stiffness for wind
+    /// drift; leave it out for strength-level results.
+    cracked_stiffness_factor: Option<f64>,
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 struct EnvelopeArgs {
@@ -425,6 +430,7 @@ impl Server {
         let options = oa_core::StaticOptions {
             method,
             combinations: a.combinations,
+            cracked_stiffness_factor: a.cracked_stiffness_factor.unwrap_or(1.0),
             ..Default::default()
         };
         self.call(move |s| s.analyze(options, a.store_path.map(Into::into)))

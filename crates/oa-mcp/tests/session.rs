@@ -348,3 +348,82 @@ fn sections_carry_shear_areas_in_square_inches() {
         .to_string();
     assert!(err.contains("shear areas must be positive"), "{err}");
 }
+
+#[test]
+fn frames_and_shells_carry_stiffness_modifiers() {
+    let mut s = Session::default();
+    s.new_model("cracked").unwrap();
+    let concrete = s
+        .add_material_from_library("Concrete 4 ksi", "concrete")
+        .unwrap();
+    let section = s.add_section_from_library("W14X90", "beam").unwrap();
+    let base = s.find(EntityKind::Level, "Base").unwrap();
+    let [a, b, beam, plain, bad] = <[_; 5]>::try_from(s.next_ids(5)).unwrap();
+    s.apply(vec![
+        cmd(json!({"command": "add_node", "id": a, "node": {"name": "A", "level": base, "position": [0, 0, 0]}})),
+        cmd(json!({"command": "add_node", "id": b, "node": {"name": "B", "level": base, "position": [20, 0, 0]}})),
+        cmd(json!({"command": "add_frame", "id": beam, "frame": {"name": "B1", "nodes": [a, b],
+            "material": concrete, "section": section, "modifiers": {"iy": 0.35, "iz": 0.35}}})),
+        cmd(json!({"command": "add_frame", "id": plain, "frame": {"name": "B2", "nodes": [a, b],
+            "material": concrete, "section": section}})),
+    ])
+    .unwrap();
+    let got = &s.get(beam).unwrap()["entity"]["modifiers"];
+    assert_eq!(got["iz"], json!(0.35));
+    assert_eq!(got["area"], json!(1.0));
+    assert!(s.get(plain).unwrap()["entity"].get("modifiers").is_none());
+    let err = s
+        .apply(vec![cmd(json!({"command": "add_shell", "id": bad, "shell": {"name": "W1",
+            "nodes": [a, b, b, a], "material": concrete, "thickness": 8, "modifiers": {"membrane_x": 0}}}))])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("stiffness modifiers must be positive"),
+        "{err}"
+    );
+}
+
+#[test]
+fn analyze_takes_a_service_stiffness_factor() {
+    let mut s = Session::default();
+    s.new_model("drift").unwrap();
+    let steel = s.add_material_from_library("A992", "steel").unwrap();
+    let base = s.find(EntityKind::Level, "Base").unwrap();
+    let [section, a, b, column, wind] = <[_; 5]>::try_from(s.next_ids(5)).unwrap();
+    s.apply(vec![
+        cmd(json!({"command": "add_section", "id": section, "section":
+            {"name": "col", "area": 20, "iy": 500, "iz": 500, "torsion": 5}})),
+        cmd(
+            json!({"command": "add_node", "id": a, "node": {"name": "A", "level": base,
+            "position": [0, 0, 0], "restrained": [true, true, true, true, true, true]}}),
+        ),
+        cmd(
+            json!({"command": "add_node", "id": b, "node": {"name": "B", "level": base,
+            "position": [0, 0, 12]}}),
+        ),
+        cmd(
+            json!({"command": "add_frame", "id": column, "frame": {"name": "C1", "nodes": [a, b],
+            "material": steel, "section": section, "modifiers": {"iy": 0.35, "iz": 0.35}}}),
+        ),
+        cmd(
+            json!({"command": "add_load_case", "id": wind, "load_case": {"name": "wind",
+            "nodal": [{"node": b, "force": [1, 0, 0]}]}}),
+        ),
+    ])
+    .unwrap();
+    let drift = |s: &Session| {
+        s.envelope(b, Quantity::Displacement, "ux").unwrap()["maximum"]["value"]
+            .as_f64()
+            .unwrap()
+    };
+    let strength = s.analyze(Default::default(), None).unwrap();
+    assert_eq!(strength["cracked_stiffness_factor"], json!(1.0));
+    let cracked = drift(&s);
+    let options = oa_core::StaticOptions {
+        cracked_stiffness_factor: 1.4,
+        ..Default::default()
+    };
+    let service = s.analyze(options, None).unwrap();
+    assert_eq!(service["cracked_stiffness_factor"], json!(1.4));
+    assert!((cracked / drift(&s) - 1.4).abs() < 1e-9);
+}

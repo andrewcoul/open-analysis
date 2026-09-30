@@ -342,6 +342,16 @@ fn check_section(section: &Section) -> Result<()> {
     }
     Ok(())
 }
+/// A stiffness modifier multiplies a stiffness, so it must be positive and
+/// finite; 1 leaves the stiffness unchanged.
+fn check_modifiers(modifiers: &[f64]) -> Result<()> {
+    if modifiers.iter().any(|f| !(f.is_finite() && *f > 0.0)) {
+        return Err(ModelError::Invalid(
+            "stiffness modifiers must be positive and finite".into(),
+        ));
+    }
+    Ok(())
+}
 /// An underlay is drawn as it is stored, so every coordinate must be finite.
 fn check_underlay(underlay: &Underlay) -> Result<()> {
     let finite = |p: &[Length; 2]| p.iter().all(|v| v.si().is_finite());
@@ -463,25 +473,33 @@ impl Command {
                 )
             }
             AddFrame { id, frame } => {
+                check_modifiers(&frame.modifiers.values())?;
                 add(model, id, frame)?;
                 RemoveFrame { id }
             }
-            UpdateFrame { id, frame } => UpdateFrame {
-                id,
-                frame: update(model, id, frame)?,
-            },
+            UpdateFrame { id, frame } => {
+                check_modifiers(&frame.modifiers.values())?;
+                UpdateFrame {
+                    id,
+                    frame: update(model, id, frame)?,
+                }
+            }
             RemoveFrame { id } => {
                 let (entity, groups) = remove(model, id)?;
                 removal_inverse(AddFrame { id, frame: entity }, groups)
             }
             AddShell { id, shell } => {
+                check_modifiers(&shell.modifiers.values())?;
                 add(model, id, shell)?;
                 RemoveShell { id }
             }
-            UpdateShell { id, shell } => UpdateShell {
-                id,
-                shell: update(model, id, shell)?,
-            },
+            UpdateShell { id, shell } => {
+                check_modifiers(&shell.modifiers.values())?;
+                UpdateShell {
+                    id,
+                    shell: update(model, id, shell)?,
+                }
+            }
             RemoveShell { id } => {
                 let (entity, groups) = remove(model, id)?;
                 removal_inverse(AddShell { id, shell: entity }, groups)

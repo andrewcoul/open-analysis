@@ -247,6 +247,16 @@ Decisions made during implementation:
   would fix that and are a possible later change to `oa-core`.
 - **Rigid end offsets and cardinal points** were deferred, as the open
   question allowed.
+- **Stiffness modifiers belong to members, not sections.** A frame or a
+  shell carries `modifiers` (see the solver plan), as ETABS assignments do,
+  because cracking follows a member's role: one W or rectangular section
+  can be a beam in one place and a column in another. Add and update
+  commands refuse a modifier that is not positive and finite. A shell may
+  also carry `local_x`, the reference its local axes and its f11 and f22
+  factors follow. The file format went to version 7 for both; a version 6
+  member has full stiffness and first-edge axes. The GUI edits them per
+  member, picks a shell's local x from its first edge or a global axis, and
+  assigns ACI 318 presets to a selection.
 
 ## Phases
 

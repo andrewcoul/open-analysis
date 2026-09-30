@@ -17,6 +17,8 @@ pub struct FrameResult {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellResult {
+    /// Forces applied to the element at its corners, in the shell's local
+    /// axes (N and N m); see `Shell::local_x`. So are the values below.
     pub local_end_forces: [f64; 24],
     /// [sigma_x, sigma_y, tau_xy] at the element center, Pa.
     pub membrane_stress: [f64; 3],
@@ -355,11 +357,21 @@ fn diagram(
     let material = &model.materials[frame.material.0];
     let young = material.young.si();
     let section = &model.sections[frame.section.0];
-    let (ei_y, ei_z) = (young * section.iy.si(), young * section.iz.si());
+    let md = &frame.modifiers;
+    let (ei_y, ei_z) = (
+        young * section.iy.si() * md.iy,
+        young * section.iz.si() * md.iz,
+    );
     // Shear flexibility 1 / (G As); zero where the section is rigid in shear.
-    let flexibility =
-        |area: Option<Area>| area.map_or(0.0, |a| 1.0 / (material.shear_modulus() * a.si()));
-    let (shear_y, shear_z) = (flexibility(section.shear_y), flexibility(section.shear_z));
+    let flexibility = |area: Option<Area>, modifier: f64| {
+        area.map_or(0.0, |a| {
+            1.0 / (material.shear_modulus() * a.si() * modifier)
+        })
+    };
+    let (shear_y, shear_z) = (
+        flexibility(section.shear_y, md.shear_y),
+        flexibility(section.shear_z, md.shear_z),
+    );
     let last = stations - 1;
     let xs: Vec<f64> = (0..stations)
         .map(|k| {
