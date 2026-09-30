@@ -265,6 +265,27 @@ eigenvalues scaling by the factor with the mass unchanged, self-weight
 reactions, a wall mesh in and out of plane, and a uniaxial membrane
 stretch that the shear factor must not touch.
 
+Decisions on what was left out:
+
+- **No section-level modifiers.** ETABS multiplies section and member
+  modifiers together, and a factor set in both places (0.35 × 0.35) is a
+  common mistake. Modifiers live in one place, the member; presets on a
+  selection cover the repeated case.
+- **No mass or weight modifiers yet.** In ETABS they mostly stop mass being
+  counted twice where a slab overlaps a beam. They are reconsidered with the
+  mass source from load cases, and matter once slab area objects exist.
+- **Separate f11 and f22 wait for shell local axes.** ACI walls take one
+  factor on both, which `membrane` covers. Splitting them needs a way to say
+  which direction is vertical; shell local x follows corner order today. The
+  open detail is how the f11–f22 coupling term scales; √(f11 f22) is the
+  obvious choice.
+- **Service-level stiffness belongs to the analysis, not the model.** ACI
+  318 6.6.3.2.2 allows 1.4 times the cracked stiffness for service drift, so
+  one building needs a strength set and a service set. That is planned as a
+  multiplier on an analysis run that applies only to modifiers below 1,
+  with the drift work in roadmap phase 3, rather than a second copy of the
+  model.
+
 ### Equilibrium check and iterative refinement (revised 2026-09-14)
 
 The linear solve originally did one step of iterative refinement and then
