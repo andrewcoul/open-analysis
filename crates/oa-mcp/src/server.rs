@@ -482,7 +482,7 @@ impl Server {
         self.call(move |s| s.entity_indices(&ids)).await
     }
     #[tool(
-        description = "Natural periods, frequencies, and mass participation of the lowest modes. Mass is the frames' and shells' own mass from material density plus node mass; loads in load cases are not mass."
+        description = "Natural periods, frequencies, and mass participation of the lowest modes. Mass comes from the model's mass source (describe_model shows it): node mass, the frames' and shells' own mass from material density unless turned off, and the downward load of any load case added with set_mass_source. Other loads are not mass."
     )]
     async fn modal(
         &self,

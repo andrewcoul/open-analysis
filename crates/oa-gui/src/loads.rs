@@ -10,6 +10,7 @@ use crate::actions::{AddAsceLoadCase, GenerateCombinations};
 use crate::document::{Document, unused_name};
 use crate::text::{fmt_num, parse_num};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
@@ -18,7 +19,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IndexPath, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::*;
-use oa_model::{Combination, Command, EntityId, LoadCase, LoadType};
+use oa_model::{Combination, Command, EntityId, LoadCase, LoadType, MassSource};
 use std::collections::BTreeMap;
 
 type Choice = Entity<SelectState<SearchableVec<SharedString>>>;
@@ -63,11 +64,25 @@ fn parse_vec3(text: &str) -> Result<[f64; 3], String> {
     ])
 }
 
+/// The source with `case` at `multiplier`, or left out when it is None. A
+/// case already listed keeps its place.
+fn with_mass(source: &MassSource, case: EntityId, multiplier: Option<f64>) -> MassSource {
+    let mut out = source.clone();
+    match (out.cases.iter_mut().find(|(c, _)| *c == case), multiplier) {
+        (Some(term), Some(f)) => term.1 = f,
+        (None, Some(f)) => out.cases.push((case, f)),
+        (_, None) => out.cases.retain(|(c, _)| *c != case),
+    }
+    out
+}
+
 struct CaseRow {
     id: EntityId,
     name: Entity<InputState>,
     load_type: Choice,
     self_weight: Entity<InputState>,
+    /// Mass source multiplier, blank when the case is not mass.
+    mass: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -93,6 +108,8 @@ pub struct LoadPanel {
     built_for: u64,
     /// Rows of the cases table; empty in a combinations panel.
     cases: Vec<CaseRow>,
+    /// Whether the mass source counts the members' own mass.
+    element_mass: bool,
     /// The cases as combination columns: id and header label.
     columns: Vec<(EntityId, String)>,
     combos: Vec<ComboRow>,
@@ -122,6 +139,7 @@ impl LoadPanel {
             section,
             built_for: u64::MAX,
             cases: vec![],
+            element_mass: true,
             columns: vec![],
             combos: vec![],
             pending_focus: None,
@@ -161,6 +179,7 @@ impl LoadPanel {
             [
                 (format!("case-name-{}", r.id.0), &r.name),
                 (format!("case-weight-{}", r.id.0), &r.self_weight),
+                (format!("case-mass-{}", r.id.0), &r.mass),
             ]
         });
         let combo_inputs = self.combos.iter().flat_map(|r| {
@@ -206,7 +225,7 @@ impl LoadPanel {
     }
 
     fn build(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (cases, combos) = {
+        let (cases, combos, mass_source) = {
             let model = self.document.read(cx).model();
             let cases: Vec<CaseData> = model
                 .load_cases
@@ -218,8 +237,9 @@ impl LoadPanel {
                 .iter()
                 .map(|(id, c)| (*id, c.name.clone(), c.terms.clone()))
                 .collect();
-            (cases, combos)
+            (cases, combos, model.mass_source.clone())
         };
+        self.element_mass = mass_source.element_mass;
         self.columns = cases
             .iter()
             .map(|(id, name, load_type, _)| {
@@ -260,6 +280,14 @@ impl LoadPanel {
                     window,
                     cx,
                 );
+                let (mass, s4) = self.text_input(
+                    format!("case-mass-{}", id.0),
+                    mass_source.multiplier(id).map(fmt_num).unwrap_or_default(),
+                    id,
+                    Self::commit_mass,
+                    window,
+                    cx,
+                );
                 let selected = LoadType::ALL.iter().position(|t| t == load_type);
                 let load_type = cx.new(|cx| {
                     SelectState::new(
@@ -281,7 +309,8 @@ impl LoadPanel {
                     name,
                     load_type,
                     self_weight,
-                    _subscriptions: vec![s1, s2, s3],
+                    mass,
+                    _subscriptions: vec![s1, s2, s3, s4],
                 }
             })
             .collect();
@@ -380,6 +409,34 @@ impl LoadPanel {
         }
     }
 
+    /// Reads a case's mass cell: a blank leaves the case out of the mass source.
+    fn commit_mass(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(row) = self.cases.iter().find(|r| r.id == id) else {
+            return;
+        };
+        let text = row.mass.read(cx).value();
+        let multiplier = match text.trim() {
+            "" => None,
+            text => match parse_num("Mass", text) {
+                Ok(f) => Some(f),
+                Err(e) => return self.error(e, window, cx),
+            },
+        };
+        let current = &self.document.read(cx).model().mass_source;
+        let mass_source = with_mass(current, id, multiplier);
+        if mass_source != *current {
+            self.apply(Command::SetMassSource { mass_source }, window, cx);
+        }
+    }
+
+    fn set_element_mass(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let mass_source = MassSource {
+            element_mass: on,
+            ..self.document.read(cx).model().mass_source.clone()
+        };
+        self.apply(Command::SetMassSource { mass_source }, window, cx);
+    }
+
     /// Reads a combination's row: a blank factor leaves the case out.
     fn commit_combo(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(row) = self.combos.iter().find(|r| r.id == id) else {
@@ -431,9 +488,9 @@ impl LoadPanel {
         self.apply(Command::AddLoadCase { id, load_case }, window, cx);
     }
 
-    /// Removes a case, dropping it from every combination first. A
-    /// combination with no other term goes too, since the solver rejects an
-    /// empty one.
+    /// Removes a case, dropping it from every combination and the mass
+    /// source first. A combination with no other term goes too, since the
+    /// solver rejects an empty one.
     fn remove_case(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         let commands = {
             let model = self.document.read(cx).model();
@@ -454,6 +511,11 @@ impl LoadPanel {
                     }
                 })
                 .collect();
+            if model.mass_source.multiplier(id).is_some() {
+                commands.push(Command::SetMassSource {
+                    mass_source: with_mass(&model.mass_source, id, None),
+                });
+            }
             commands.push(Command::RemoveLoadCase { id });
             commands
         };
@@ -495,6 +557,7 @@ impl LoadPanel {
             .child(TableHead::new().child("Name"))
             .child(TableHead::new().child("Type"))
             .child(TableHead::new().child("Self weight (x, y, z)"))
+            .child(TableHead::new().child("Mass ×"))
             .child(TableHead::new().child(""));
         let rows = self.cases.iter().enumerate().map(|(ix, row)| {
             let id = row.id;
@@ -502,6 +565,7 @@ impl LoadPanel {
                 .child(TableCell::new().child(Input::new(&row.name).small()))
                 .child(TableCell::new().child(Select::new(&row.load_type).small()))
                 .child(TableCell::new().child(Input::new(&row.self_weight).small()))
+                .child(TableCell::new().child(Input::new(&row.mass).small()))
                 .child(
                     TableCell::new().child(
                         Button::new(("remove-case", ix))
@@ -574,7 +638,19 @@ impl Render for LoadPanel {
             Section::Cases => v_flex()
                 .gap_2()
                 .child(heading("Name, ASCE 7 load type, and self-weight multipliers per axis."))
+                .child(heading(
+                    "Mass × makes the case's downward load modal mass, divided by g: 1 for superimposed dead, 0.25 for storage live. Blank for none.",
+                ))
                 .child(self.render_cases(cx))
+                .child(
+                    Checkbox::new("element-mass")
+                        .small()
+                        .label("Members' own mass from material density is modal mass")
+                        .checked(self.element_mass)
+                        .on_change(cx.listener(|this, value: &bool, window, cx| {
+                            this.set_element_mass(*value, window, cx)
+                        })),
+                )
                 .child(
                     h_flex()
                         .gap_2()
@@ -614,9 +690,9 @@ impl Render for LoadPanel {
 #[cfg(test)]
 mod tests {
     // Named imports: the gpui glob carries its own `test` attribute macro.
-    use super::{aggregated, fmt_vec3, parse_vec3, type_label};
+    use super::{aggregated, fmt_vec3, parse_vec3, type_label, with_mass};
     use crate::text::{DEFAULT_PRECISION, TestPrecision};
-    use oa_model::{EntityId, LoadType};
+    use oa_model::{EntityId, LoadType, MassSource};
     use std::collections::BTreeMap;
 
     #[test]
@@ -635,6 +711,24 @@ mod tests {
         let sum = aggregated(&[(a, 0.6), (b, 1.5), (a, 0.4)]);
         assert_eq!(sum, BTreeMap::from([(a, 1.0), (b, 1.5)]));
         assert_eq!(aggregated(&[(a, 1.0)]), aggregated(&[(a, 0.5), (a, 0.5)]));
+    }
+
+    #[test]
+    fn mass_cells_set_replace_and_drop_cases_in_place() {
+        let (a, b) = (EntityId(1), EntityId(2));
+        let source = MassSource {
+            element_mass: false,
+            cases: vec![(a, 1.0)],
+        };
+        let added = with_mass(&source, b, Some(0.25));
+        assert_eq!(added.cases, vec![(a, 1.0), (b, 0.25)]);
+        assert!(!added.element_mass);
+        assert_eq!(
+            with_mass(&added, a, Some(0.5)).cases,
+            vec![(a, 0.5), (b, 0.25)]
+        );
+        assert_eq!(with_mass(&added, a, None).cases, vec![(b, 0.25)]);
+        assert_eq!(with_mass(&source, b, None), source);
     }
 
     #[test]

@@ -257,6 +257,18 @@ Decisions made during implementation:
   member has full stiffness and first-edge axes. The GUI edits them per
   member, picks a shell's local x from its first edge or a global axis, and
   assigns ACI 318 presets to a selection.
+- **The mass source is a model setting, not an entity.** `Model::mass_source`
+  holds `element_mass` and a list of (load case, multiplier), and
+  `SetMassSource` replaces it whole, returning the old one as its inverse.
+  The command refuses a missing or non-load-case id, a repeated case, a
+  multiplier that is not positive and finite, and a case with self-weight
+  while element mass is on; self-weight added to a source case later is
+  caught at compile. A load case in the source cannot be removed, like one
+  a combination references. The file format went to version 8; a version 7
+  document has the default source, element mass only. The GUI's load cases
+  table has a "Mass ×" column, blank for a case that is not mass, and a
+  checkbox for element mass; removing a case there takes it out of the
+  source in the same undo step, as it does from combinations.
 
 ## Phases
 

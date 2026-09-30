@@ -427,3 +427,57 @@ fn analyze_takes_a_service_stiffness_factor() {
     assert_eq!(service["cracked_stiffness_factor"], json!(1.4));
     assert!((cracked / drift(&s) - 1.4).abs() < 1e-9);
 }
+
+#[test]
+fn mass_source_turns_gravity_load_into_modal_mass() {
+    let mut s = Session::default();
+    s.new_model("mass").unwrap();
+    let steel = s.add_material_from_library("A992", "steel").unwrap();
+    let base = s.find(EntityKind::Level, "Base").unwrap();
+    let [section, a, b, column, sdl] = <[_; 5]>::try_from(s.next_ids(5)).unwrap();
+    s.apply(vec![
+        cmd(json!({"command": "add_section", "id": section, "section":
+            {"name": "col", "area": 20, "iy": 500, "iz": 500, "torsion": 5}})),
+        cmd(
+            json!({"command": "add_node", "id": a, "node": {"name": "A", "level": base,
+            "position": [0, 0, 0], "restrained": [true, true, true, true, true, true]}}),
+        ),
+        cmd(
+            json!({"command": "add_node", "id": b, "node": {"name": "B", "level": base,
+            "position": [0, 0, 12]}}),
+        ),
+        cmd(
+            json!({"command": "add_frame", "id": column, "frame": {"name": "C1", "nodes": [a, b],
+            "material": steel, "section": section}}),
+        ),
+        cmd(
+            json!({"command": "add_load_case", "id": sdl, "load_case": {"name": "SDL",
+            "load_type": "dead", "nodal": [{"node": b, "force": [0, 0, -40]}]}}),
+        ),
+    ])
+    .unwrap();
+    let tip = |s: &mut Session| s.modal(1).unwrap()["total_free_mass"][0].as_f64().unwrap();
+    let own = tip(&mut s);
+    assert_eq!(
+        s.describe()["mass_source"],
+        json!({"element_mass": true, "cases": []})
+    );
+
+    s.apply(vec![cmd(
+        json!({"command": "set_mass_source", "mass_source":
+        {"element_mass": true, "cases": [[sdl, 0.5]]}}),
+    )])
+    .unwrap();
+    assert_eq!(
+        s.describe()["mass_source"]["cases"],
+        json!([{"id": sdl, "name": "SDL", "multiplier": 0.5}])
+    );
+    // Half of 40 kip over g in ft/s², in kip·s²/ft.
+    let g = s.describe()["gravity"].as_f64().unwrap();
+    assert!((tip(&mut s) - own - 0.5 * 40.0 / g).abs() < 1e-9);
+    let err = s
+        .apply(vec![cmd(json!({"command": "remove_load_case", "id": sdl}))])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("mass source"), "{err}");
+}

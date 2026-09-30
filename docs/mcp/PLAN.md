@@ -43,10 +43,14 @@ generated combinations into commands moves from the dialog into
 
 ## 3. Modal and response spectrum
 
-Mass is the frames' and shells' own mass from material density, lumped to
-their nodes, plus any nodal `mass`. Superimposed dead load in a load case is
-not mass. The tool descriptions say so; otherwise an agent that models
-floor weight as loads will read periods that are far too short.
+Mass comes from the model's mass source: nodal `mass`, the frames' and
+shells' own mass from material density unless `element_mass` is off, and the
+downward load of each load case added with `set_mass_source`, divided by g
+and times its multiplier. A load case outside the source is not mass. The
+tool descriptions say so and `describe_model` shows the source; otherwise an
+agent that models floor weight as loads will read periods that are far too
+short. The command reference gives the ASCE 7 12.7.2 multipliers and says
+why a case with self-weight is refused while element mass is on.
 
 - `modal(modes = 6)` returns, per mode, the period, frequency, and mass
   ratio in X, Y, Z, then the cumulative ratios, the total free mass, the

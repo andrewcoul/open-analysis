@@ -90,6 +90,8 @@ pub struct Model {
     pub groups: BTreeMap<EntityId, Group>,
     #[serde(default)]
     pub underlays: BTreeMap<EntityId, Underlay>,
+    #[serde(default, skip_serializing_if = "MassSource::is_default")]
+    pub mass_source: MassSource,
 }
 /// A new model starts with one level, `Base` at elevation zero, so there is
 /// always a datum to bind nodes to.
@@ -113,6 +115,7 @@ impl Default for Model {
             combinations: BTreeMap::new(),
             groups: BTreeMap::new(),
             underlays: BTreeMap::new(),
+            mass_source: MassSource::default(),
         }
     }
 }
@@ -533,6 +536,15 @@ impl Model {
                 terms: c.terms.iter().map(|(id, f)| (cases[id.0], *f)).collect(),
             });
         }
+        m.mass_source = MassSource {
+            element_mass: solver.mass_source.element_mass,
+            cases: solver
+                .mass_source
+                .cases
+                .iter()
+                .map(|(id, f)| (cases[id.0], *f))
+                .collect(),
+        };
         m
     }
 }

@@ -164,6 +164,46 @@ impl FrameElement {
             }
         }
     }
+    /// The load's gravity (-Z) resultant split statically between the two
+    /// ends, as a simply supported span would carry it. Moments carry none.
+    pub fn gravity_at_ends(&self, load: &MemberLoad) -> [f64; 2] {
+        let down = |axes: &Axes, v: Vector3<f64>| match axes {
+            Axes::Global => -v.z,
+            Axes::Local => -self.r.column(2).dot(&v),
+        };
+        let split = |x: f64, w: f64| [w * (1.0 - x / self.length), w * x / self.length];
+        match load {
+            MemberLoad::Point {
+                position,
+                force,
+                axes,
+                ..
+            } => split(
+                position.si(),
+                down(axes, Vector3::from(force.map(|v| v.si()))),
+            ),
+            MemberLoad::Distributed {
+                start,
+                end,
+                start_load,
+                end_load,
+                axes,
+                ..
+            } => {
+                let (a, b) = (start.si(), end.si());
+                let q0 = down(axes, Vector3::from(start_load.map(|v| v.si())));
+                let q1 = down(axes, Vector3::from(end_load.map(|v| v.si())));
+                let mut ends = [0.0; 2];
+                for (xi, w) in GAUSS3 {
+                    let t = (xi + 1.0) / 2.0;
+                    let [i, j] = split(a + t * (b - a), (q0 + (q1 - q0) * t) * w * (b - a) / 2.0);
+                    ends[0] += i;
+                    ends[1] += j;
+                }
+                ends
+            }
+        }
+    }
     fn load_at(&self, x: f64, f: Vector3<f64>, m: Vector3<f64>) -> V12 {
         let t = x / self.length;
         let mut p = V12::zeros();

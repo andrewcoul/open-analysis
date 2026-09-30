@@ -400,6 +400,34 @@ pub struct LoadCombination {
     pub terms: Vec<(LoadCaseId, f64)>,
 }
 
+/// Where modal and spectrum analysis take mass from, as the mass source of
+/// ETABS and SAP2000. Nodal mass always counts. `element_mass` adds the
+/// frames' and shells' own mass from material density. Each case in `cases`
+/// adds its gravity load, the -Z component, divided by g and scaled by the
+/// multiplier: superimposed dead load at 1 and storage live load at 0.25 for
+/// ASCE 7 12.7.2, for example. That mass is lumped to nodes as the members'
+/// own mass is, a member load statically to its two ends and a surface load
+/// by tributary area, and acts in X, Y and Z.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MassSource {
+    pub element_mass: bool,
+    pub cases: Vec<(LoadCaseId, f64)>,
+}
+impl Default for MassSource {
+    fn default() -> Self {
+        Self {
+            element_mass: true,
+            cases: vec![],
+        }
+    }
+}
+impl MassSource {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 fn schema_version() -> u32 {
     1
 }
@@ -430,6 +458,8 @@ pub struct Model {
     pub load_cases: Vec<LoadCase>,
     #[serde(default)]
     pub combinations: Vec<LoadCombination>,
+    #[serde(default, skip_serializing_if = "MassSource::is_default")]
+    pub mass_source: MassSource,
 }
 impl Default for Model {
     fn default() -> Self {
@@ -444,6 +474,7 @@ impl Default for Model {
             diaphragms: vec![],
             load_cases: vec![],
             combinations: vec![],
+            mass_source: MassSource::default(),
         }
     }
 }
@@ -775,6 +806,29 @@ impl Model {
                     .any(|(id, f)| id.0 >= self.load_cases.len() || !f.is_finite())
             {
                 return fail(format!("invalid combination {:?}", c.name));
+            }
+        }
+        let mut seen = vec![false; self.load_cases.len()];
+        for &(id, multiplier) in &self.mass_source.cases {
+            if id.0 >= self.load_cases.len() || std::mem::replace(&mut seen[id.0], true) {
+                return fail(format!(
+                    "mass source: load case {} is missing or listed twice",
+                    id.0
+                ));
+            }
+            if !multiplier.is_finite() || multiplier <= 0.0 {
+                return fail(format!(
+                    "mass source: multiplier on load case {} must be positive and finite",
+                    id.0
+                ));
+            }
+            // Self-weight is the element mass under gravity, so both at once
+            // would count it twice.
+            if self.mass_source.element_mass && self.load_cases[id.0].self_weight[2] != 0.0 {
+                return fail(format!(
+                    "mass source: load case {:?} carries self-weight, which element mass already counts; turn element mass off or use a case without self-weight",
+                    self.load_cases[id.0].name
+                ));
             }
         }
         Ok(())

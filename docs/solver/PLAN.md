@@ -296,6 +296,61 @@ Decisions on what was left out:
 - **Bending and transverse shear stay isotropic.** ACI gives one factor
   for a slab's bending, so there is no m11/m22 or v13/v23 split.
 
+### Mass source (added 2026-09-30)
+
+Modal and spectrum mass used to be the members' own mass from density plus
+node mass, so a floor's superimposed dead load, partitions and storage live
+load, all part of the ASCE 7 12.7.2 effective seismic weight, were missing
+and periods came out too short. `Model::mass_source` now says where mass
+comes from, as the mass source of ETABS and SAP2000 does:
+
+- **Node mass** always counts. It is mass the user assigned explicitly.
+- **`element_mass`** (default true) adds the frames' and shells' own mass
+  from material density, lumped as before.
+- **`cases`**, each a load case and a multiplier, add that case's gravity
+  load divided by g. Only the global −Z component counts, as in CSI's
+  programs; horizontal forces and all moments carry no mass. The mass goes
+  equally to X, Y and Z translation, with no rotational inertia. A nodal
+  force goes to its node. A member load is split statically between the two
+  ends, as a simply supported span carries it, which is how frame self-mass
+  is lumped too; local-axis loads are rotated to global first. A surface
+  pressure goes to the corners by tributary area, the integral of each
+  corner's shape function, which is also how shell self-mass is lumped. A
+  case's self-weight multiplier counts too: −Z times the element mass.
+
+Two choices differ from CSI:
+
+- **Self-weight is not counted twice.** CSI adds a source pattern's
+  self-weight on top of element self mass and only warns. Here a source
+  case with a Z self-weight factor is refused while `element_mass` is on;
+  turn element mass off to take member mass from a dead case's self-weight
+  instead. The two give the same mass.
+- **Negative mass is refused.** ETABS sets a joint's net negative mass to
+  zero and SAP2000 zeroes it with a warning. Here the analysis fails and
+  names the node: an upward load in a mass source case is a modelling
+  mistake, and a silently clipped mass would hide it.
+
+A multiplier must be positive and finite, and a case may be listed once.
+The default source is left out of the JSON, so existing models and their
+content hashes are unchanged. Tests: `crates/oa-core/tests/mass_source.rs`
+checks a cantilever's tip mass and period against hand calculations for a
+nodal load, a point load and a partial trapezoid in global axes, a load in
+rolled local axes, a surface load on a plate facing up and facing down,
+self-weight as a source against element mass, the validation errors, and a
+spectrum base shear.
+
+Left out:
+
+- **One source per model.** CSI allows several, picked by nonlinear and
+  time-history cases; this solver has neither yet.
+- **No lateral-only or vertical-only mass, and no lumping to story levels.**
+  Mass acts in Z as element mass always has, so a modal run can spend modes
+  on vertical beam and slab vibration before it reaches the lateral ones.
+  ETABS's lateral-mass option avoids that and is worth adding with the
+  ASCE 7 seismic load cases.
+- **No mass or weight modifiers.** They matter once slab area objects make a
+  slab and its supporting beam overlap.
+
 ### Equilibrium check and iterative refinement (revised 2026-09-14)
 
 The linear solve originally did one step of iterative refinement and then

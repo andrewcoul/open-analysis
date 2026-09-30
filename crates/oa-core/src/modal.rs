@@ -561,7 +561,7 @@ fn modal_system(model: &Model, prep: &Prepared) -> Result<(SparseSystem, Vec<f64
         ));
     }
     let system = prep.assemble(model, &prep.elastic_states()?)?;
-    let mass = prep.mass(model);
+    let mass = prep.mass(model)?;
     for (d, &m) in mass.iter().enumerate() {
         if m > 0.0 && !system.is_restrained(d) && !system.is_active(d) {
             return Err(Error::Unstable(format!(

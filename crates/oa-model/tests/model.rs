@@ -1696,3 +1696,123 @@ fn shell_local_axes_and_modifiers_reach_the_solver() {
         problems[0]
     );
 }
+
+#[test]
+fn format_v8_fixture_loads_with_mass_source() {
+    let model = from_json(include_str!("fixtures/format_v8.json")).unwrap();
+    assert_eq!(
+        model.mass_source,
+        MassSource {
+            element_mass: true,
+            cases: vec![(EntityId(6), 1.0), (EntityId(11), 0.25)],
+        }
+    );
+    assert_eq!(from_json(&to_json(&model)).unwrap(), model);
+    // Cases reach the solver by table position. The tip holds its own
+    // 100 kg, half the beam's, all of the superimposed dead load and a
+    // quarter of the storage live load, each 9806.65 N, or 1000 kg.
+    let compiled = compile(&model).unwrap();
+    assert_eq!(
+        compiled.solver.mass_source.cases,
+        vec![
+            (oa_core::LoadCaseId(0), 1.0),
+            (oa_core::LoadCaseId(1), 0.25)
+        ]
+    );
+    let modal = oa_core::analyze_modal(&compiled.solver, &Default::default()).unwrap();
+    let tip = 100.0 + 7850.0 * 0.01 * 3.0 / 2.0 + 1000.0 + 250.0;
+    assert!((modal.total_free_mass[0] / tip - 1.0).abs() < 1e-12);
+    // A version 7 document keeps the default source, written as before.
+    let older = from_json(include_str!("fixtures/format_v7.json")).unwrap();
+    assert!(older.mass_source.is_default());
+    assert!(!to_json(&older).contains("mass_source"));
+}
+
+#[test]
+fn mass_source_is_validated_and_undone() {
+    let mut editor = Editor::new(Model::default());
+    portal(&mut editor);
+    let wind = editor.model.find::<LoadCase>("wind").unwrap();
+    let frame = editor.model.find::<Frame>("B1").unwrap();
+    let sdl = editor.model.allocate();
+    editor
+        .apply(Command::AddLoadCase {
+            id: sdl,
+            load_case: LoadCase::new("SDL").with_type(LoadType::Dead),
+        })
+        .unwrap();
+    let dead = editor.model.allocate();
+    editor
+        .apply(Command::AddLoadCase {
+            id: dead,
+            load_case: LoadCase {
+                self_weight: [0.0, 0.0, -1.0],
+                ..LoadCase::new("D")
+            },
+        })
+        .unwrap();
+    let set = |element_mass: bool, cases: Vec<(EntityId, f64)>| Command::SetMassSource {
+        mass_source: MassSource {
+            element_mass,
+            cases,
+        },
+    };
+    fn refused(model: &Model, command: Command) -> String {
+        let mut probe = model.clone();
+        command.apply(&mut probe).unwrap_err().to_string()
+    }
+    let m = &editor.model;
+    let missing = EntityId(9_999);
+    assert!(refused(m, set(true, vec![(missing, 1.0)])).contains("missing load case"));
+    assert!(refused(m, set(true, vec![(frame, 1.0)])).contains("not a load case"));
+    assert!(refused(m, set(true, vec![(sdl, 1.0), (sdl, 1.0)])).contains("twice"));
+    for bad in [0.0, -0.25, f64::NAN] {
+        assert!(refused(m, set(true, vec![(sdl, bad)])).contains("positive and finite"));
+    }
+    assert!(refused(m, set(true, vec![(dead, 1.0)])).contains("self-weight"));
+
+    let source = MassSource {
+        element_mass: false,
+        cases: vec![(dead, 1.0), (sdl, 1.0)],
+    };
+    editor
+        .apply(Command::SetMassSource {
+            mass_source: source.clone(),
+        })
+        .unwrap();
+    assert_eq!(editor.model.mass_source, source);
+    // A case in the source cannot be removed; one outside it can.
+    let err = refused(&editor.model, Command::RemoveLoadCase { id: sdl });
+    assert!(err.contains("mass source"), "{err}");
+    let mut probe = editor.model.clone();
+    Command::RemoveCombination {
+        id: probe.find::<Combination>("1.0W").unwrap(),
+    }
+    .apply(&mut probe)
+    .unwrap();
+    Command::RemoveLoadCase { id: wind }
+        .apply(&mut probe)
+        .unwrap();
+    assert!(editor.undo().unwrap());
+    assert!(editor.model.mass_source.is_default());
+    assert!(editor.redo().unwrap());
+    assert_eq!(editor.model.mass_source, source);
+
+    // Self-weight added to a source case afterwards, with element mass on,
+    // is caught when the model compiles.
+    editor.apply(set(true, vec![(sdl, 1.0)])).unwrap();
+    let mut weighed = editor.model.load_cases[&sdl].clone();
+    weighed.self_weight = [0.0, 0.0, -1.0];
+    editor
+        .apply(Command::UpdateLoadCase {
+            id: sdl,
+            load_case: weighed,
+        })
+        .unwrap();
+    let problems = compile(&editor.model).unwrap_err();
+    assert!(
+        problems[0].message.contains("self-weight"),
+        "{}",
+        problems[0]
+    );
+}

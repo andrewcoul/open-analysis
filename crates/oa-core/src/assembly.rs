@@ -243,7 +243,9 @@ impl Prepared {
         }
         f
     }
-    pub fn mass(&self, model: &Model) -> Vec<f64> {
+    /// Lumped mass from the model's mass source.
+    pub fn mass(&self, model: &Model) -> Result<Vec<f64>> {
+        let source = &model.mass_source;
         let mut mass = vec![0.0; self.ndof];
         for (i, n) in model.nodes.iter().enumerate() {
             for j in 0..3 {
@@ -251,20 +253,67 @@ impl Prepared {
                 mass[6 * i + 3 + j] = n.mass_inertia[j].si();
             }
         }
-        for e in &self.frames {
-            for j in 0..3 {
-                mass[e.dofs[j]] += e.mass / 2.0;
-                mass[e.dofs[6 + j]] += e.mass / 2.0;
+        // Translational mass per node, the same in X, Y and Z.
+        let mut lumped = vec![0.0; model.nodes.len()];
+        if source.element_mass {
+            for e in &self.frames {
+                lumped[e.dofs[0] / 6] += e.mass / 2.0;
+                lumped[e.dofs[6] / 6] += e.mass / 2.0;
             }
-        }
-        for e in &self.shells {
-            for i in 0..4 {
-                for j in 0..3 {
-                    mass[e.dofs[6 * i + j]] += e.nodal_mass[i];
+            for e in &self.shells {
+                for (corner, &m) in e.nodal_mass.iter().enumerate() {
+                    lumped[e.dofs[6 * corner] / 6] += m;
                 }
             }
         }
-        mass
+        let g = model.gravity.si();
+        for &(id, multiplier) in &source.cases {
+            let case = &model.load_cases[id.0];
+            let scale = multiplier / g;
+            for l in &case.nodal {
+                lumped[l.node.0] -= scale * l.force[2].si();
+            }
+            for l in &case.member {
+                let e = &self.frames[l.member().0];
+                let [i, j] = e.gravity_at_ends(l);
+                lumped[e.dofs[0] / 6] += scale * i;
+                lumped[e.dofs[6] / 6] += scale * j;
+            }
+            for l in &case.surface {
+                let e = &self.shells[l.shell.0];
+                // Pressure acts along local +z, whose global Z component is t[(2, 2)].
+                let down = -l.pressure.si() * e.t[(2, 2)];
+                for (corner, &a) in e.nodal_area.iter().enumerate() {
+                    lumped[e.dofs[6 * corner] / 6] += scale * down * a;
+                }
+            }
+            // Self-weight is the element mass times g times the -Z factor.
+            let down = -multiplier * case.self_weight[2];
+            if down != 0.0 {
+                for e in &self.frames {
+                    lumped[e.dofs[0] / 6] += down * e.mass / 2.0;
+                    lumped[e.dofs[6] / 6] += down * e.mass / 2.0;
+                }
+                for e in &self.shells {
+                    for (corner, &m) in e.nodal_mass.iter().enumerate() {
+                        lumped[e.dofs[6 * corner] / 6] += down * m;
+                    }
+                }
+            }
+        }
+        for (i, &m) in lumped.iter().enumerate() {
+            for j in 0..3 {
+                mass[6 * i + j] += m;
+            }
+        }
+        if let Some(d) = mass.iter().position(|m| *m < 0.0) {
+            return Err(Error::Model(format!(
+                "mass source gives node {} negative mass in DOF {}: its load cases push it upward more than its mass weighs",
+                d / 6,
+                d % 6
+            )));
+        }
+        Ok(mass)
     }
 }
 

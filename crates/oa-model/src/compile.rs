@@ -200,6 +200,18 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
     check_references::<Diaphragm>(model, &mut problems);
     check_references::<LoadCase>(model, &mut problems);
     check_references::<Combination>(model, &mut problems);
+    for (case, _) in &model.mass_source.cases {
+        if !model.load_cases.contains_key(case) {
+            problems.push(Problem {
+                entity: None,
+                name: None,
+                message: format!(
+                    "mass source references {}; a load case was expected",
+                    model.describe(*case)
+                ),
+            });
+        }
+    }
     for id in model.duplicate_ids() {
         problems.push(Problem {
             entity: Some(id),
@@ -388,6 +400,15 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
                 .collect(),
         });
     }
+    solver.mass_source = oa_core::MassSource {
+        element_mass: model.mass_source.element_mass,
+        cases: model
+            .mass_source
+            .cases
+            .iter()
+            .map(|(case, f)| (oa_core::LoadCaseId(mapping.load_case_index[case]), *f))
+            .collect(),
+    };
     if let Err(e) = solver.validate() {
         return Err(vec![Problem {
             entity: None,

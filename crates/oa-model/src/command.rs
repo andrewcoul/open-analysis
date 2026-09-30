@@ -181,6 +181,12 @@ pub enum Command {
     SetMetadata {
         metadata: Metadata,
     },
+    /// Replaces the mass source. Its cases must be load cases, each listed
+    /// once with a positive multiplier, and none may carry self-weight while
+    /// element mass is on, which would count the members' mass twice.
+    SetMassSource {
+        mass_source: MassSource,
+    },
     /// Applied in order; rolled back completely if any command fails.
     Batch {
         commands: Vec<Command>,
@@ -362,6 +368,42 @@ fn check_underlay(underlay: &Underlay) -> Result<()> {
     }
     Ok(())
 }
+fn check_mass_source(model: &Model, source: &MassSource) -> Result<()> {
+    for (i, &(case, multiplier)) in source.cases.iter().enumerate() {
+        let Some(load_case) = model.load_cases.get(&case) else {
+            return Err(match model.kind_of(case) {
+                Some(actual) => ModelError::WrongKind {
+                    entity: model.describe(case),
+                    expected: EntityKind::LoadCase,
+                    actual,
+                },
+                None => ModelError::Dangling {
+                    entity: "mass source".into(),
+                    target: case,
+                    kind: EntityKind::LoadCase,
+                },
+            });
+        };
+        if source.cases[..i].iter().any(|(c, _)| *c == case) {
+            return Err(ModelError::Invalid(format!(
+                "mass source lists {} twice",
+                model.describe(case)
+            )));
+        }
+        if !(multiplier.is_finite() && multiplier > 0.0) {
+            return Err(ModelError::Invalid(
+                "mass source multipliers must be positive and finite".into(),
+            ));
+        }
+        if source.element_mass && load_case.self_weight[2] != 0.0 {
+            return Err(ModelError::Invalid(format!(
+                "{} carries self-weight, which element mass already counts; turn element mass off or use a case without self-weight",
+                model.describe(case)
+            )));
+        }
+    }
+    Ok(())
+}
 fn check_group_members<T: Entity>(model: &Model, e: &T) -> Result<()> {
     let json = serde_json::to_value(e).map_err(|x| ModelError::Invalid(x.to_string()))?;
     if let Some(members) = json.get("members").and_then(|m| m.as_array()) {
@@ -531,6 +573,12 @@ impl Command {
                 load_case: update(model, id, load_case)?,
             },
             RemoveLoadCase { id } => {
+                if model.mass_source.multiplier(id).is_some() {
+                    return Err(ModelError::Referenced {
+                        entity: model.describe(id),
+                        by: vec!["the mass source".into()],
+                    });
+                }
                 let (entity, groups) = remove(model, id)?;
                 removal_inverse(
                     AddLoadCase {
@@ -604,6 +652,12 @@ impl Command {
             SetMetadata { metadata } => SetMetadata {
                 metadata: std::mem::replace(&mut model.metadata, metadata),
             },
+            SetMassSource { mass_source } => {
+                check_mass_source(model, &mass_source)?;
+                SetMassSource {
+                    mass_source: std::mem::replace(&mut model.mass_source, mass_source),
+                }
+            }
             Batch { commands } => {
                 let mut inverses = vec![];
                 for (index, command) in commands.into_iter().enumerate() {

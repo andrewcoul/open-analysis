@@ -405,6 +405,12 @@ impl Session {
             "path": self.path,
             "units": {"system": UNITS.name(), "symbols": symbols},
             "gravity": display(Role::Acceleration, m.gravity.si()),
+            "mass_source": {
+                "element_mass": m.mass_source.element_mass,
+                "cases": m.mass_source.cases.iter().map(|(id, f)| json!({
+                    "id": id, "name": m.name_of(*id), "multiplier": f,
+                })).collect::<Vec<_>>(),
+            },
             "counts": {
                 "levels": m.levels.len(),
                 "nodes": m.nodes.len(), "materials": m.materials.len(), "sections": m.sections.len(),
@@ -1155,8 +1161,14 @@ add_load_case {"command":"add_load_case","id":8,"load_case":{"name":"wind","load
               load_type is what generate_combinations matches on: dead, live, roof_live, snow, rain, wind, earthquake,
               earth_pressure, fluid, self_straining, flood, ice, wind_on_ice, or other (the default, never generated).
               self_weight is a multiple of g per axis. surface pressure acts along the shell normal, which follows
-              its nodes by the right-hand rule. Loads are not mass: modal mass is the members' own mass from
-              material density plus node mass.
+              its nodes by the right-hand rule. Loads are not mass unless the case is in the mass source.
+set_mass_source {"command":"set_mass_source","mass_source":{"element_mass":true,"cases":[[8,1.0],[13,0.25]]}}
+              what modal and response_spectrum take as mass. Node mass always counts; element_mass (default true)
+              adds the members' own mass from density; each [case id, multiplier] adds that case's downward (-Z)
+              load divided by g, in X, Y and Z. ASCE 7 12.7.2: superimposed dead and partitions at 1.0, storage
+              live at 0.25. A case with self-weight is refused while element_mass is true (it would count twice);
+              set element_mass false to take member mass from a dead case's self-weight instead. A case in the
+              source cannot be removed until it is taken out. describe_model shows the current source.
 add_combination {"command":"add_combination","id":9,"combination":{"name":"1.2D+1.6W","terms":[[8,1.6]]}}
 add_group     {"command":"add_group","id":10,"group":{"name":"roof","members":[5,6]}}
 add_underlay  {"command":"add_underlay","id":12,"underlay":{"name":"grid","level":11,"origin":[0,0],"segments":[[[0,0],[20,0]],[[0,0],[0,20]]]}}

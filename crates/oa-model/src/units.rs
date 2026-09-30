@@ -393,6 +393,7 @@ impl MapQuantities for Command {
             | Command::AddGroup { .. }
             | Command::UpdateGroup { .. }
             | Command::SetMetadata { .. }
+            | Command::SetMassSource { .. }
             | Command::RemoveLevel { .. }
             | Command::RemoveNode { .. }
             | Command::RemoveMaterial { .. }
