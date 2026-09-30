@@ -202,24 +202,26 @@ impl FrameModifiers {
     }
 }
 
-/// Stiffness modifiers for one shell, in its local axes. `membrane` scales
-/// the in-plane normal stiffness (f11 and f22 in ETABS), `membrane_shear` the
-/// in-plane shear stiffness (f12), and `bending` the plate bending stiffness
-/// (m11, m22 and m12). Transverse shear, mass and self-weight are unchanged.
-/// With `membrane` and `membrane_shear` equal the element stays isotropic in
-/// its plane; otherwise the result depends on the local axes, which for a
-/// rectangle lie along its sides.
+/// Stiffness modifiers for one shell, in its local axes. `membrane_x` and
+/// `membrane_y` scale the in-plane normal stiffness along local x and y (f11
+/// and f22 in ETABS), `membrane_shear` the in-plane shear stiffness (f12),
+/// and `bending` the plate bending stiffness (m11, m22 and m12). The
+/// plane-stress matrix is scaled as S D S with S = diag(√fx, √fy, √f12), so
+/// the coupling term takes √(fx fy) and the matrix stays positive definite.
+/// Transverse shear, mass and self-weight are unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ShellModifiers {
-    pub membrane: f64,
+    pub membrane_x: f64,
+    pub membrane_y: f64,
     pub membrane_shear: f64,
     pub bending: f64,
 }
 impl Default for ShellModifiers {
     fn default() -> Self {
         Self {
-            membrane: 1.0,
+            membrane_x: 1.0,
+            membrane_y: 1.0,
             membrane_shear: 1.0,
             bending: 1.0,
         }
@@ -229,8 +231,13 @@ impl ShellModifiers {
     pub fn is_unmodified(&self) -> bool {
         *self == Self::default()
     }
-    pub fn values(&self) -> [f64; 3] {
-        [self.membrane, self.membrane_shear, self.bending]
+    pub fn values(&self) -> [f64; 4] {
+        [
+            self.membrane_x,
+            self.membrane_y,
+            self.membrane_shear,
+            self.bending,
+        ]
     }
 }
 
@@ -256,6 +263,12 @@ pub struct Shell {
     pub formulation: ShellFormulation,
     #[serde(default = "default_drilling")]
     pub drilling_ratio: f64,
+    /// Reference for local +x, projected into the shell's plane; local y is
+    /// z × x. None puts local x along the edge from the first corner to the
+    /// second. Modifiers act, and stresses, moments and end forces are
+    /// reported, in these axes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_x: Option<[f64; 3]>,
     #[serde(default, skip_serializing_if = "ShellModifiers::is_unmodified")]
     pub modifiers: ShellModifiers,
 }
@@ -466,6 +479,29 @@ impl Model {
         self.load_cases.push(v);
         id
     }
+    /// This model with every flexural stiffness modifier below 1 multiplied
+    /// by `factor` and capped at 1: `iy` and `iz` on frames, `membrane_x`,
+    /// `membrane_y` and `bending` on shells. Unmodified members keep their
+    /// gross stiffness. ACI 318 6.6.3.2.2 allows a factor of 1.4 for
+    /// deflections under service loads, such as drift under wind.
+    pub fn with_cracked_stiffness(&self, factor: f64) -> Model {
+        let relax = |m: &mut f64| {
+            if *m < 1.0 {
+                *m = (*m * factor).min(1.0);
+            }
+        };
+        let mut model = self.clone();
+        for f in &mut model.frames {
+            relax(&mut f.modifiers.iy);
+            relax(&mut f.modifiers.iz);
+        }
+        for s in &mut model.shells {
+            relax(&mut s.modifiers.membrane_x);
+            relax(&mut s.modifiers.membrane_y);
+            relax(&mut s.modifiers.bending);
+        }
+        model
+    }
     /// Stable content hash: FNV-1a over the canonical JSON. Detects stale
     /// results; not for security.
     pub fn content_hash(&self) -> String {
@@ -621,6 +657,9 @@ impl Model {
                 return fail(format!(
                     "shell {i}: stiffness modifiers must be positive and finite"
                 ));
+            }
+            if s.local_x.is_some_and(|v| v.iter().any(|x| !x.is_finite())) {
+                return fail(format!("shell {i}: nonfinite local_x"));
             }
         }
         let mut slaves = vec![false; self.nodes.len()];

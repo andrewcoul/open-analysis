@@ -799,6 +799,7 @@ fn compile_reports_element_geometry_problems_by_entity() {
         thickness: Length::from_si(0.1),
         formulation: ShellFormulation::Dkmq,
         drilling_ratio: 1e-3,
+        local_x: None,
         modifiers: ShellModifiers::default(),
     });
     m.insert(LoadCase::new("empty"));
@@ -1627,6 +1628,7 @@ fn stiffness_modifiers_are_validated_and_undone() {
                 thickness: Length::from_si(0.2),
                 formulation: ShellFormulation::Dkmq,
                 drilling_ratio: 1e-3,
+                local_x: None,
                 modifiers: ShellModifiers {
                     bending: bad,
                     ..Default::default()
@@ -1653,4 +1655,44 @@ fn stiffness_modifiers_are_validated_and_undone() {
     assert_eq!(editor.model.frames[&frame], column);
     assert!(editor.undo().unwrap());
     assert!(editor.model.frames[&frame].modifiers.is_unmodified());
+}
+
+#[test]
+fn shell_local_axes_and_modifiers_reach_the_solver() {
+    let mut m = Model::default();
+    let level = m.base_level().unwrap();
+    let mat = m.insert(steel());
+    let nodes = [(0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0)].map(|(x, z)| {
+        let p = [Length::from_si(x), Length::ZERO, Length::from_si(z)];
+        m.insert(Node::fixed(format!("N{x}-{z}"), level, p))
+    });
+    let wall = Shell {
+        name: "W1".into(),
+        nodes,
+        material: mat,
+        thickness: Length::from_si(0.2),
+        formulation: ShellFormulation::Dkmq,
+        drilling_ratio: 1e-3,
+        local_x: Some([0.0, 0.0, 1.0]),
+        modifiers: ShellModifiers {
+            membrane_y: 0.35,
+            ..Default::default()
+        },
+    };
+    let id = m.insert(wall.clone());
+    m.insert(LoadCase::new("empty"));
+    assert_eq!(from_json(&to_json(&m)).unwrap(), m);
+    let solver = &compile(&m).unwrap().solver.shells[0];
+    assert_eq!(solver.local_x, wall.local_x);
+    assert_eq!(solver.modifiers, wall.modifiers);
+
+    // A local x normal to the wall is a compile problem on that shell.
+    m.shells.get_mut(&id).unwrap().local_x = Some([0.0, 1.0, 0.0]);
+    let problems = compile(&m).unwrap_err();
+    assert_eq!(problems[0].entity, Some(id));
+    assert!(
+        problems[0].message.contains("local_x is normal"),
+        "{}",
+        problems[0]
+    );
 }

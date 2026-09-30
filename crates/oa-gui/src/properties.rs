@@ -152,6 +152,13 @@ const FORMULATIONS: [(&str, ShellFormulation); 2] = [
     ("Rectangular", ShellFormulation::Rectangular),
 ];
 const AXES: [(&str, Axis); 3] = [("X", Axis::X), ("Y", Axis::Y), ("Z", Axis::Z)];
+/// A shell's local x reference, projected into its plane.
+const SHELL_LOCAL_X: [(&str, Option<[f64; 3]>); 4] = [
+    ("Along first edge", None),
+    ("Global X", Some([1.0, 0.0, 0.0])),
+    ("Global Y", Some([0.0, 1.0, 0.0])),
+    ("Global Z", Some([0.0, 0.0, 1.0])),
+];
 /// Cracked-section stiffness from ACI 318 Table 6.6.3.1.1(a), assigned to
 /// every selected frame or shell at once. Each preset replaces all of a
 /// member's modifiers.
@@ -172,7 +179,8 @@ const FRAME_PRESETS: [(&str, FrameModifiers); 3] = [
 ];
 const fn cracked_shell(membrane: f64, bending: f64) -> ShellModifiers {
     ShellModifiers {
-        membrane,
+        membrane_x: membrane,
+        membrane_y: membrane,
         membrane_shear: 1.0,
         bending,
     }
@@ -331,15 +339,18 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
                 choice("formulation", "Formulation", labels(&FORMULATIONS), formulation)
                     .span(HALF),
             );
+            let local_x = SHELL_LOCAL_X.iter().position(|(_, x)| *x == e.local_x);
+            f.push(choice("local_x", "Local x", labels(&SHELL_LOCAL_X), local_x).span(HALF));
             let md = &e.modifiers;
             for (key, name, value) in [
-                ("mod_bending", "Bending modifier", md.bending),
-                ("mod_membrane", "Membrane modifier", md.membrane),
+                ("mod_membrane_x", "Membrane x modifier", md.membrane_x),
+                ("mod_membrane_y", "Membrane y modifier", md.membrane_y),
                 (
                     "mod_membrane_shear",
                     "In-plane shear modifier",
                     md.membrane_shear,
                 ),
+                ("mod_bending", "Bending modifier", md.bending),
             ] {
                 f.push(num(key, name, value).span(HALF));
             }
@@ -658,15 +669,18 @@ fn command_for(
                 e.thickness.si(),
             )?);
             e.formulation = v.item("formulation", &FORMULATIONS, e.formulation);
+            // A reference typed in elsewhere shows no choice and is kept.
+            e.local_x = v.item("local_x", &SHELL_LOCAL_X, e.local_x);
             let md = &mut e.modifiers;
             for (key, name, value) in [
-                ("mod_bending", "Bending modifier", &mut md.bending),
-                ("mod_membrane", "Membrane modifier", &mut md.membrane),
+                ("mod_membrane_x", "Membrane x modifier", &mut md.membrane_x),
+                ("mod_membrane_y", "Membrane y modifier", &mut md.membrane_y),
                 (
                     "mod_membrane_shear",
                     "In-plane shear modifier",
                     &mut md.membrane_shear,
                 ),
+                ("mod_bending", "Bending modifier", &mut md.bending),
             ] {
                 *value = v.num(key, name, *value)?;
             }
@@ -2173,6 +2187,7 @@ mod tests {
             thickness: Length::from_inches(8.0),
             formulation: ShellFormulation::Dkmq,
             drilling_ratio: 1e-3,
+            local_x: None,
             modifiers: ShellModifiers::default(),
         });
         (model, frame, shell)
@@ -2216,15 +2231,28 @@ mod tests {
                 ..Default::default()
             }
         );
+        // Membrane y along a local x that runs up the wall.
         let mut v = values_for(&model, shell);
-        v.texts.insert("mod_membrane".into(), "0.7".into());
+        assert_eq!(v.choices["local_x"], Some(0));
+        v.texts.insert("mod_membrane_y".into(), "0.7".into());
+        v.choices.insert("local_x".into(), Some(3));
         let Some(Command::UpdateShell { shell: edited, .. }) =
             command_for(&model, shell, EntityKind::Shell, &v).unwrap()
         else {
             panic!("an edited modifier is a command");
         };
-        assert_eq!(edited.modifiers.membrane, 0.7);
-        assert_eq!(edited.modifiers.bending, 1.0);
+        assert_eq!(edited.modifiers.membrane_y, 0.7);
+        assert_eq!(edited.modifiers.membrane_x, 1.0);
+        assert_eq!(edited.local_x, Some([0.0, 0.0, 1.0]));
+        // A reference the choices do not list is kept rather than reset.
+        let mut custom = model.clone();
+        custom.shells.get_mut(&shell).unwrap().local_x = Some([1.0, 0.0, 1.0]);
+        let v = values_for(&custom, shell);
+        assert_eq!(v.choices["local_x"], None);
+        assert_eq!(
+            command_for(&custom, shell, EntityKind::Shell, &v).unwrap(),
+            None
+        );
         let mut v = values_for(&model, shell);
         v.texts.insert("mod_bending".into(), "cracked".into());
         assert!(command_for(&model, shell, EntityKind::Shell, &v).is_err());
@@ -2259,7 +2287,10 @@ mod tests {
         let [Command::UpdateShell { shell: wall, .. }] = &commands[..] else {
             panic!("one update per shell");
         };
-        assert_eq!(wall.modifiers.membrane, 0.35);
+        assert_eq!(
+            (wall.modifiers.membrane_x, wall.modifiers.membrane_y),
+            (0.35, 0.35)
+        );
         assert_eq!(wall.modifiers.membrane_shear, 1.0);
     }
 }

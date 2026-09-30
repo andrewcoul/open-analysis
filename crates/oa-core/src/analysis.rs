@@ -55,6 +55,11 @@ pub struct StaticOptions {
     /// included. Zero uses the current Rayon pool. Ignored in a serial/WASM build.
     pub threads: usize,
     pub outputs: OutputSelection,
+    /// Multiplies every flexural stiffness modifier below 1, capped at 1, for
+    /// this run only; see [`Model::with_cracked_stiffness`]. 1 analyses the
+    /// model as it is; ACI 318 6.6.3.2.2 allows 1.4 for service-load drift.
+    /// Pass the same relaxed model to `frame_diagram` for this run's results.
+    pub cracked_stiffness_factor: f64,
 }
 impl Default for StaticOptions {
     fn default() -> Self {
@@ -67,6 +72,7 @@ impl Default for StaticOptions {
             max_in_flight: 4,
             threads: 0,
             outputs: OutputSelection::default(),
+            cracked_stiffness_factor: 1.0,
         }
     }
 }
@@ -94,6 +100,19 @@ pub fn analyze_static_into(
             "invalid iteration, tolerance, or batching settings".into(),
         ));
     }
+    let factor = options.cracked_stiffness_factor;
+    if !(factor.is_finite() && factor >= 1.0) {
+        return Err(Error::Request(
+            "cracked_stiffness_factor must be finite and at least 1".into(),
+        ));
+    }
+    let relaxed;
+    let model = if factor == 1.0 {
+        model
+    } else {
+        relaxed = model.with_cracked_stiffness(factor);
+        &relaxed
+    };
     let exec = Exec::new(options.threads)?;
     // Preparation and the shared linear system run inside the selected pool
     // so parallel element loops and faer's kernels honour the thread budget.

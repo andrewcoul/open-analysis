@@ -17,6 +17,8 @@ pub struct FrameResult {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellResult {
+    /// Forces applied to the element at its corners, in the shell's local
+    /// axes (N and N m); see `Shell::local_x`. So are the values below.
     pub local_end_forces: [f64; 24],
     /// [sigma_x, sigma_y, tau_xy] at the element center, Pa.
     pub membrane_stress: [f64; 3],

@@ -243,16 +243,31 @@ SAP2000 do this with property modifiers, and so does this solver.
   The shear parameter φ uses the modified EI and G As. The geometric
   stiffness's torsional term, (Iy + Iz) / A, is a property of the shape and
   keeps the section's values.
-- **Shells** carry `modifiers` with `membrane` (f11 and f22 in ETABS),
-  `membrane_shear` (f12) and `bending` (m11, m22 and m12). The first scales
-  the in-plane normal block of the plane-stress matrix, the second its
-  shear term, and the third the plate bending matrix. DKMQ's shear
-  parameter is 12 D / (Ds L²), so it scales with `bending`; transverse
-  shear rigidity is not modified. ACI walls take `membrane` 0.70 or 0.35,
-  as CSI's guidance applies those factors to f11 and f22. With `membrane` and
-  `membrane_shear` unequal the element is no longer isotropic in its plane,
-  but its response is unchanged by a quarter turn of the local axes, so a
-  rectangle gives the same answer whichever side its local x follows.
+- **Shells** carry `modifiers` with `membrane_x` and `membrane_y` (f11 and
+  f22 in ETABS), `membrane_shear` (f12) and `bending` (m11, m22 and m12),
+  in the shell's local axes. The plane-stress matrix becomes S D S with
+  S = diag(√fx, √fy, √f12), so the coupling term takes √(fx fy) and the
+  matrix stays positive definite; it is then carried from local axes to
+  the element frame as Tεᵀ D Tε. `bending` scales the plate bending matrix,
+  which stays isotropic. DKMQ's shear parameter is 12 D / (Ds L²), so it
+  scales with `bending`; transverse shear rigidity is not modified. ACI
+  walls take 0.70 or 0.35 on both membrane factors, as CSI's guidance
+  applies them to f11 and f22.
+- **Shell local axes.** A shell may give `local_x`, a reference projected
+  into its plane; local y is z × x. Without one, local x runs along the
+  first edge, as before. The element is still built in its edge frame,
+  which the rectangular formulation needs, so the axes change only where
+  the modifiers act and how stresses, moments, transverse shears and
+  corner forces are reported. A reference normal to the shell is an error.
+- **Service stiffness.** `StaticOptions::cracked_stiffness_factor` (default
+  1) multiplies every flexural modifier below 1 for one run, capped at 1:
+  frame `iy` and `iz`, shell `membrane_x`, `membrane_y` and `bending`.
+  ACI 318 6.6.3.2.2 allows 1.4 for service-load deflections such as wind
+  drift, so one model gives both strength and service results. Members
+  without a modifier keep their gross stiffness, and area, torsion, shear
+  and in-plane shear factors are not flexural and stay as given. The
+  factor is stored with the run's options; `frame_diagram` for such a run
+  takes `Model::with_cracked_stiffness(factor)`.
 - **Mass and self-weight** use the unmodified section and thickness.
 - **Results** are the forces in the modified structure; `frame_diagram`
   integrates the modified EI and G As.
@@ -262,8 +277,9 @@ of the JSON when all are 1, so existing models and their content hashes are
 unchanged. Tests: `crates/oa-core/tests/stiffness_modifiers.rs` checks a
 cantilever against the closed forms for each frame modifier, modal
 eigenvalues scaling by the factor with the mass unchanged, self-weight
-reactions, a wall mesh in and out of plane, and a uniaxial membrane
-stretch that the shear factor must not touch.
+reactions, a wall mesh in and out of plane, a uniaxial stretch that only
+the factor along it may touch, local axes that change what is reported
+and nothing else, and the service factor against the relaxed modifiers.
 
 Decisions on what was left out:
 
@@ -274,17 +290,11 @@ Decisions on what was left out:
 - **No mass or weight modifiers yet.** In ETABS they mostly stop mass being
   counted twice where a slab overlaps a beam. They are reconsidered with the
   mass source from load cases, and matter once slab area objects exist.
-- **Separate f11 and f22 wait for shell local axes.** ACI walls take one
-  factor on both, which `membrane` covers. Splitting them needs a way to say
-  which direction is vertical; shell local x follows corner order today. The
-  open detail is how the f11–f22 coupling term scales; √(f11 f22) is the
-  obvious choice.
-- **Service-level stiffness belongs to the analysis, not the model.** ACI
-  318 6.6.3.2.2 allows 1.4 times the cracked stiffness for service drift, so
-  one building needs a strength set and a service set. That is planned as a
-  multiplier on an analysis run that applies only to modifiers below 1,
-  with the drift work in roadmap phase 3, rather than a second copy of the
-  model.
+- **Service stiffness belongs to the analysis, not the model.** A second
+  copy of the model with 1.4 times its modifiers would drift out of step
+  with the first; a factor on the run cannot.
+- **Bending and transverse shear stay isotropic.** ACI gives one factor
+  for a slab's bending, so there is no m11/m22 or v13/v23 split.
 
 ### Equilibrium check and iterative refinement (revised 2026-09-14)
 

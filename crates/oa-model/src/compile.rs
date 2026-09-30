@@ -271,6 +271,7 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
             thickness: s.thickness,
             formulation: s.formulation,
             drilling_ratio: s.drilling_ratio,
+            local_x: s.local_x,
             modifiers: s.modifiers,
         });
     }
@@ -501,6 +502,7 @@ pub fn geometry_problems(model: &Model, nodes: &BTreeSet<EntityId>) -> Vec<Probl
             thickness: s.thickness,
             formulation: s.formulation,
             drilling_ratio: s.drilling_ratio,
+            local_x: s.local_x,
             modifiers: s.modifiers,
         });
         if let Err(e) = solver.validate_shell(0) {

@@ -251,9 +251,12 @@ Decisions made during implementation:
   shell carries `modifiers` (see the solver plan), as ETABS assignments do,
   because cracking follows a member's role: one W or rectangular section
   can be a beam in one place and a column in another. Add and update
-  commands refuse a modifier that is not positive and finite. The file
-  format went to version 7 for them; a version 6 member has full stiffness.
-  The GUI edits them per member and assigns ACI 318 presets to a selection.
+  commands refuse a modifier that is not positive and finite. A shell may
+  also carry `local_x`, the reference its local axes and its f11 and f22
+  factors follow. The file format went to version 7 for both; a version 6
+  member has full stiffness and first-edge axes. The GUI edits them per
+  member, picks a shell's local x from its first edge or a global axis, and
+  assigns ACI 318 presets to a selection.
 
 ## Phases
 

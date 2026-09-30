@@ -746,7 +746,11 @@ impl Session {
             })
             .collect();
         self.store = Some(store);
-        Ok(json!({"combinations": combos, "store": store_path}))
+        Ok(json!({
+            "combinations": combos,
+            "store": store_path,
+            "cracked_stiffness_factor": options.cracked_stiffness_factor,
+        }))
     }
     fn store(&self) -> Result<(&Compiled, &ResultStore)> {
         match (&self.compiled, &self.store) {
@@ -1138,9 +1142,12 @@ add_frame     {"command":"add_frame","id":4,"frame":{"name":"C1","nodes":[1,5],"
               properties, each 1 unless given; mass and self-weight are unchanged. ACI 318 cracked sections:
               beams {"iy":0.35,"iz":0.35}, columns {"iy":0.7,"iz":0.7}
 add_shell     {"command":"add_shell","id":6,"shell":{"name":"S1","nodes":[1,2,3,4],"material":2,"thickness":8}}
-              optional modifiers {"membrane","membrane_shear","bending"}: stiffness multipliers on in-plane normal
-              (f11, f22), in-plane shear (f12) and plate bending (m11, m22, m12), each 1 unless given. ACI 318:
-              walls {"membrane":0.7} uncracked or 0.35 cracked, flat slabs {"bending":0.25}
+              optional local_x [x,y,z]: reference for local x, projected into the shell's plane; by default local x
+              runs from the first node to the second. Modifiers act, and stresses are reported, in these axes.
+              optional modifiers {"membrane_x","membrane_y","membrane_shear","bending"}: stiffness multipliers on
+              in-plane normal stiffness along local x (f11) and y (f22), in-plane shear (f12) and plate bending
+              (m11, m22, m12), each 1 unless given. ACI 318: walls {"membrane_x":0.7,"membrane_y":0.7} uncracked
+              or 0.35 cracked, flat slabs {"bending":0.25}
 add_diaphragm {"command":"add_diaphragm","id":7,"diaphragm":{"name":"D1","nodes":[5,6,7],"normal":"z"}}   master optional
 add_load_case {"command":"add_load_case","id":8,"load_case":{"name":"wind","load_type":"wind","nodal":[{"node":5,"force":[10,0,0]}],
                "member":[{"type":"distributed","member":4,"start":0,"end":20,"start_load":[0,0,-1],"end_load":[0,0,-1],"axes":"global"}],

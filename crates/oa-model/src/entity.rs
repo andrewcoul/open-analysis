@@ -311,6 +311,10 @@ pub struct Shell {
     pub formulation: ShellFormulation,
     #[serde(default = "default_drilling")]
     pub drilling_ratio: f64,
+    /// Reference for local +x, projected into the shell's plane; None puts
+    /// local x along the edge from the first corner to the second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_x: Option<[f64; 3]>,
     #[serde(default, skip_serializing_if = "ShellModifiers::is_unmodified")]
     pub modifiers: ShellModifiers,
 }

@@ -162,8 +162,9 @@ fn migrate(from: u32, mut value: serde_json::Value) -> Result<serde_json::Value,
         // Version 6 lets a section carry shear areas. A version 5 section has
         // none, stays rigid in shear, and needs no change.
         5 => Ok(value),
-        // Version 7 lets frames and shells carry stiffness modifiers. A version
-        // 6 member has none, keeps its full stiffness, and needs no change.
+        // Version 7 lets frames and shells carry stiffness modifiers, and shells
+        // a local x axis. A version 6 member has neither, keeps its full
+        // stiffness and its first-edge axes, and needs no change.
         6 => Ok(value),
         _ => Ok(value),
     }
