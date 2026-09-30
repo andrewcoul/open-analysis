@@ -113,7 +113,7 @@ impl Prepared {
                 }
             }
             for e in &self.shells {
-                for (corner, &m) in e.nodal_mass.iter().enumerate() {
+                for (corner, &m) in e.nodal_weight_mass.iter().enumerate() {
                     for (axis, &w) in case.self_weight.iter().enumerate() {
                         out.nodal[e.dofs[6 * corner + axis]] += factor * m * g * w;
                     }
@@ -287,15 +287,15 @@ impl Prepared {
                     lumped[e.dofs[6 * corner] / 6] += scale * down * a;
                 }
             }
-            // Self-weight is the element mass times g times the -Z factor.
+            // Self-weight is the weight mass times g times the -Z factor.
             let down = -multiplier * case.self_weight[2];
             if down != 0.0 {
                 for e in &self.frames {
-                    lumped[e.dofs[0] / 6] += down * e.mass / 2.0;
-                    lumped[e.dofs[6] / 6] += down * e.mass / 2.0;
+                    lumped[e.dofs[0] / 6] += down * e.weight_mass / 2.0;
+                    lumped[e.dofs[6] / 6] += down * e.weight_mass / 2.0;
                 }
                 for e in &self.shells {
-                    for (corner, &m) in e.nodal_mass.iter().enumerate() {
+                    for (corner, &m) in e.nodal_weight_mass.iter().enumerate() {
                         lumped[e.dofs[6 * corner] / 6] += down * m;
                     }
                 }
@@ -312,6 +312,26 @@ impl Prepared {
                 d / 6,
                 d % 6
             )));
+        }
+        // Lateral mass, X and Y translation and rotation about Z, moves as a
+        // whole; targets are never lumped themselves, so order is immaterial.
+        for (from, targets) in &source.lump {
+            for dof in [0, 1, 5] {
+                let m = std::mem::take(&mut mass[6 * from.0 + dof]);
+                for &(to, share) in targets {
+                    mass[6 * to.0 + dof] += share * m;
+                }
+            }
+        }
+        for (i, m) in mass.iter_mut().enumerate() {
+            let keep = if matches!(i % 6, 0 | 1 | 5) {
+                source.lateral
+            } else {
+                source.vertical
+            };
+            if !keep {
+                *m = 0.0;
+            }
         }
         Ok(mass)
     }

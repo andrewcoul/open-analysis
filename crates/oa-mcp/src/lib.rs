@@ -405,12 +405,8 @@ impl Session {
             "path": self.path,
             "units": {"system": UNITS.name(), "symbols": symbols},
             "gravity": display(Role::Acceleration, m.gravity.si()),
-            "mass_source": {
-                "element_mass": m.mass_source.element_mass,
-                "cases": m.mass_source.cases.iter().map(|(id, f)| json!({
-                    "id": id, "name": m.name_of(*id), "multiplier": f,
-                })).collect::<Vec<_>>(),
-            },
+            "mass_sources": m.mass_sources.iter().map(|(id, s)| self.mass_source_row(*id, s)).collect::<Vec<_>>(),
+            "default_mass_source": m.default_mass_source.and_then(|id| m.name_of(id)),
             "counts": {
                 "levels": m.levels.len(),
                 "nodes": m.nodes.len(), "materials": m.materials.len(), "sections": m.sections.len(),
@@ -427,6 +423,42 @@ impl Session {
             "spectrum_results": self.spectrum.is_some(),
             "can_undo": self.editor.can_undo(),
             "can_redo": self.editor.can_redo(),
+        })
+    }
+    /// A mass source with its cases by name, as describe_model and
+    /// list_entities show it.
+    fn mass_source_row(&self, id: EntityId, s: &MassSource) -> Value {
+        let m = self.model();
+        json!({
+            "id": id, "name": s.name, "default": m.default_mass_source == Some(id),
+            "element_mass": s.element_mass, "lateral": s.lateral, "vertical": s.vertical,
+            "lump_to_levels": s.lump_to_levels,
+            "cases": s.cases.iter().map(|(c, f)| json!({
+                "id": c, "name": m.name_of(*c), "multiplier": f,
+            })).collect::<Vec<_>>(),
+        })
+    }
+    /// The compiled solver model with the named mass source, or with the
+    /// default one when no name is given.
+    fn solver_with(
+        &mut self,
+        mass_source: Option<&str>,
+    ) -> Result<std::borrow::Cow<'_, oa_core::Model>> {
+        let find = |name: &str| {
+            self.model()
+                .find::<MassSource>(name)
+                .ok_or_else(|| SessionError::Invalid(format!("no mass source named {name:?}")))
+        };
+        let source = mass_source.map(find).transpose()?;
+        self.compiled()?;
+        let compiled = self.compiled.as_ref().expect("compiled above");
+        Ok(match source {
+            None => std::borrow::Cow::Borrowed(&compiled.solver),
+            Some(id) => std::borrow::Cow::Owned(
+                compiled
+                    .with_mass_source(&self.editor.model, id)
+                    .expect("compilation checked every mass source"),
+            ),
         })
     }
     /// A level with its elevation and the storey height below it, in feet.
@@ -516,6 +548,7 @@ impl Session {
                 m.underlays,
                 |id, e| json!({"id": id, "name": e.name, "level": m.name_of(e.level), "segments": e.segments.len()})
             ),
+            EntityKind::MassSource => rows!(m.mass_sources, |id, e| self.mass_source_row(*id, e)),
         }
         json!({"total": total, "rows": rows, "truncated": total > rows.len()})
     }
@@ -534,6 +567,7 @@ impl Session {
             EntityKind::Combination => serde_json::to_value(&m.combinations[&id])?,
             EntityKind::Group => serde_json::to_value(&m.groups[&id])?,
             EntityKind::Underlay => serde_json::to_value(UNITS.display(&m.underlays[&id]))?,
+            EntityKind::MassSource => serde_json::to_value(&m.mass_sources[&id])?,
         };
         Ok(json!({"id": id, "kind": kind, "entity": value}))
     }
@@ -551,6 +585,7 @@ impl Session {
             EntityKind::Combination => m.find::<Combination>(name),
             EntityKind::Group => m.find::<Group>(name),
             EntityKind::Underlay => m.find::<Underlay>(name),
+            EntityKind::MassSource => m.find::<MassSource>(name),
         }
     }
     /// Fresh ids for commands that add entities.
@@ -906,12 +941,14 @@ impl Session {
 
     /// Natural modes: periods, frequencies, and mass participation. Mode
     /// shapes are left out; they grow with the model.
-    pub fn modal(&mut self, modes: usize) -> Result<Value> {
+    /// Modes with the named mass source, or the default one.
+    pub fn modal(&mut self, modes: usize, mass_source: Option<&str>) -> Result<Value> {
         let options = oa_core::ModalOptions {
             modes,
             ..Default::default()
         };
-        let result = oa_core::analyze_modal(&self.compiled()?.solver, &options)?;
+        let solver = self.solver_with(mass_source)?;
+        let result = oa_core::analyze_modal(&solver, &options)?;
         Ok(modal_summary(&result))
     }
     /// A response-spectrum run along one direction. The peaks are kept for
@@ -941,7 +978,8 @@ impl Session {
             minimum_mass_ratio: request.minimum_mass_ratio,
             ..Default::default()
         };
-        let result = oa_core::analyze_spectrum(&self.compiled()?.solver, &options)?;
+        let solver = self.solver_with(request.mass_source.as_deref())?;
+        let result = oa_core::analyze_spectrum(&solver, &options)?;
         let base: Vec<f64> = result
             .base_reaction
             .iter()
@@ -1106,6 +1144,9 @@ pub struct SpectrumRequest {
     /// Refuse the run when the mass captured along the direction is below
     /// this ratio, such as 0.9.
     pub minimum_mass_ratio: Option<f64>,
+    /// The mass source to use, by name; the model's default when absent.
+    #[serde(default)]
+    pub mass_source: Option<String>,
 }
 
 /// Reference text for the `apply_commands` tool: one entry per command with a
@@ -1146,14 +1187,16 @@ add_frame     {"command":"add_frame","id":4,"frame":{"name":"C1","nodes":[1,5],"
               optional: releases [12 bools], behavior "tension_only"|"compression_only", roll, local_y,
               modifiers {"area","shear_y","shear_z","torsion","iy","iz"}: stiffness multipliers on those section
               properties, each 1 unless given; mass and self-weight are unchanged. ACI 318 cracked sections:
-              beams {"iy":0.35,"iz":0.35}, columns {"iy":0.7,"iz":0.7}
+              beams {"iy":0.35,"iz":0.35}, columns {"iy":0.7,"iz":0.7}. modifiers "mass" and "weight" (each 1
+              unless given, 0 allowed) scale the member's own mass and its self-weight; 0 on both leaves out a
+              member another one already carries, such as a beam under a slab modelled with the slab's weight
 add_shell     {"command":"add_shell","id":6,"shell":{"name":"S1","nodes":[1,2,3,4],"material":2,"thickness":8}}
               optional local_x [x,y,z]: reference for local x, projected into the shell's plane; by default local x
               runs from the first node to the second. Modifiers act, and stresses are reported, in these axes.
               optional modifiers {"membrane_x","membrane_y","membrane_shear","bending"}: stiffness multipliers on
               in-plane normal stiffness along local x (f11) and y (f22), in-plane shear (f12) and plate bending
               (m11, m22, m12), each 1 unless given. ACI 318: walls {"membrane_x":0.7,"membrane_y":0.7} uncracked
-              or 0.35 cracked, flat slabs {"bending":0.25}
+              or 0.35 cracked, flat slabs {"bending":0.25}. "mass" and "weight" as for frames
 add_diaphragm {"command":"add_diaphragm","id":7,"diaphragm":{"name":"D1","nodes":[5,6,7],"normal":"z"}}   master optional
 add_load_case {"command":"add_load_case","id":8,"load_case":{"name":"wind","load_type":"wind","nodal":[{"node":5,"force":[10,0,0]}],
                "member":[{"type":"distributed","member":4,"start":0,"end":20,"start_load":[0,0,-1],"end_load":[0,0,-1],"axes":"global"}],
@@ -1161,14 +1204,22 @@ add_load_case {"command":"add_load_case","id":8,"load_case":{"name":"wind","load
               load_type is what generate_combinations matches on: dead, live, roof_live, snow, rain, wind, earthquake,
               earth_pressure, fluid, self_straining, flood, ice, wind_on_ice, or other (the default, never generated).
               self_weight is a multiple of g per axis. surface pressure acts along the shell normal, which follows
-              its nodes by the right-hand rule. Loads are not mass unless the case is in the mass source.
-set_mass_source {"command":"set_mass_source","mass_source":{"element_mass":true,"cases":[[8,1.0],[13,0.25]]}}
+              its nodes by the right-hand rule. Loads are not mass unless a mass source lists the case.
+add_mass_source {"command":"add_mass_source","id":14,"mass_source":{"name":"seismic","cases":[[8,1.0],[13,0.25]]}}
               what modal and response_spectrum take as mass. Node mass always counts; element_mass (default true)
               adds the members' own mass from density; each [case id, multiplier] adds that case's downward (-Z)
               load divided by g, in X, Y and Z. ASCE 7 12.7.2: superimposed dead and partitions at 1.0, storage
               live at 0.25. A case with self-weight is refused while element_mass is true (it would count twice);
-              set element_mass false to take member mass from a dead case's self-weight instead. A case in the
-              source cannot be removed until it is taken out. describe_model shows the current source.
+              set element_mass false to take member mass from a dead case's self-weight instead. optional:
+              lateral (default true) keeps X and Y mass and rotation about Z, vertical (default true) keeps Z mass
+              and rotation about X and Y; "vertical":false keeps modal runs from spending modes on beams bouncing.
+              lump_to_levels (default false) moves the lateral mass of each node between two levels onto the
+              nodes directly below and above it on those levels, split by its height between them (all onto the
+              nearest level for a node above the top or below the bottom level); refused at compile when such a
+              node has no node directly below or above it on the level. A case a source lists cannot be removed.
+set_default_mass_source {"command":"set_default_mass_source","id":14}   the source modal and response_spectrum use
+              unless given mass_source by name; id null goes back to node and element mass only. The default
+              source cannot be removed. describe_model lists every source and names the default.
 add_combination {"command":"add_combination","id":9,"combination":{"name":"1.2D+1.6W","terms":[[8,1.6]]}}
 add_group     {"command":"add_group","id":10,"group":{"name":"roof","members":[5,6]}}
 add_underlay  {"command":"add_underlay","id":12,"underlay":{"name":"grid","level":11,"origin":[0,0],"segments":[[[0,0],[20,0]],[[0,0],[0,20]]]}}

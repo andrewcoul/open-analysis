@@ -5,7 +5,10 @@
 //! case holding the factor, blank where the case is not in the combination.
 //! Every cell commits on Enter or blur as an undoable command. Cases can come
 //! from the ASCE 7 list or be the user's own, and combinations can be
-//! generated from ASCE 7-16 or 7-22 using only the cases that exist.
+//! generated from ASCE 7-16 or 7-22 using only the cases that exist. The
+//! mass sources table, a third dialog, is laid out like the combinations:
+//! a row per source with its switches and a column per case holding the
+//! multiplier that makes the case's gravity load mass.
 use crate::actions::{AddAsceLoadCase, GenerateCombinations};
 use crate::document::{Document, unused_name};
 use crate::text::{fmt_num, parse_num};
@@ -19,7 +22,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IndexPath, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::*;
-use oa_model::{Combination, Command, EntityId, LoadCase, LoadType, MassSource};
+use oa_model::{Combination, Command, EntityId, LoadCase, LoadType, MassSource, Model};
 use std::collections::BTreeMap;
 
 type Choice = Entity<SelectState<SearchableVec<SharedString>>>;
@@ -64,16 +67,80 @@ fn parse_vec3(text: &str) -> Result<[f64; 3], String> {
     ])
 }
 
-/// The source with `case` at `multiplier`, or left out when it is None. A
-/// case already listed keeps its place.
-fn with_mass(source: &MassSource, case: EntityId, multiplier: Option<f64>) -> MassSource {
-    let mut out = source.clone();
-    match (out.cases.iter_mut().find(|(c, _)| *c == case), multiplier) {
-        (Some(term), Some(f)) => term.1 = f,
-        (None, Some(f)) => out.cases.push((case, f)),
-        (_, None) => out.cases.retain(|(c, _)| *c != case),
+/// Removes a case, dropping it from every combination and mass source
+/// first. A combination with no other term goes too, since the solver
+/// rejects an empty one; a mass source may list no cases.
+fn remove_case_commands(model: &Model, id: EntityId) -> Vec<Command> {
+    let mut commands: Vec<Command> = model
+        .combinations
+        .iter()
+        .filter(|(_, c)| c.terms.iter().any(|(case, _)| *case == id))
+        .map(|(cid, c)| {
+            let mut combination = c.clone();
+            combination.terms.retain(|(case, _)| *case != id);
+            if combination.terms.is_empty() {
+                Command::RemoveCombination { id: *cid }
+            } else {
+                Command::UpdateCombination {
+                    id: *cid,
+                    combination,
+                }
+            }
+        })
+        .collect();
+    for (sid, s) in &model.mass_sources {
+        if s.multiplier(id).is_some() {
+            let mut mass_source = s.clone();
+            mass_source.cases.retain(|(case, _)| *case != id);
+            commands.push(Command::UpdateMassSource {
+                id: *sid,
+                mass_source,
+            });
+        }
     }
-    out
+    commands.push(Command::RemoveLoadCase { id });
+    commands
+}
+
+/// Adds a mass source; the first one also becomes the default, so it takes
+/// effect without a second step.
+fn add_source_commands(model: &Model, id: EntityId) -> Vec<Command> {
+    let mass_source = MassSource::new(unused_name::<MassSource>(model, "MASS"));
+    let mut commands = vec![Command::AddMassSource { id, mass_source }];
+    if model.default_mass_source.is_none() {
+        commands.push(Command::SetDefaultMassSource { id: Some(id) });
+    }
+    commands
+}
+
+/// Removes a mass source; the default one stops being the default first.
+fn remove_source_commands(model: &Model, id: EntityId) -> Vec<Command> {
+    let mut commands = vec![];
+    if model.default_mass_source == Some(id) {
+        commands.push(Command::SetDefaultMassSource { id: None });
+    }
+    commands.push(Command::RemoveMassSource { id });
+    commands
+}
+
+/// A mass source switch shown as a checkbox column.
+#[derive(Clone, Copy)]
+enum Switch {
+    Default,
+    ElementMass,
+    Lateral,
+    Vertical,
+    Lump,
+}
+
+struct SourceRow {
+    id: EntityId,
+    name: Entity<InputState>,
+    /// One multiplier input per load case, in the cases' table order.
+    factors: Vec<(EntityId, Entity<InputState>)>,
+    /// Default, element mass, lateral, vertical, lump, as in [`Switch`].
+    switches: [bool; 5],
+    _subscriptions: Vec<Subscription>,
 }
 
 struct CaseRow {
@@ -81,8 +148,6 @@ struct CaseRow {
     name: Entity<InputState>,
     load_type: Choice,
     self_weight: Entity<InputState>,
-    /// Mass source multiplier, blank when the case is not mass.
-    mass: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -99,6 +164,7 @@ struct ComboRow {
 pub enum Section {
     Cases,
     Combinations,
+    MassSources,
 }
 
 pub struct LoadPanel {
@@ -108,11 +174,11 @@ pub struct LoadPanel {
     built_for: u64,
     /// Rows of the cases table; empty in a combinations panel.
     cases: Vec<CaseRow>,
-    /// Whether the mass source counts the members' own mass.
-    element_mass: bool,
     /// The cases as combination columns: id and header label.
     columns: Vec<(EntityId, String)>,
     combos: Vec<ComboRow>,
+    /// Rows of the mass sources table; empty in the other panels.
+    sources: Vec<SourceRow>,
     /// Input to focus after the next rebuild, so Enter keeps the caret in place.
     pending_focus: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -139,9 +205,9 @@ impl LoadPanel {
             section,
             built_for: u64::MAX,
             cases: vec![],
-            element_mass: true,
             columns: vec![],
             combos: vec![],
+            sources: vec![],
             pending_focus: None,
             _subscriptions: vec![subscription],
         };
@@ -179,7 +245,6 @@ impl LoadPanel {
             [
                 (format!("case-name-{}", r.id.0), &r.name),
                 (format!("case-weight-{}", r.id.0), &r.self_weight),
-                (format!("case-mass-{}", r.id.0), &r.mass),
             ]
         });
         let combo_inputs = self.combos.iter().flat_map(|r| {
@@ -189,7 +254,14 @@ impl LoadPanel {
                     .map(move |(case, input)| (format!("factor-{}-{}", r.id.0, case.0), input)),
             )
         });
-        case_inputs.chain(combo_inputs)
+        let source_inputs = self.sources.iter().flat_map(|r| {
+            std::iter::once((format!("source-name-{}", r.id.0), &r.name)).chain(
+                r.factors
+                    .iter()
+                    .map(move |(case, input)| (format!("mass-{}-{}", r.id.0, case.0), input)),
+            )
+        });
+        case_inputs.chain(combo_inputs).chain(source_inputs)
     }
 
     fn input_for(&self, key: &str) -> Option<Entity<InputState>> {
@@ -225,7 +297,7 @@ impl LoadPanel {
     }
 
     fn build(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (cases, combos, mass_source) = {
+        let (cases, combos) = {
             let model = self.document.read(cx).model();
             let cases: Vec<CaseData> = model
                 .load_cases
@@ -237,9 +309,8 @@ impl LoadPanel {
                 .iter()
                 .map(|(id, c)| (*id, c.name.clone(), c.terms.clone()))
                 .collect();
-            (cases, combos, model.mass_source.clone())
+            (cases, combos)
         };
-        self.element_mass = mass_source.element_mass;
         self.columns = cases
             .iter()
             .map(|(id, name, load_type, _)| {
@@ -250,12 +321,20 @@ impl LoadPanel {
                 (*id, head)
             })
             .collect();
-        if self.section == Section::Combinations {
-            self.cases.clear();
-            self.combos = self.build_combos(&cases, &combos, window, cx);
-            return;
-        }
+        self.cases.clear();
         self.combos.clear();
+        self.sources.clear();
+        match self.section {
+            Section::Combinations => {
+                self.combos = self.build_combos(&cases, &combos, window, cx);
+                return;
+            }
+            Section::MassSources => {
+                self.sources = self.build_sources(&cases, window, cx);
+                return;
+            }
+            Section::Cases => {}
+        }
         let type_options: Vec<SharedString> = LoadType::ALL
             .into_iter()
             .map(|t| type_label(t).into())
@@ -280,14 +359,6 @@ impl LoadPanel {
                     window,
                     cx,
                 );
-                let (mass, s4) = self.text_input(
-                    format!("case-mass-{}", id.0),
-                    mass_source.multiplier(id).map(fmt_num).unwrap_or_default(),
-                    id,
-                    Self::commit_mass,
-                    window,
-                    cx,
-                );
                 let selected = LoadType::ALL.iter().position(|t| t == load_type);
                 let load_type = cx.new(|cx| {
                     SelectState::new(
@@ -309,8 +380,7 @@ impl LoadPanel {
                     name,
                     load_type,
                     self_weight,
-                    mass,
-                    _subscriptions: vec![s1, s2, s3, s4],
+                    _subscriptions: vec![s1, s2, s3],
                 }
             })
             .collect();
@@ -363,6 +433,65 @@ impl LoadPanel {
             .collect()
     }
 
+    fn build_sources(
+        &self,
+        cases: &[CaseData],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<SourceRow> {
+        let (sources, default) = {
+            let model = self.document.read(cx).model();
+            let sources: Vec<(EntityId, MassSource)> = model
+                .mass_sources
+                .iter()
+                .map(|(id, s)| (*id, s.clone()))
+                .collect();
+            (sources, model.default_mass_source)
+        };
+        sources
+            .into_iter()
+            .map(|(id, source)| {
+                let (name, s) = self.text_input(
+                    format!("source-name-{}", id.0),
+                    source.name.clone(),
+                    id,
+                    Self::commit_source,
+                    window,
+                    cx,
+                );
+                let mut subscriptions = vec![s];
+                let factors = cases
+                    .iter()
+                    .map(|(case, ..)| {
+                        let (input, s) = self.text_input(
+                            format!("mass-{}-{}", id.0, case.0),
+                            source.multiplier(*case).map(fmt_num).unwrap_or_default(),
+                            id,
+                            Self::commit_source,
+                            window,
+                            cx,
+                        );
+                        subscriptions.push(s);
+                        (*case, input)
+                    })
+                    .collect();
+                SourceRow {
+                    id,
+                    name,
+                    factors,
+                    switches: [
+                        default == Some(id),
+                        source.element_mass,
+                        source.lateral,
+                        source.vertical,
+                        source.lump_to_levels,
+                    ],
+                    _subscriptions: subscriptions,
+                }
+            })
+            .collect()
+    }
+
     // MARK: Editing
 
     fn error(&self, message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
@@ -407,34 +536,6 @@ impl LoadPanel {
         if let Some(command) = command {
             self.apply(command, window, cx);
         }
-    }
-
-    /// Reads a case's mass cell: a blank leaves the case out of the mass source.
-    fn commit_mass(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(row) = self.cases.iter().find(|r| r.id == id) else {
-            return;
-        };
-        let text = row.mass.read(cx).value();
-        let multiplier = match text.trim() {
-            "" => None,
-            text => match parse_num("Mass", text) {
-                Ok(f) => Some(f),
-                Err(e) => return self.error(e, window, cx),
-            },
-        };
-        let current = &self.document.read(cx).model().mass_source;
-        let mass_source = with_mass(current, id, multiplier);
-        if mass_source != *current {
-            self.apply(Command::SetMassSource { mass_source }, window, cx);
-        }
-    }
-
-    fn set_element_mass(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let mass_source = MassSource {
-            element_mass: on,
-            ..self.document.read(cx).model().mass_source.clone()
-        };
-        self.apply(Command::SetMassSource { mass_source }, window, cx);
     }
 
     /// Reads a combination's row: a blank factor leaves the case out.
@@ -488,37 +589,90 @@ impl LoadPanel {
         self.apply(Command::AddLoadCase { id, load_case }, window, cx);
     }
 
-    /// Removes a case, dropping it from every combination and the mass
-    /// source first. A combination with no other term goes too, since the
-    /// solver rejects an empty one.
     fn remove_case(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
-        let commands = {
-            let model = self.document.read(cx).model();
-            let mut commands: Vec<Command> = model
-                .combinations
-                .iter()
-                .filter(|(_, c)| c.terms.iter().any(|(case, _)| *case == id))
-                .map(|(cid, c)| {
-                    let mut combination = c.clone();
-                    combination.terms.retain(|(case, _)| *case != id);
-                    if combination.terms.is_empty() {
-                        Command::RemoveCombination { id: *cid }
-                    } else {
-                        Command::UpdateCombination {
-                            id: *cid,
-                            combination,
-                        }
-                    }
-                })
-                .collect();
-            if model.mass_source.multiplier(id).is_some() {
-                commands.push(Command::SetMassSource {
-                    mass_source: with_mass(&model.mass_source, id, None),
-                });
-            }
-            commands.push(Command::RemoveLoadCase { id });
-            commands
+        let commands = remove_case_commands(self.document.read(cx).model(), id);
+        self.apply(Command::Batch { commands }, window, cx);
+    }
+
+    /// Reads a mass source's row: a blank multiplier leaves the case out.
+    fn commit_source(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(row) = self.sources.iter().find(|r| r.id == id) else {
+            return;
         };
+        let name = row.name.read(cx).value().to_string();
+        let mut cases = vec![];
+        for (case, input) in &row.factors {
+            let text = input.read(cx).value();
+            let text = text.trim();
+            if text.is_empty() {
+                continue;
+            }
+            match parse_num("Mass multiplier", text) {
+                Ok(f) => cases.push((*case, f)),
+                Err(e) => return self.error(e, window, cx),
+            }
+        }
+        let command = {
+            let model = self.document.read(cx).model();
+            let Some(current) = model.mass_sources.get(&id) else {
+                return;
+            };
+            let mass_source = MassSource {
+                name,
+                cases,
+                ..current.clone()
+            };
+            (mass_source != *current).then_some(Command::UpdateMassSource { id, mass_source })
+        };
+        if let Some(command) = command {
+            self.apply(command, window, cx);
+        }
+    }
+
+    fn set_switch(
+        &mut self,
+        id: EntityId,
+        switch: Switch,
+        on: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let command = {
+            let model = self.document.read(cx).model();
+            let Some(current) = model.mass_sources.get(&id) else {
+                return;
+            };
+            let mut mass_source = current.clone();
+            match switch {
+                Switch::Default => {
+                    return self.apply(
+                        Command::SetDefaultMassSource {
+                            id: on.then_some(id),
+                        },
+                        window,
+                        cx,
+                    );
+                }
+                Switch::ElementMass => mass_source.element_mass = on,
+                Switch::Lateral => mass_source.lateral = on,
+                Switch::Vertical => mass_source.vertical = on,
+                Switch::Lump => mass_source.lump_to_levels = on,
+            }
+            Command::UpdateMassSource { id, mass_source }
+        };
+        self.apply(command, window, cx);
+    }
+
+    fn add_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let model = self.document.read(cx).model();
+        let id = EntityId(model.next_id);
+        let commands = add_source_commands(model, id);
+        self.pending_focus = Some(format!("source-name-{}", id.0));
+        self.apply(Command::Batch { commands }, window, cx);
+    }
+
+    fn remove_source(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        let commands = remove_source_commands(self.document.read(cx).model(), id);
         self.apply(Command::Batch { commands }, window, cx);
     }
 
@@ -557,7 +711,6 @@ impl LoadPanel {
             .child(TableHead::new().child("Name"))
             .child(TableHead::new().child("Type"))
             .child(TableHead::new().child("Self weight (x, y, z)"))
-            .child(TableHead::new().child("Mass ×"))
             .child(TableHead::new().child(""));
         let rows = self.cases.iter().enumerate().map(|(ix, row)| {
             let id = row.id;
@@ -565,7 +718,6 @@ impl LoadPanel {
                 .child(TableCell::new().child(Input::new(&row.name).small()))
                 .child(TableCell::new().child(Select::new(&row.load_type).small()))
                 .child(TableCell::new().child(Input::new(&row.self_weight).small()))
-                .child(TableCell::new().child(Input::new(&row.mass).small()))
                 .child(
                     TableCell::new().child(
                         Button::new(("remove-case", ix))
@@ -625,6 +777,68 @@ impl LoadPanel {
             .child(TableBody::new().children(rows))
             .into_any_element()
     }
+
+    fn render_sources(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.sources.is_empty() {
+            return div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("No mass sources yet: modal mass is node mass and members' own mass.")
+                .into_any_element();
+        }
+        const SWITCHES: [(Switch, &str); 5] = [
+            (Switch::Default, "Default"),
+            (Switch::ElementMass, "Own mass"),
+            (Switch::Lateral, "Lateral"),
+            (Switch::Vertical, "Vertical"),
+            (Switch::Lump, "Lump to levels"),
+        ];
+        let mut header = TableRow::new().child(TableHead::new().child("Name"));
+        for (_, label) in SWITCHES {
+            header = header.child(TableHead::new().child(label));
+        }
+        for (_, head) in &self.columns {
+            header = header.child(TableHead::new().child(format!("{head} ×")));
+        }
+        header = header.child(TableHead::new().child(""));
+        let rows = self.sources.iter().enumerate().map(|(ix, row)| {
+            let id = row.id;
+            let mut tr =
+                TableRow::new().child(TableCell::new().child(Input::new(&row.name).small()));
+            for (k, (switch, _)) in SWITCHES.into_iter().enumerate() {
+                tr = tr.child(
+                    TableCell::new().child(
+                        Checkbox::new(("mass-switch", ix * SWITCHES.len() + k))
+                            .small()
+                            .checked(row.switches[k])
+                            .on_change(cx.listener(move |this, on: &bool, window, cx| {
+                                this.set_switch(id, switch, *on, window, cx)
+                            })),
+                    ),
+                );
+            }
+            for (_, factor) in &row.factors {
+                tr = tr.child(TableCell::new().child(Input::new(factor).small()));
+            }
+            tr.child(
+                TableCell::new().child(
+                    Button::new(("remove-source", ix))
+                        .small()
+                        .danger()
+                        .outline()
+                        .label("Remove")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.remove_source(id, window, cx)
+                        })),
+                ),
+            )
+        });
+        Table::new()
+            .small()
+            .child(TableHeader::new().child(header))
+            .child(TableBody::new().children(rows))
+            .into_any_element()
+    }
 }
 
 impl Render for LoadPanel {
@@ -638,19 +852,7 @@ impl Render for LoadPanel {
             Section::Cases => v_flex()
                 .gap_2()
                 .child(heading("Name, ASCE 7 load type, and self-weight multipliers per axis."))
-                .child(heading(
-                    "Mass × makes the case's downward load modal mass, divided by g: 1 for superimposed dead, 0.25 for storage live. Blank for none.",
-                ))
                 .child(self.render_cases(cx))
-                .child(
-                    Checkbox::new("element-mass")
-                        .small()
-                        .label("Members' own mass from material density is modal mass")
-                        .checked(self.element_mass)
-                        .on_change(cx.listener(|this, value: &bool, window, cx| {
-                            this.set_element_mass(*value, window, cx)
-                        })),
-                )
                 .child(
                     h_flex()
                         .gap_2()
@@ -681,6 +883,25 @@ impl Render for LoadPanel {
                                 }),
                         ),
                 ),
+            Section::MassSources => v_flex()
+                .gap_2()
+                .child(heading(
+                    "What modal and response spectrum analysis take as mass. Node mass always counts; own mass is members' mass from density.",
+                ))
+                .child(heading(
+                    "A multiplier per case makes its downward load mass, divided by g: 1 for superimposed dead, 0.25 for storage live. Blank leaves the case out.",
+                ))
+                .child(heading(
+                    "Lateral keeps X, Y and rotation about Z; vertical keeps Z. Lump to levels moves lateral mass between levels onto the node above or below on the nearest level.",
+                ))
+                .child(self.render_sources(cx))
+                .child(
+                    h_flex().gap_2().child(
+                        button("add-source", "Add mass source").on_click(cx.listener(
+                            |this, _, window, cx| this.add_source(window, cx),
+                        )),
+                    ),
+                ),
         };
         // The dialog around the table scrolls it.
         content
@@ -690,10 +911,60 @@ impl Render for LoadPanel {
 #[cfg(test)]
 mod tests {
     // Named imports: the gpui glob carries its own `test` attribute macro.
-    use super::{aggregated, fmt_vec3, parse_vec3, type_label, with_mass};
+    use super::{
+        add_source_commands, aggregated, fmt_vec3, parse_vec3, remove_case_commands,
+        remove_source_commands, type_label,
+    };
     use crate::text::{DEFAULT_PRECISION, TestPrecision};
-    use oa_model::{EntityId, LoadType, MassSource};
+    use oa_model::{Combination, Command, EntityId, LoadCase, LoadType, MassSource, Model};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn removing_a_case_takes_it_out_of_combinations_and_mass_sources() {
+        let mut model = Model::default();
+        let a = model.insert(LoadCase::new("A"));
+        let b = model.insert(LoadCase::new("B"));
+        let only_a = model.insert(Combination {
+            name: "A".into(),
+            terms: vec![(a, 1.0)],
+        });
+        let both = model.insert(Combination {
+            name: "AB".into(),
+            terms: vec![(a, 1.0), (b, 1.0)],
+        });
+        let source = model.insert(MassSource {
+            cases: vec![(a, 1.0), (b, 0.25)],
+            ..MassSource::new("seismic")
+        });
+        let commands = remove_case_commands(&model, a);
+        Command::Batch { commands }.apply(&mut model).unwrap();
+        assert!(!model.combinations.contains_key(&only_a));
+        assert_eq!(model.combinations[&both].terms, vec![(b, 1.0)]);
+        assert_eq!(model.mass_sources[&source].cases, vec![(b, 0.25)]);
+        assert!(!model.load_cases.contains_key(&a));
+    }
+
+    #[test]
+    fn the_first_mass_source_becomes_the_default_and_leaves_it_when_removed() {
+        let mut model = Model::default();
+        let add = |model: &mut Model| {
+            let id = model.allocate();
+            let commands = add_source_commands(model, id);
+            Command::Batch { commands }.apply(model).unwrap();
+            id
+        };
+        let first = add(&mut model);
+        let second = add(&mut model);
+        assert_eq!(model.default_mass_source, Some(first));
+        assert_ne!(
+            model.mass_sources[&first].name,
+            model.mass_sources[&second].name
+        );
+        let commands = remove_source_commands(&model, first);
+        Command::Batch { commands }.apply(&mut model).unwrap();
+        assert_eq!(model.default_mass_source, None);
+        assert_eq!(model.mass_sources.len(), 1);
+    }
 
     #[test]
     fn self_weight_round_trips() {
@@ -711,24 +982,6 @@ mod tests {
         let sum = aggregated(&[(a, 0.6), (b, 1.5), (a, 0.4)]);
         assert_eq!(sum, BTreeMap::from([(a, 1.0), (b, 1.5)]));
         assert_eq!(aggregated(&[(a, 1.0)]), aggregated(&[(a, 0.5), (a, 0.5)]));
-    }
-
-    #[test]
-    fn mass_cells_set_replace_and_drop_cases_in_place() {
-        let (a, b) = (EntityId(1), EntityId(2));
-        let source = MassSource {
-            element_mass: false,
-            cases: vec![(a, 1.0)],
-        };
-        let added = with_mass(&source, b, Some(0.25));
-        assert_eq!(added.cases, vec![(a, 1.0), (b, 0.25)]);
-        assert!(!added.element_mass);
-        assert_eq!(
-            with_mass(&added, a, Some(0.5)).cases,
-            vec![(a, 0.5), (b, 0.25)]
-        );
-        assert_eq!(with_mass(&added, a, None).cases, vec![(b, 0.25)]);
-        assert_eq!(with_mass(&source, b, None), source);
     }
 
     #[test]

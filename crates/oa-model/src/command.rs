@@ -181,11 +181,26 @@ pub enum Command {
     SetMetadata {
         metadata: Metadata,
     },
-    /// Replaces the mass source. Its cases must be load cases, each listed
-    /// once with a positive multiplier, and none may carry self-weight while
-    /// element mass is on, which would count the members' mass twice.
-    SetMassSource {
+    /// A mass source's cases must be load cases, each listed once with a
+    /// positive multiplier, and none may carry self-weight while element mass
+    /// is on, which would count the members' mass twice. It must keep lateral
+    /// or vertical mass, and lumps only lateral mass.
+    AddMassSource {
+        id: EntityId,
         mass_source: MassSource,
+    },
+    UpdateMassSource {
+        id: EntityId,
+        mass_source: MassSource,
+    },
+    /// Refused while the source is the model's default.
+    RemoveMassSource {
+        id: EntityId,
+    },
+    /// The source modal and spectrum analysis use unless told otherwise.
+    /// None means element and node mass in every direction.
+    SetDefaultMassSource {
+        id: Option<EntityId>,
     },
     /// Applied in order; rolled back completely if any command fails.
     Batch {
@@ -358,6 +373,16 @@ fn check_modifiers(modifiers: &[f64]) -> Result<()> {
     }
     Ok(())
 }
+/// Mass and weight modifiers scale the member's own mass and self-weight;
+/// zero leaves them out, as for a member another one already carries.
+fn check_mass_weight(mass: f64, weight: f64) -> Result<()> {
+    if [mass, weight].iter().any(|f| !(f.is_finite() && *f >= 0.0)) {
+        return Err(ModelError::Invalid(
+            "mass and weight modifiers must be finite and >= 0".into(),
+        ));
+    }
+    Ok(())
+}
 /// An underlay is drawn as it is stored, so every coordinate must be finite.
 fn check_underlay(underlay: &Underlay) -> Result<()> {
     let finite = |p: &[Length; 2]| p.iter().all(|v| v.si().is_finite());
@@ -369,6 +394,11 @@ fn check_underlay(underlay: &Underlay) -> Result<()> {
     Ok(())
 }
 fn check_mass_source(model: &Model, source: &MassSource) -> Result<()> {
+    if !source.lateral && !source.vertical {
+        return Err(ModelError::Invalid(
+            "a mass source needs lateral or vertical mass".into(),
+        ));
+    }
     for (i, &(case, multiplier)) in source.cases.iter().enumerate() {
         let Some(load_case) = model.load_cases.get(&case) else {
             return Err(match model.kind_of(case) {
@@ -516,11 +546,13 @@ impl Command {
             }
             AddFrame { id, frame } => {
                 check_modifiers(&frame.modifiers.values())?;
+                check_mass_weight(frame.modifiers.mass, frame.modifiers.weight)?;
                 add(model, id, frame)?;
                 RemoveFrame { id }
             }
             UpdateFrame { id, frame } => {
                 check_modifiers(&frame.modifiers.values())?;
+                check_mass_weight(frame.modifiers.mass, frame.modifiers.weight)?;
                 UpdateFrame {
                     id,
                     frame: update(model, id, frame)?,
@@ -532,11 +564,13 @@ impl Command {
             }
             AddShell { id, shell } => {
                 check_modifiers(&shell.modifiers.values())?;
+                check_mass_weight(shell.modifiers.mass, shell.modifiers.weight)?;
                 add(model, id, shell)?;
                 RemoveShell { id }
             }
             UpdateShell { id, shell } => {
                 check_modifiers(&shell.modifiers.values())?;
+                check_mass_weight(shell.modifiers.mass, shell.modifiers.weight)?;
                 UpdateShell {
                     id,
                     shell: update(model, id, shell)?,
@@ -573,12 +607,6 @@ impl Command {
                 load_case: update(model, id, load_case)?,
             },
             RemoveLoadCase { id } => {
-                if model.mass_source.multiplier(id).is_some() {
-                    return Err(ModelError::Referenced {
-                        entity: model.describe(id),
-                        by: vec!["the mass source".into()],
-                    });
-                }
                 let (entity, groups) = remove(model, id)?;
                 removal_inverse(
                     AddLoadCase {
@@ -652,10 +680,49 @@ impl Command {
             SetMetadata { metadata } => SetMetadata {
                 metadata: std::mem::replace(&mut model.metadata, metadata),
             },
-            SetMassSource { mass_source } => {
+            AddMassSource { id, mass_source } => {
                 check_mass_source(model, &mass_source)?;
-                SetMassSource {
-                    mass_source: std::mem::replace(&mut model.mass_source, mass_source),
+                add(model, id, mass_source)?;
+                RemoveMassSource { id }
+            }
+            UpdateMassSource { id, mass_source } => {
+                check_mass_source(model, &mass_source)?;
+                UpdateMassSource {
+                    id,
+                    mass_source: update(model, id, mass_source)?,
+                }
+            }
+            RemoveMassSource { id } => {
+                if model.default_mass_source == Some(id) {
+                    return Err(ModelError::Invalid(format!(
+                        "{} is the default mass source; choose another default first",
+                        model.describe(id)
+                    )));
+                }
+                let (entity, groups) = remove(model, id)?;
+                removal_inverse(
+                    AddMassSource {
+                        id,
+                        mass_source: entity,
+                    },
+                    groups,
+                )
+            }
+            SetDefaultMassSource { id } => {
+                if let Some(id) = id
+                    && !model.mass_sources.contains_key(&id)
+                {
+                    return Err(match model.kind_of(id) {
+                        Some(actual) => ModelError::WrongKind {
+                            entity: model.describe(id),
+                            expected: EntityKind::MassSource,
+                            actual,
+                        },
+                        None => ModelError::NotFound(id),
+                    });
+                }
+                SetDefaultMassSource {
+                    id: std::mem::replace(&mut model.default_mass_source, id),
                 }
             }
             Batch { commands } => {

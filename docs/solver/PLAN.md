@@ -290,6 +290,7 @@ Decisions on what was left out:
 - **No mass or weight modifiers yet.** In ETABS they mostly stop mass being
   counted twice where a slab overlaps a beam. They are reconsidered with the
   mass source from load cases, and matter once slab area objects exist.
+  (Added with the mass source; see below.)
 - **Service stiffness belongs to the analysis, not the model.** A second
   copy of the model with 1.4 times its modifiers would drift out of step
   with the first; a factor on the run cannot.
@@ -315,8 +316,21 @@ comes from, as the mass source of ETABS and SAP2000 does:
   ends, as a simply supported span carries it, which is how frame self-mass
   is lumped too; local-axis loads are rotated to global first. A surface
   pressure goes to the corners by tributary area, the integral of each
-  corner's shape function, which is also how shell self-mass is lumped. A
-  case's self-weight multiplier counts too: −Z times the element mass.
+  corner's shape function, which is also how shell self-mass is lumped.
+  A case's self-weight multiplier counts too: −Z times the element's weight
+  mass (below).
+- **`lateral`** (default true) keeps X and Y translation and rotation about
+  Z, and **`vertical`** (default true) keeps Z translation and rotation
+  about X and Y, for node, element and load mass alike, as ETABS's Include
+  Lateral Mass and Include Vertical Mass do. One must be on. Turning
+  vertical off keeps a modal run from spending modes on beams and slabs
+  bouncing before it reaches the lateral ones.
+- **`lump`** lists nodes whose lateral mass, X, Y and rotation about Z,
+  moves to other nodes in given shares. The solver has no levels, so the
+  model layer fills it (see the model plan) to lump mass between levels at
+  the levels, as ETABS does. Targets may not be lumped themselves, so the
+  order does not matter; shares must sum to 1. Lumping runs after the
+  negative-mass check and before the lateral and vertical filters.
 
 Two choices differ from CSI:
 
@@ -330,26 +344,39 @@ Two choices differ from CSI:
   names the node: an upward load in a mass source case is a modelling
   mistake, and a silently clipped mass would hide it.
 
-A multiplier must be positive and finite, and a case may be listed once.
-The default source is left out of the JSON, so existing models and their
-content hashes are unchanged. Tests: `crates/oa-core/tests/mass_source.rs`
-checks a cantilever's tip mass and period against hand calculations for a
-nodal load, a point load and a partial trapezoid in global axes, a load in
-rolled local axes, a surface load on a plate facing up and facing down,
-self-weight as a source against element mass, the validation errors, and a
+**Mass and weight modifiers.** Frames and shells carry `mass` and `weight`
+modifiers beside their stiffness ones, as the CSI property modifiers do
+(CSI Analysis Reference Manual, frame and shell property modifiers). `mass`
+multiplies the member's own mass, `weight` its self-weight, which a load
+case's self-weight factor applies and a mass source case's self-weight
+turns back into mass. Each defaults to 1, may be 0, and must be finite; 0
+on both leaves out a member whose mass and weight another already carries,
+such as a beam under a slab modelled with the slab's full weight. The
+cracked-stiffness factor for service drift leaves them alone.
+
+One source lives in the solver model. The model layer keeps any number of
+named sources and a default; analysis compiles with the default and may be
+handed another one (see the model plan). A multiplier must be positive and
+finite, and a case may be listed once. The default source is left out of
+the JSON, so existing models and their content hashes are unchanged. Tests:
+`crates/oa-core/tests/mass_source.rs` checks a cantilever's tip mass and
+period against hand calculations for a nodal load, a point load and a
+partial trapezoid in global axes, a load in rolled local axes, a surface
+load on a plate facing up and facing down, self-weight as a source against
+element mass, mass and weight modifiers, each direction left out in turn,
+lumping against the same mass placed by hand, the validation errors, and a
 spectrum base shear.
 
 Left out:
 
-- **One source per model.** CSI allows several, picked by nonlinear and
-  time-history cases; this solver has neither yet.
-- **No lateral-only or vertical-only mass, and no lumping to story levels.**
-  Mass acts in Z as element mass always has, so a modal run can spend modes
-  on vertical beam and slab vibration before it reaches the lateral ones.
-  ETABS's lateral-mass option avoids that and is worth adding with the
-  ASCE 7 seismic load cases.
-- **No mass or weight modifiers.** They matter once slab area objects make a
-  slab and its supporting beam overlap.
+- **Choosing a source per analysis case.** CSI modal cases use the default
+  source unless they start from a nonlinear case, which may name one. There
+  are no analysis cases here; a modal or spectrum run takes a source by
+  name instead.
+- **Mass adjustment for accidental torsion.** ETABS can shift diaphragm
+  mass to move its centroid; it belongs with the accidental torsion item.
+- **Section-level mass and weight modifiers**, for the reason section-level
+  stiffness modifiers are declined above.
 
 ### Equilibrium check and iterative refinement (revised 2026-09-14)
 

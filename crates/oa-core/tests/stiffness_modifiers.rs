@@ -58,6 +58,7 @@ fn uniform(f: f64) -> FrameModifiers {
         torsion: f,
         iy: f,
         iz: f,
+        ..Default::default()
     }
 }
 
@@ -70,6 +71,7 @@ fn frame_modifiers_scale_each_stiffness_term() {
         torsion: 0.3,
         iy: 0.7,
         iz: 0.35,
+        ..Default::default()
     };
     let (px, py, pz, mx) = (5000.0, -2000.0, 3000.0, 400.0);
     let mut m = cantilever(1, 0.0, true, md);
@@ -263,6 +265,7 @@ fn shell_modifiers(x: f64, y: f64, shear: f64, bending: f64) -> ShellModifiers {
         membrane_y: y,
         membrane_shear: shear,
         bending,
+        ..Default::default()
     }
 }
 

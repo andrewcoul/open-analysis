@@ -48,7 +48,7 @@ fn cantilever() -> (Session, [oa_model::EntityId; 3]) {
 fn modal_period_of_a_cantilever_with_a_tip_mass() {
     let (mut s, _) = cantilever();
     let (k, m) = sdof();
-    let result = s.modal(1).unwrap();
+    let result = s.modal(1, None).unwrap();
     let mode = &result["modes"][0];
     let period = mode["period"].as_f64().unwrap();
     assert!(close(period, TAU * (m / k).sqrt(), 1e-6), "{result:#}");

@@ -294,3 +294,101 @@ fn spectrum_base_shear_uses_source_mass() {
     .unwrap();
     close(r.base_reaction[2], p / G * 2.0);
 }
+
+#[test]
+fn mass_and_weight_modifiers_scale_own_mass_and_self_weight() {
+    let density = 7850.0;
+    let own = density * 0.01 * L / 2.0;
+    let mut m = cantilever(density);
+    m.frames[0].modifiers.mass = 0.5;
+    m.frames[0].modifiers.weight = 0.0;
+    close(tip_mass(&m), 0.5 * own);
+    // Weight is what self-weight applies, so a zero weight loads nothing.
+    m.load_cases[0].self_weight = [0.0, 0.0, -1.0];
+    let r = analyze_static(&m, &Default::default()).unwrap();
+    let reactions = r.combinations[0].reactions.as_ref().unwrap();
+    assert_eq!(reactions[0][2], 0.0);
+    // A source case's self-weight becomes mass through the weight modifier.
+    m.frames[0].modifiers.weight = 0.25;
+    m.mass_source.element_mass = false;
+    m.mass_source.cases = vec![(LoadCaseId(0), 1.0)];
+    close(tip_mass(&m), 0.25 * own);
+    m.frames[0].modifiers.mass = -0.5;
+    assert!(modal_error(&m).contains("mass and weight modifiers"));
+}
+
+#[test]
+fn lateral_and_vertical_mass_can_each_be_left_out() {
+    let mut m = cantilever(0.0);
+    m.nodes[1].mass = [Mass::from_si(40.0); 3];
+    // Inertia about X and Y only, so the lateral mode stays a closed form.
+    m.nodes[1].mass_inertia = [3.0, 3.0, 0.0].map(MassInertia::from_si);
+    m.mass_source.vertical = false;
+    close(modal(&m).total_free_mass[0], 40.0);
+    assert_eq!(modal(&m).total_free_mass[2], 0.0);
+    // Only lateral mass left: the lowest mode is the stiffer lateral one.
+    close(
+        modal(&m).modes[0].eigenvalue,
+        3.0 * E * 4e-5 / (L.powi(3) * 40.0),
+    );
+    m.mass_source.vertical = true;
+    m.mass_source.lateral = false;
+    assert_eq!(modal(&m).total_free_mass[0], 0.0);
+    close(modal(&m).total_free_mass[2], 40.0);
+    m.mass_source.vertical = false;
+    assert!(modal_error(&m).contains("lateral or vertical"));
+}
+
+/// A 6 m column in two 3 m elements up Z, fixed at node 0, with 50 kg at
+/// its middle node in every direction.
+fn column() -> Model {
+    let mut m = Model::default();
+    m.add_material(Material {
+        young: Pressure::from_si(E),
+        poisson: 0.3,
+        density: MassDensity::ZERO,
+    });
+    m.add_section(Section {
+        area: Area::from_si(0.01),
+        iy: SecondMoment::from_si(IY),
+        iz: SecondMoment::from_si(IY),
+        torsion: SecondMoment::from_si(1e-5),
+        shear_y: None,
+        shear_z: None,
+    });
+    let z = |z: f64| [Length::ZERO, Length::ZERO, Length::from_si(z)];
+    let a = m.add_node(Node::fixed(z(0.0)));
+    let mut middle = Node::new(z(3.0));
+    middle.mass = [Mass::from_si(50.0); 3];
+    let b = m.add_node(middle);
+    let c = m.add_node(Node::new(z(6.0)));
+    m.add_frame(Frame::new([a, b], MaterialId(0), SectionId(0)));
+    m.add_frame(Frame::new([b, c], MaterialId(0), SectionId(0)));
+    m
+}
+
+#[test]
+fn lumping_moves_lateral_mass_only() {
+    let mut lumped = column();
+    lumped.mass_source.lump = vec![(NodeId(1), vec![(NodeId(2), 1.0)])];
+    let mut moved = column();
+    moved.nodes[1].mass = [Mass::ZERO, Mass::ZERO, Mass::from_si(50.0)];
+    moved.nodes[2].mass = [Mass::from_si(50.0), Mass::from_si(50.0), Mass::ZERO];
+    let (a, b) = (modal(&lumped), modal(&moved));
+    close(a.modes[0].eigenvalue, b.modes[0].eigenvalue);
+    close(a.total_free_mass[2], 50.0);
+    // Half onto the fixed base leaves half of it free.
+    lumped.mass_source.lump = vec![(NodeId(1), vec![(NodeId(0), 0.5), (NodeId(2), 0.5)])];
+    close(modal(&lumped).total_free_mass[0], 25.0);
+    for bad in [
+        vec![(NodeId(1), vec![(NodeId(2), 0.6)])],
+        vec![(NodeId(1), vec![(NodeId(7), 1.0)])],
+        vec![
+            (NodeId(1), vec![(NodeId(2), 1.0)]),
+            (NodeId(2), vec![(NodeId(0), 1.0)]),
+        ],
+    ] {
+        lumped.mass_source.lump = bad;
+        assert!(modal_error(&lumped).contains("lump"));
+    }
+}

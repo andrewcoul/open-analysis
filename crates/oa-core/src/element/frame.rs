@@ -25,7 +25,11 @@ pub(crate) struct FrameElement {
     pub elastic: M12,
     pub geometric_unit: M12,
     pub releases: [bool; 12],
+    /// Own mass times the mass modifier.
     pub mass: f64,
+    /// Own mass times the weight modifier: the mass whose weight under
+    /// gravity is the member's self-weight.
+    pub weight_mass: f64,
     /// Shear parameter for bending in the local x-y plane, then x-z.
     phi: [f64; 2],
 }
@@ -56,8 +60,9 @@ impl FrameElement {
         y = y * frame.roll.si().cos() + x.cross(&y) * frame.roll.si().sin();
         let r = rotation(x, y);
         let t = block_rotation(&r);
-        // Modifiers scale the stiffness only; mass and the geometric
-        // stiffness's polar radius of gyration keep the section's values.
+        // Stiffness modifiers scale the stiffness only; mass and the
+        // geometric stiffness's polar radius of gyration keep the section's
+        // values, and mass and weight have modifiers of their own.
         let md = &frame.modifiers;
         let (ei_z, ei_y) = (
             m.young.si() * s.iz.si() * md.iz,
@@ -100,18 +105,20 @@ impl FrameElement {
             elastic: k,
             geometric_unit: kg,
             releases: frame.releases,
-            mass: m.density.si() * s.area.si() * length,
+            mass: m.density.si() * s.area.si() * length * md.mass,
+            weight_mass: m.density.si() * s.area.si() * length * md.weight,
             phi,
         })
     }
-    /// Uniform global-axis line load from density, area and gravity. None when zero.
+    /// Uniform global-axis line load from density, area, the weight modifier
+    /// and gravity. None when zero.
     pub fn self_weight_load(
         &self,
         member: FrameId,
         gravity: f64,
         factors: [f64; 3],
     ) -> Option<MemberLoad> {
-        let weight_per_length = self.mass / self.length * gravity;
+        let weight_per_length = self.weight_mass / self.length * gravity;
         let q = factors.map(|f| LineLoad::from_si(f * weight_per_length));
         if q.iter().all(|v| v.si() == 0.0) {
             return None;

@@ -257,18 +257,41 @@ Decisions made during implementation:
   member has full stiffness and first-edge axes. The GUI edits them per
   member, picks a shell's local x from its first edge or a global axis, and
   assigns ACI 318 presets to a selection.
-- **The mass source is a model setting, not an entity.** `Model::mass_source`
-  holds `element_mass` and a list of (load case, multiplier), and
-  `SetMassSource` replaces it whole, returning the old one as its inverse.
-  The command refuses a missing or non-load-case id, a repeated case, a
-  multiplier that is not positive and finite, and a case with self-weight
-  while element mass is on; self-weight added to a source case later is
-  caught at compile. A load case in the source cannot be removed, like one
-  a combination references. The file format went to version 8; a version 7
-  document has the default source, element mass only. The GUI's load cases
-  table has a "Mass ×" column, blank for a case that is not mass, and a
-  checkbox for element mass; removing a case there takes it out of the
-  source in the same undo step, as it does from combinations.
+- **Mass sources are named entities with a model default.** A
+  `MassSource` holds `element_mass`, a list of (load case, multiplier),
+  `lateral`, `vertical` and `lump_to_levels` (see the solver plan), and
+  references its cases, so a case a source lists cannot be removed, as for
+  combinations. `default_mass_source` names the one compilation puts in the
+  solver model; None means node and element mass in every direction, which
+  is CSI's default too. `SetDefaultMassSource` changes it, and the default
+  source cannot be removed. `Compiled::with_mass_source` hands analysis any
+  other source, so modal and spectrum runs can compare them without
+  recompiling. Add and update refuse a repeated case, a multiplier that is
+  not positive and finite, a source with neither lateral nor vertical mass,
+  and a case with self-weight while element mass is on. Compilation checks
+  every source, not only the default, and names the source in a problem, so
+  self-weight added to a source case later is caught there.
+- **Lumping to levels follows the nearest level.** ETABS documents only
+  that lateral mass between story levels moves to the nearest one. Here a
+  node off every level sends its lateral mass to the node directly below
+  or above it on the nearest level, found by position within the level
+  tolerance; a node exactly halfway splits evenly, and a node above the top
+  level or below the lowest goes to that level. A node with no node there,
+  such as a brace midpoint, is a compile problem naming it rather than a
+  guess. Levels are datums, so lumping follows geometry, not the level a
+  node binds to.
+- **Mass and weight modifiers sit beside the stiffness ones** on frames
+  and shells, 0 allowed. The GUI's ACI presets replace only the stiffness
+  factors.
+
+The file format went to version 8 for mass sources and the two modifiers;
+a version 7 document has no sources and full mass and weight. The GUI's
+Define menu opens a mass sources table laid out like the combinations: a
+row per source with its name and five switches (default, own mass,
+lateral, vertical, lump to levels), then a multiplier column per case,
+blank for a case the source leaves out. The first source added becomes the
+default, removing the default clears it first, and removing a load case
+takes it out of every source in the same undo step.
 
 ## Phases
 

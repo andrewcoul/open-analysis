@@ -497,27 +497,44 @@ pub struct Combination {
     pub terms: Vec<(EntityId, f64)>,
 }
 
-/// Where modal and spectrum analysis take mass from, as in ETABS. Node mass
-/// always counts; `element_mass` adds the members' own mass from density,
-/// and each listed load case adds its gravity load divided by g, times its
-/// multiplier. The solver's [`oa_core::MassSource`] has the details.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct MassSource {
-    pub element_mass: bool,
-    pub cases: Vec<(EntityId, f64)>,
+fn yes() -> bool {
+    true
 }
-impl Default for MassSource {
-    fn default() -> Self {
-        Self {
-            element_mass: true,
-            cases: vec![],
-        }
-    }
+/// A named definition of what modal and spectrum analysis take as mass, as
+/// in ETABS. Node mass always counts; `element_mass` adds the members' own
+/// mass from density, and each listed load case adds its gravity load
+/// divided by g, times its multiplier. `lateral` keeps X and Y translation
+/// and rotation about Z, `vertical` keeps Z translation and rotation about X
+/// and Y, and `lump_to_levels` moves lateral mass between levels onto the
+/// levels. The model's default source is the one analysis uses unless told
+/// otherwise; the solver's [`oa_core::MassSource`] has the details.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MassSource {
+    pub name: String,
+    #[serde(default = "yes")]
+    pub element_mass: bool,
+    #[serde(default)]
+    pub cases: Vec<(EntityId, f64)>,
+    #[serde(default = "yes")]
+    pub lateral: bool,
+    #[serde(default = "yes")]
+    pub vertical: bool,
+    #[serde(default)]
+    pub lump_to_levels: bool,
 }
 impl MassSource {
-    pub fn is_default(&self) -> bool {
-        *self == Self::default()
+    /// Element and node mass in every direction, and no load cases: what
+    /// analysis uses when the model has no default source.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            element_mass: true,
+            cases: vec![],
+            lateral: true,
+            vertical: true,
+            lump_to_levels: false,
+        }
     }
     /// The multiplier on a load case, if the source lists it.
     pub fn multiplier(&self, case: EntityId) -> Option<f64> {
