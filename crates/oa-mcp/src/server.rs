@@ -357,7 +357,7 @@ impl Server {
             .await
     }
     #[tool(
-        description = "One library section as add_section_from_library would copy it: area, second moments, and AISC design properties (d, bf, tf, tw, Zx, Sx, rx, Cw, ...) with their units. x is the axis of iz."
+        description = "One library section as add_section_from_library would copy it: area, second moments, shear areas, and AISC design properties (d, bf, tf, tw, Zx, Sx, rx, Cw, ...) with their units. x is the axis of iz."
     )]
     async fn library_section(
         &self,

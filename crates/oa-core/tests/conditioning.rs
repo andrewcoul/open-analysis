@@ -18,6 +18,8 @@ fn contrast_chain(ratio: f64) -> Model {
             iy: SecondMoment::from_si(2e-5 / divisor),
             iz: SecondMoment::from_si(4e-5 / divisor),
             torsion: SecondMoment::from_si(1e-5 / divisor),
+            shear_y: None,
+            shear_z: None,
         });
     }
     let n = 20;

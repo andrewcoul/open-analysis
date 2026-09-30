@@ -11,6 +11,8 @@ fn independent_cantilevers(n: usize, split: f64) -> Model {
         iy: SecondMoment::from_si(2e-5),
         iz: SecondMoment::from_si(4e-5),
         torsion: SecondMoment::from_si(1e-5),
+        shear_y: None,
+        shear_z: None,
     });
     for i in 0..n {
         let a = m.add_node(Node::fixed([

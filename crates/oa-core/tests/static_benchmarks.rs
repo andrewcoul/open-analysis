@@ -18,6 +18,8 @@ fn base() -> Model {
         iy: SecondMoment::from_si(2e-5),
         iz: SecondMoment::from_si(4e-5),
         torsion: SecondMoment::from_si(1e-5),
+        shear_y: None,
+        shear_z: None,
     });
     m
 }

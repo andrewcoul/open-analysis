@@ -415,6 +415,8 @@ impl Model {
                     iy: x.iy,
                     iz: x.iz,
                     torsion: x.torsion,
+                    shear_y: x.shear_y,
+                    shear_z: x.shear_z,
                     shape: None,
                     provenance: None,
                 })

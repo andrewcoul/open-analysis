@@ -319,3 +319,32 @@ fn materials_carry_strengths_in_ksi() {
         .to_string();
     assert!(err.contains("Fu must be at least Fy"), "{err}");
 }
+
+#[test]
+fn sections_carry_shear_areas_in_square_inches() {
+    let mut s = Session::default();
+    s.new_model("shear").unwrap();
+    let entry = s.library_section("W14X90").unwrap();
+    assert!((entry["section"]["shear_y"].as_f64().unwrap() - 6.16).abs() < 1e-9);
+    let beam = s.add_section_from_library("W14X90", "beam").unwrap();
+    let got = &s.get(beam).unwrap()["entity"];
+    assert!((got["shear_z"].as_f64().unwrap() - 5.0 / 3.0 * 14.5 * 0.71).abs() < 1e-9);
+
+    let [deep, bad] = <[_; 2]>::try_from(s.next_ids(2)).unwrap();
+    s.apply(vec![cmd(
+        json!({"command": "add_section", "id": deep, "section":
+        {"name": "deep", "area": 20, "iy": 50, "iz": 900, "torsion": 2, "shear_y": 8}}),
+    )])
+    .unwrap();
+    let got = &s.get(deep).unwrap()["entity"];
+    assert!((got["shear_y"].as_f64().unwrap() - 8.0).abs() < 1e-9);
+    assert!(got.get("shear_z").is_none());
+    let err = s
+        .apply(vec![cmd(
+            json!({"command": "add_section", "id": bad, "section":
+            {"name": "bad", "area": 20, "iy": 50, "iz": 900, "torsion": 2, "shear_z": 0}}),
+        )])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("shear areas must be positive"), "{err}");
+}

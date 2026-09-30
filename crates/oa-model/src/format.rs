@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const FORMAT_VERSION: u32 = 5;
+pub const FORMAT_VERSION: u32 = 6;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
@@ -159,6 +159,9 @@ fn migrate(from: u32, mut value: serde_json::Value) -> Result<serde_json::Value,
         // Version 5 lets a material carry its design strengths, Fy, Fu and
         // f'c. A version 4 material has none and needs no change.
         4 => Ok(value),
+        // Version 6 lets a section carry shear areas. A version 5 section has
+        // none, stays rigid in shear, and needs no change.
+        5 => Ok(value),
         _ => Ok(value),
     }
 }

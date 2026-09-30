@@ -355,6 +355,8 @@ mod tests {
             iy: oa_core::units::SecondMoment::from_si(1e-5),
             iz: oa_core::units::SecondMoment::from_si(1e-5),
             torsion: oa_core::units::SecondMoment::from_si(1e-5),
+            shear_y: None,
+            shear_z: None,
             shape: None,
             provenance: None,
         });

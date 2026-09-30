@@ -243,6 +243,8 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
             iy: s.iy,
             iz: s.iz,
             torsion: s.torsion,
+            shear_y: s.shear_y,
+            shear_z: s.shear_z,
         });
     }
     let node = |id: &EntityId| oa_core::NodeId(mapping.node_index[id]);
@@ -435,6 +437,8 @@ pub fn geometry_problems(model: &Model, nodes: &BTreeSet<EntityId>) -> Vec<Probl
             iy: SecondMoment::from_si(1.0),
             iz: SecondMoment::from_si(1.0),
             torsion: SecondMoment::from_si(1.0),
+            shear_y: None,
+            shear_z: None,
         });
         Some(solver)
     };
