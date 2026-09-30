@@ -144,7 +144,10 @@ impl Library {
 /// Shear areas along local y (the web, for AISC Ix bending) and local z,
 /// from a shape's SI properties, as ETABS and SAP2000 take them: d tw for
 /// a web, 5/6 of each flange's bf tf, 2 t h for the walls of a rectangular
-/// tube, and half the area of a round one. None where a property is missing.
+/// tube, and (0.9 - 0.4 s) A for a round one, where s = (r - t) / r is the
+/// ratio of inner to outer radius: half the area for a thin wall, rising
+/// towards 0.9 A for a solid bar (CSI Analysis Reference, Figure 29). None
+/// where a property is missing.
 fn shear_areas(shape: &Shape, area: f64) -> [Option<Area>; 2] {
     use SectionProperty::*;
     let p = |property| shape.properties.get(&property).copied();
@@ -165,7 +168,14 @@ fn shear_areas(shape: &Shape, area: f64) -> [Option<Area>; 2] {
             product(HssDepth, DesignWallThickness, 2.0),
             product(HssWidth, DesignWallThickness, 2.0),
         ],
-        ShapeKind::HSS | ShapeKind::PIPE => [Some(area / 2.0); 2],
+        ShapeKind::HSS | ShapeKind::PIPE => {
+            let round = (|| {
+                let r = p(OutsideDiameter)? / 2.0;
+                let s = (r - p(DesignWallThickness)?) / r;
+                Some((0.9 - 0.4 * s) * area)
+            })();
+            [round; 2]
+        }
     };
     [y, z].map(|a| a.map(Area::from_si))
 }

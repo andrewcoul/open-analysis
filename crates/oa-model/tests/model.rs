@@ -1501,11 +1501,18 @@ fn aisc_library_copies_shear_areas() {
     // A rectangular tube's two walls of height Ht carry shear along y.
     let (y, z, _) = shear("HSS12X8X1/2");
     assert!(near(y, in2(2.0 * 12.0 * 0.465)) && near(z, in2(2.0 * 8.0 * 0.465)));
-    // A round tube or pipe carries half its area in shear either way.
-    for round in ["HSS8.625X0.500", "Pipe6STD"] {
-        let (y, z, area) = shear(round);
-        assert!(near(y, area / 2.0) && near(z, area / 2.0), "{round}");
+    // A round tube or pipe carries (0.5 + 0.8 t / OD) A either way, CSI's
+    // (0.9 - 0.4 s) A with s = (r - t) / r: near half for a thin wall, more
+    // for a thick one. Pipe2XXS (A 2.51, OD 2.375, tdes 0.406) is 1.598 in².
+    for (round, expected) in [
+        ("HSS8.625X0.500", (0.5 + 0.8 * 0.465 / 8.63) * 11.9),
+        ("Pipe2XXS", (0.5 + 0.8 * 0.406 / 2.375) * 2.51),
+    ] {
+        let (y, z, _) = shear(round);
+        assert!(near(y, in2(expected)) && near(z, y), "{round}");
     }
+    let (y, _, area) = shear("Pipe2XXS");
+    assert!((y / in2(1.0) - 1.5983).abs() < 1e-4 && y > area / 2.0 * 1.27);
     // Every shape gets both, smaller than its area; the starter library's
     // sections carry no shape and stay rigid in shear.
     for e in &library.sections {
