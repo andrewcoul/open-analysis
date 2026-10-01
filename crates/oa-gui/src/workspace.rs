@@ -521,7 +521,6 @@ impl Workspace {
             Err(e) => self.error(e, window, cx),
         }
     }
-    /// Picks a DXF drawing, then asks which level it lies on and how.
     /// A rectangular grid, then the view zoomed to take it in.
     pub fn add_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let viewport = self.viewport.clone();
@@ -532,6 +531,7 @@ impl Workspace {
             cx,
         );
     }
+    /// Picks a DXF drawing, then asks which level it lies on and how.
     pub fn import_cad(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -1129,7 +1129,7 @@ impl Workspace {
                 "Define",
                 vec![
                     item("Levels…", Box::new(ShowLevels), None),
-                    item("Add grid…", Box::new(AddGrid), None),
+                    item("Grid…", Box::new(AddGrid), None),
                     item("Material from library…", Box::new(AddMaterialFromLibrary), None),
                     item("Custom material…", Box::new(AddCustomMaterial), None),
                     item("Section from library…", Box::new(AddSectionFromLibrary), None),

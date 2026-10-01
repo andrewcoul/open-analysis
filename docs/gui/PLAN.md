@@ -193,9 +193,9 @@ Actions are routed to `Workspace` methods in `main.rs`.
   editor (label and both ends), deleted like anything else, and undoable;
   like underlays they cannot be picked in the view.
 - Object snaps (`snap.rs`): endpoint, midpoint, intersection, and
-  perpendicular, on frames, shell edges, underlay lines, and grid lines alike, for the
-  Node, Frame, and Shell tools. The search is in screen space within 10 px of
-  the pointer; intersections and perpendiculars are worked out in plan, and
+  perpendicular, on frames, shell edges, underlay lines, and grid lines
+  alike, for the Node, Frame, and Shell tools. The search is in screen space
+  within 10 px of the pointer; intersections and perpendiculars are worked out in plan, and
   a perpendicular is dropped from the last corner taken, so a pointer resting
   anywhere on a line finds its foot. The marker is drawn on the geometry
   (square, triangle, cross, right angle) and the point itself always lands

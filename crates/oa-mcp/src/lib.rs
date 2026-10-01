@@ -1049,13 +1049,9 @@ impl Session {
                 Err(_) => continue,
             };
             let value = match quantity {
-                Quantity::Displacement => {
-                    result.displacements.as_ref().ok_or_else(missing)?[index][c]
-                }
+                Quantity::Displacement => result.displacements.as_ref().ok_or_else(missing)?[index][c],
                 Quantity::Reaction => result.reactions.as_ref().ok_or_else(missing)?[index][c],
-                Quantity::FrameForce => {
-                    result.frame_end_forces.as_ref().ok_or_else(missing)?[index][c]
-                }
+                Quantity::FrameForce => result.frame_end_forces.as_ref().ok_or_else(missing)?[index][c],
             };
             rows.push((member, value.abs()));
         }

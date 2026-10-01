@@ -2015,6 +2015,15 @@ fn grid_lines_are_reference_geometry_added_as_one_step() {
     let again = grid.command(&editor.model).unwrap();
     assert!(matches!(editor.apply(again), Err(ModelError::Batch { .. })));
     assert_eq!(editor.model.grid_lines.len(), 7);
+    // So is one whose X and Y labels run into each other.
+    let clash = grids::RectangularGrid {
+        x_label: "10".into(),
+        y_label: "11".into(),
+        ..grid.clone()
+    };
+    let clash = clash.command(&editor.model).unwrap();
+    assert!(matches!(editor.apply(clash), Err(ModelError::Batch { .. })));
+    assert_eq!(editor.model.grid_lines.len(), 7);
 
     // Lines are edited and removed one at a time.
     let moved = GridLine {

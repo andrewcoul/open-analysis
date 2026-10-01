@@ -49,10 +49,11 @@ impl RectangularGrid {
         let ys = stations(oy, &self.y_spacings);
         let over = self.overhang.si();
         // A single line along an axis has nothing to span, so it runs the
-        // overhang either side; with no overhang it would be a point.
+        // overhang either side, or 1 m with no overhang, where it would
+        // otherwise be a point.
         let span = |at: &[f64]| {
             let (lo, hi) = (at[0], at[at.len() - 1]);
-            let pad = if hi > lo { over } else { over.max(1.0) };
+            let pad = if hi > lo || over > 0.0 { over } else { 1.0 };
             (lo - pad, hi + pad)
         };
         let (y0, y1) = span(&ys);
@@ -106,9 +107,16 @@ pub fn labels(first: &str) -> Result<impl Iterator<Item = String>> {
     let digits = first.len() - first.trim_end_matches(|c: char| c.is_ascii_digit()).len();
     let step: Box<dyn Fn(&str) -> String> = if digits > 0 {
         let prefix = first[..first.len() - digits].to_string();
+        // Zero padding is kept, so 01 counts on as 02 and 09 as 10.
+        let width = digits;
+        if first[prefix.len()..].parse::<u32>().is_err() {
+            return Err(ModelError::Invalid(format!(
+                "grid label {first:?} ends in too large a number"
+            )));
+        }
         Box::new(move |label: &str| {
             let n: u64 = label[prefix.len()..].parse().unwrap_or(0);
-            format!("{prefix}{}", n.saturating_add(1))
+            format!("{prefix}{:0width$}", n + 1)
         })
     } else if first.chars().all(|c| c.is_ascii_alphabetic()) {
         Box::new(next_letters)
@@ -120,8 +128,9 @@ pub fn labels(first: &str) -> Result<impl Iterator<Item = String>> {
     Ok(std::iter::successors(Some(first), move |l| Some(step(l))))
 }
 
-/// The next letter label: B after A, AA after Z, keeping the case and
-/// skipping I and O.
+/// The next letter label: B after A, AA after Z, skipping I and O. An
+/// all-lowercase label stays lowercase; a mixed-case one counts on in
+/// capitals.
 fn next_letters(label: &str) -> String {
     let lower = label.chars().all(|c| c.is_ascii_lowercase());
     let mut chars: Vec<u8> = label.to_ascii_uppercase().into_bytes();
@@ -208,6 +217,10 @@ mod tests {
         assert_eq!(first("1", 3), ["1", "2", "3"]);
         assert_eq!(first("9", 2), ["9", "10"]);
         assert_eq!(first("C1", 3), ["C1", "C2", "C3"]);
+        assert_eq!(first("A08", 3), ["A08", "A09", "A10"]);
+        assert_eq!(first("HZ", 2), ["HZ", "JA"]);
+        assert_eq!(first("Ab", 2), ["Ab", "AC"]);
+        assert!(labels("C99999999999999999999").is_err());
         assert!(labels("").is_err());
         assert!(labels("A-").is_err());
     }
@@ -250,6 +263,11 @@ mod tests {
         };
         let lines = single.lines().unwrap();
         assert_eq!(si(&lines[0]), [[1.0, 1.0], [1.0, 3.0]]);
+        let short = RectangularGrid {
+            overhang: ft(0.25),
+            ..single.clone()
+        };
+        assert_eq!(si(&short.lines().unwrap()[0]), [[1.0, 1.75], [1.0, 2.25]]);
         let bad = RectangularGrid {
             x_spacings: vec![ft(-1.0)],
             ..grid
