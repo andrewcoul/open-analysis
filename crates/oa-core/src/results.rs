@@ -11,11 +11,12 @@ use serde::{Deserialize, Serialize};
 pub struct FrameResult {
     pub active: bool,
     /// Forces applied to the element at its ends, in local axes (N and N m).
-    /// With end offsets these are the ends of the flexible part, inside the
-    /// rigid zones; see `FrameOffsets`.
+    /// With rigid zones, shear and bending are at the ends of the flexible
+    /// part; axial force and torque, which span the whole member, are at its
+    /// ends. See `FrameOffsets`.
     pub local_end_forces: [f64; 12],
-    /// Includes recovered hinge rotations / released displacements. At the
-    /// same points as the forces.
+    /// Includes recovered hinge rotations / released displacements, at the
+    /// ends of the flexible part.
     pub local_displacements: [f64; 12],
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,25 +199,32 @@ fn section_forces(
     result: &FrameResult,
     x: f64,
 ) -> Result<SectionForces> {
-    let [f0, flexible] = e.flexible;
-    if !x.is_finite() || x < f0 || x > f0 + flexible {
+    // Stations are computed from end offsets and so may land a rounding
+    // step outside the flexible part; they are moved onto it.
+    let [f0, f1] = e.flexible;
+    let tolerance = 1e-9 * e.length;
+    if !x.is_finite() || x < f0 - tolerance || x > f1 + tolerance {
         return Err(Error::Request(
             "section position outside the member's flexible length".into(),
         ));
     }
+    let x = x.clamp(f0, f1);
     if !result.active {
         return Ok(SectionForces {
             x,
             values: [0.0; 6],
         });
     }
+    // Bending and shear are cut from the start of the flexible part, where
+    // the end forces act; loads on the rigid zones went straight to the
+    // nodes, so only loads on the flexible part enter. Axial force and twist
+    // span the whole member, so they are cut from its start and every load
+    // enters.
+    let axial = |v: Vector3<f64>| Vector3::new(v.x, 0.0, 0.0);
+    let transverse = |v: Vector3<f64>| Vector3::new(0.0, v.y, v.z);
     let f = result.local_end_forces;
     let mut force = Vector3::new(f[0], f[1], f[2]);
-    // The end forces act at the start of the flexible part. Loads on the
-    // rigid zones went straight to the nodes, so only loads on the flexible
-    // part enter the cut.
-    let mut moment =
-        Vector3::new(f[3], f[4], f[5]) + Vector3::new(f0 - x, 0.0, 0.0).cross(&force);
+    let mut moment = Vector3::new(f[3], f[4], f[5]) + Vector3::new(f0 - x, 0.0, 0.0).cross(&force);
     for (factor, load) in &loads.0 {
         let factor = *factor;
         match load {
@@ -226,11 +234,16 @@ fn section_forces(
                 moment: m,
                 axes,
                 ..
-            } if f0 <= position.si() && position.si() <= x => {
+            } if position.si() <= x => {
                 let f = e.local_vector(*axes, f.map(|v| v.si())) * factor;
-                force += f;
-                moment += e.local_vector(*axes, m.map(|v| v.si())) * factor
-                    + Vector3::new(position.si() - x, 0.0, 0.0).cross(&f);
+                let m = e.local_vector(*axes, m.map(|v| v.si())) * factor;
+                if position.si() >= f0 {
+                    force += f;
+                    moment += m + Vector3::new(position.si() - x, 0.0, 0.0).cross(&f);
+                } else {
+                    force += axial(f);
+                    moment += axial(m);
+                }
             }
             MemberLoad::Distributed {
                 start,
@@ -239,20 +252,29 @@ fn section_forces(
                 end_load,
                 axes,
                 ..
-            } if start.si().max(f0) < x && end.si() > f0 => {
+            } if start.si() < x => {
                 let span = end.si() - start.si();
                 let q0 = e.local_vector(*axes, start_load.map(|v| v.si())) * factor;
-                let slope =
-                    (e.local_vector(*axes, end_load.map(|v| v.si())) * factor - q0) / span;
-                // Start the cut's share where the load meets the flexible part.
-                let a = start.si().max(f0);
-                let q0 = q0 + slope * (a - start.si());
+                let slope = (e.local_vector(*axes, end_load.map(|v| v.si())) * factor - q0) / span;
+                // The resultant of the load over [a, b] and its first moment
+                // about the cut.
+                let piece = |a: f64, b: f64| {
+                    let qa = q0 + slope * (a - start.si());
+                    let h = b - a;
+                    let f = qa * h + slope * (h * h / 2.0);
+                    (
+                        f,
+                        qa * (h * h / 2.0) + slope * (h * h * h / 3.0) + f * (a - x),
+                    )
+                };
                 let b = end.si().min(x);
-                let h = b - a;
-                let f = q0 * h + slope * (h * h / 2.0);
-                let first = q0 * (h * h / 2.0) + slope * (h * h * h / 3.0) + f * (a - x);
-                force += f;
-                moment += Vector3::x().cross(&first);
+                force += axial(piece(start.si(), b).0);
+                let a = start.si().max(f0);
+                if a < b {
+                    let (f, first) = piece(a, b);
+                    force += transverse(f);
+                    moment += Vector3::x().cross(&transverse(first));
+                }
             }
             _ => {}
         }

@@ -395,23 +395,38 @@ end offsets and insertion point):
   joint. The rest is the clear length; section forces and diagrams cover it
   and nothing in the joints, and `FrameDiagram` gains `origin`, the moved
   end I its stations start from.
-- **`rigid_zone`** (0 to 1, default 0) of each end offset is rigid, as the
-  rigid-zone factor. The flexible part is the length less the rigid parts;
-  its stiffness, Timoshenko shear parameter and geometric stiffness use that
-  length.
+- **`rigid_zone`** (0 to 1, default 0) of each end offset is rigid in
+  bending and shear, as the rigid-zone factor. The flexible part is the
+  length less the rigid parts; its bending stiffness, Timoshenko shear
+  parameter and transverse geometric stiffness use that length. Axial and
+  torsional stiffness, and the torsional geometric term, keep the whole
+  length: CSI makes the zones rigid in bending and shear only, and a column
+  shortens through the joint as much as along its clear height.
 
 The element is the old one on the flexible part, carried to the nodes by
 `t = R A`, where `A` is a rigid link per end: the end of the flexible part
 moves `u + θ × r` and turns with its node, `r` being its arm from the node
-through the joint offset and the rigid zone. Recovered end forces and
-displacements are at the ends of the flexible part, so releases act there:
-at the faces when the rigid-zone factor is 1. A member load on the flexible
-part becomes fixed-end forces as before. A load on a rigid zone is carried
-by statics to the end of the flexible part and then to the node through
-`Aᵀ`, as a nodal load, without entering the condensed member load: it sits
-on the node's side of any release, and a beam pinned at its faces carries
-none of it. Section recovery takes the end forces at the start of the
-flexible part and adds only loads on the flexible part.
+through the joint offset and the rigid zone. The zone's part of `r` lies
+along the member, so the link leaves axial displacement and twist as they
+are and the axial and torsional terms can use the whole length. Recovered
+end forces and displacements are at the ends of the flexible part, so
+releases act there: at the faces when the rigid-zone factor is 1. Axial
+force and torque in them are those at the member's ends. A member load's
+axial force and torque take the linear shape over the whole length,
+wherever they sit. Its transverse part on the flexible part becomes
+fixed-end forces as before; on a rigid zone it is carried by statics to the
+end of the flexible part and then to the node through `Aᵀ`, as a nodal
+load, without entering the condensed member load: it sits on the node's
+side of any release, and a beam pinned at its faces carries none of it.
+Section recovery cuts shear and bending from the start of the flexible
+part, adding only loads on the flexible part, and axial force and torque
+from the member's start, adding every load before the cut.
+
+The ends of the flexible part are stored as `rigid · oᵢ` and
+`L − rigid · oⱼ`, written the way the clear length's ends `oᵢ` and `L − oⱼ`
+are, so at a factor of 1 the two agree to the bit and the last diagram
+station is on the face. A section asked for within roundoff (10⁻⁹ L) of
+the flexible part is moved onto it.
 
 Mass and self-weight count the whole member, joints included, as ETABS
 does by default; frame mass is still lumped half to each node. Offsets that
@@ -425,16 +440,19 @@ the same beam with each zone a member 10⁶ times stiffer under a trapezoid
 running into both zones and a point load in one, a beam pinned at its faces
 carrying none of its rigid-zone loads, an axial load through joint offsets
 bending the member but leaving no moment at the support, local against
-global joint offsets, validation, and self-weight over the full length.
+global joint offsets, validation, self-weight over the full length, a
+cantilever's axial and torsional tip movement and section forces with rigid
+zones against the closed form for the whole length, and diagrams reaching
+both faces for decimal offsets at several factors.
 
 Left out:
 
 - **Automatic end offsets from connectivity.** ETABS can set each end offset
   from the depth of what the member frames into. The model layer could fill
   them from the sections at each node; for now they are entered.
-- **Rigid zones in P-Delta.** The geometric stiffness covers the flexible
-  part only, so an axial force does not soften the rigid zones' sway. Rigid
-  zones are short and stiff, so the effect is small.
+- **Rigid zones in P-Delta.** The transverse geometric stiffness covers
+  the flexible part only, so an axial force does not soften the rigid
+  zones' sway. Rigid zones are short and stiff, so the effect is small.
 - **Releases at the faces with a factor below 1.** CSI puts releases at the
   faces whatever the factor. Here they sit at the ends of the flexible part,
   which are the faces only when the factor is 1.

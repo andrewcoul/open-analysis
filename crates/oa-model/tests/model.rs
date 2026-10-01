@@ -1997,6 +1997,44 @@ fn format_v9_fixture_loads_with_frame_offsets() {
 }
 
 #[test]
+fn cardinal_points_sit_across_the_member_their_joint_offsets_leave() {
+    // Lift B2's end J 3 m so the member slopes from (0, 0.1, 0) to
+    // (6, 0.1, 3). The top of its section must sit on those two points,
+    // measured across the sloped member, not the level line between nodes.
+    let fixture = from_json(include_str!("fixtures/format_v9.json")).unwrap();
+    let b2 = fixture.find::<Frame>("B2").unwrap();
+    let in_global = [[0.0, 0.1, 0.0], [0.0, 0.1, 3.0]];
+    // The same move in the axes of the level line: x along global X, y up,
+    // and z toward global -Y.
+    let in_local = [[0.0, 0.0, -0.1], [0.0, 3.0, -0.1]];
+    for (axes, joint) in [
+        (oa_core::Axes::Global, in_global),
+        (oa_core::Axes::Local, in_local),
+    ] {
+        let mut model = fixture.clone();
+        let frame = model.frames.get_mut(&b2).unwrap();
+        frame.offsets.axes = axes;
+        frame.offsets.joint = joint.map(|end| end.map(Length::from_si));
+        let compiled = compile(&model).unwrap();
+        let solver = &compiled.solver.frames[compiled.mapping.frame_index[&b2]];
+        assert_eq!(solver.offsets.axes, oa_core::Axes::Global);
+        let centroid = solver.ends([[0.0; 3], [6.0, 0.0, 0.0]]).unwrap();
+        let span = std::array::from_fn(|i| centroid[1][i] - centroid[0][i]);
+        let [_, up, _] = solver.axes_along(span).unwrap();
+        for (k, expected) in [[0.0, 0.1, 0.0], [6.0, 0.1, 3.0]].into_iter().enumerate() {
+            for i in 0..3 {
+                let top = centroid[k][i] + up[i] * 0.356 / 2.0;
+                assert!(
+                    (top - expected[i]).abs() < 1e-12,
+                    "{axes:?} end {k}: {:?}",
+                    centroid[k]
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn cardinal_points_follow_the_section_shape() {
     let library = Library::aisc();
     let at = |designation: &str, point: CardinalPoint| {

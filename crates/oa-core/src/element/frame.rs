@@ -83,8 +83,9 @@ pub(crate) struct FrameElement {
     /// The whole member, end offsets included, from its moved end I to J.
     /// Load positions and section stations run along this length.
     pub length: f64,
-    /// Where the flexible part starts along `length`, and its length. The
-    /// rest is rigid end zone.
+    /// Where the flexible part starts and ends along `length`. The rest is
+    /// rigid end zone, rigid in bending and shear only: axial and torsional
+    /// deformation span the whole length, as in CSI's programs.
     pub flexible: [f64; 2],
     /// Start and end of the clear length along `length`, between the end
     /// offsets: where section forces are reported.
@@ -128,10 +129,12 @@ impl FrameElement {
             )));
         }
         let rigid = frame.offsets.rigid_zone;
-        let flexible = [rigid * oi, total - rigid * (oi + oj)];
-        let length = flexible[1];
+        // Spelled as the clear length's ends are, so a factor of 1 puts the
+        // flexible part's ends exactly on the faces.
+        let flexible = [rigid * oi, total - rigid * oj];
+        let length = flexible[1] - flexible[0];
         let x = r.row(0).transpose();
-        let ends = [start + x * flexible[0], start + x * (flexible[0] + length)];
+        let ends = flexible.map(|at| start + x * at);
         let mut link = M12::zeros();
         for (k, node) in frame.nodes.iter().enumerate() {
             let arm = ends[k] - Vector3::from(model.nodes[node.0].xyz());
@@ -156,13 +159,17 @@ impl FrameElement {
             phi(ei_z, s.shear_y, md.shear_y),
             phi(ei_y, s.shear_z, md.shear_z),
         ];
+        // Rigid zones are rigid in bending and shear only. The links carry
+        // axial displacement and twist unchanged along the member's axis, so
+        // axial and torsional stiffness over the whole length between the
+        // flexible part's ends is the whole member's.
         let mut k = M12::zeros();
-        pair(&mut k, 0, 6, m.young.si() * s.area.si() * md.area / length);
+        pair(&mut k, 0, 6, m.young.si() * s.area.si() * md.area / total);
         pair(
             &mut k,
             3,
             9,
-            m.shear_modulus() * s.torsion.si() * md.torsion / length,
+            m.shear_modulus() * s.torsion.si() * md.torsion / total,
         );
         bending(&mut k, [1, 5, 7, 11], ei_z, length, 1.0, phi[0]);
         bending(&mut k, [2, 4, 8, 10], ei_y, length, -1.0, phi[1]);
@@ -174,7 +181,7 @@ impl FrameElement {
             &mut kg,
             3,
             9,
-            (s.iy.si() + s.iz.si()) / (s.area.si() * length),
+            (s.iy.si() + s.iz.si()) / (s.area.si() * total),
         );
         Ok(Self {
             dofs: std::array::from_fn(|i| frame.nodes[i / 6].0 * 6 + i % 6),
@@ -249,9 +256,8 @@ impl FrameElement {
                 let q1 = self.local_vector(*axes, end_load.map(|v| v.si()));
                 // Integrate each zone on its own: the transfer through a
                 // rigid zone has a kink at the flexible part's end.
-                let [f0, lf] = self.flexible;
                 let mut cuts = vec![a, b];
-                cuts.extend([f0, f0 + lf].into_iter().filter(|c| *c > a && *c < b));
+                cuts.extend(self.flexible.into_iter().filter(|c| *c > a && *c < b));
                 cuts.sort_by(f64::total_cmp);
                 for piece in cuts.windows(2) {
                     let (c, d) = (piece[0], piece[1]);
@@ -306,17 +312,24 @@ impl FrameElement {
             }
         }
     }
-    /// Adds a force and moment at `x` along the member: to `p` as fixed-end
-    /// forces when it acts on the flexible part, or to `rigid` at the end of
-    /// the flexible part, with the moment of its lever arm, when it acts on
-    /// a rigid zone.
+    /// Adds a force and moment at `x` along the member. Axial force and
+    /// twist always go to `p` by the linear shape over the whole length,
+    /// which is flexible in both. The rest goes to `p` as fixed-end forces
+    /// when it acts on the flexible part, or to `rigid` at the end of the
+    /// flexible part, with the moment of its lever arm, when it acts on a
+    /// rigid zone.
     fn load_at(&self, x: f64, f: Vector3<f64>, m: Vector3<f64>, p: &mut V12, rigid: &mut V12) {
-        let [f0, length] = self.flexible;
-        let s = x - f0;
-        let arm = if s < 0.0 {
-            Some((0, s))
-        } else if s > length {
-            Some((6, s - length))
+        let along = x / self.length;
+        p[0] += (1.0 - along) * f.x;
+        p[6] += along * f.x;
+        p[3] += (1.0 - along) * m.x;
+        p[9] += along * m.x;
+        let (f, m) = (Vector3::new(0.0, f.y, f.z), Vector3::new(0.0, m.y, m.z));
+        let [f0, f1] = self.flexible;
+        let arm = if x < f0 {
+            Some((0, x - f0))
+        } else if x > f1 {
+            Some((6, x - f1))
         } else {
             None
         };
@@ -328,11 +341,8 @@ impl FrameElement {
             }
             return;
         }
-        let t = s / length;
-        p[0] += (1.0 - t) * f.x;
-        p[6] += t * f.x;
-        p[3] += (1.0 - t) * m.x;
-        p[9] += t * m.x;
+        let length = f1 - f0;
+        let t = (x - f0) / length;
         // A force works through the deflection, a moment through the section
         // rotation; with shear deformation the two differ.
         let (h, rot) = shape(t, length, self.phi[0]);

@@ -179,23 +179,23 @@ pub(crate) fn solver_frame(
                 f.cardinal_point.label().to_lowercase()
             )
         })?;
-    let local = match frame.offsets.axes {
-        oa_core::Axes::Local => [0.0, dy, dz],
-        oa_core::Axes::Global => {
-            let (Some(a), Some(b)) = (model.nodes.get(&f.nodes[0]), model.nodes.get(&f.nodes[1]))
-            else {
-                return Ok(frame);
-            };
-            let span = std::array::from_fn(|i| b.position[i].si() - a.position[i].si());
-            let [_, y, z] = frame.axes_along(span)?;
-            std::array::from_fn(|i| y[i] * dy + z[i] * dz)
-        }
+    // The point sits in the plane of the member as its joint offsets leave
+    // it, so resolve those first, in global axes, and shift both ends
+    // across that line. The shift is the same at both ends, so the line
+    // keeps its direction and its local axes.
+    let (Some(a), Some(b)) = (model.nodes.get(&f.nodes[0]), model.nodes.get(&f.nodes[1])) else {
+        return Ok(frame);
     };
-    for end in &mut frame.offsets.joint {
-        for (v, d) in end.iter_mut().zip(local) {
-            *v = oa_core::units::Length::from_si(v.si() + d);
-        }
-    }
+    let nodes = [a, b].map(|n| n.position.map(|v| v.si()));
+    let ends = frame.ends(nodes)?;
+    let span = std::array::from_fn(|i| ends[1][i] - ends[0][i]);
+    let [_, y, z] = frame.axes_along(span)?;
+    frame.offsets.axes = oa_core::Axes::Global;
+    frame.offsets.joint = std::array::from_fn(|k| {
+        std::array::from_fn(|i| {
+            oa_core::units::Length::from_si(ends[k][i] - nodes[k][i] + y[i] * dy + z[i] * dz)
+        })
+    });
     Ok(frame)
 }
 

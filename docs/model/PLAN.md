@@ -249,10 +249,13 @@ Decisions made during implementation:
   (see its plan): joint offsets, end length offsets and the rigid-zone
   factor, edited in inches in US units. `cardinal_point` is ETABS's
   insertion point 1 to 10, the point of the section on the line between the
-  nodes, seen from end I with local y up. Compilation turns it into joint
-  offsets from the section's steel shape: its depth along y and width along
-  z, with a channel's centroid x-bar from its web at the left and a tee's
-  y-bar below its flange at the top. A section without a shape can only be
+  nodes, seen from end I with local y up. With joint offsets it sits on the
+  line between the moved ends, in that line's axes. Compilation resolves the
+  joint offsets in global axes and adds the cardinal point's shift, the
+  same at both ends, so the member keeps that line's direction and axes. The
+  shift comes from the section's steel shape: its depth along y and width
+  along z, with a channel's centroid x-bar from its web at the left and a
+  tee's y-bar below its flange at the top. A section without a shape can only be
   placed at its centroid; any other point is a problem on the frame. The
   file format went to version 9; a version 8 frame runs node to node at its
   centroid. The GUI edits both per frame.

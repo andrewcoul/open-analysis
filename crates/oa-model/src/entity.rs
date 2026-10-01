@@ -309,8 +309,9 @@ impl Frame {
 }
 
 /// The point of a frame's section placed on the line between its nodes,
-/// numbered 1 to 10 as in ETABS and SAP2000. The section is seen from end I
-/// looking toward J, with local y up, so top is +y and right is +z. The
+/// or between the ends its joint offsets move it to, numbered 1 to 10 as in
+/// ETABS and SAP2000. The section is seen from end I looking toward J, with
+/// local y up, so top is +y and right is +z, in the axes of that line. The
 /// bounding box is the steel shape's depth along y and width along z. A
 /// channel's web is at the left and a tee's flange at the top, the way the
 /// shape tables measure their centroids. A beam whose nodes sit at the top

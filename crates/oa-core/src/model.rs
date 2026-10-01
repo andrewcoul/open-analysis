@@ -201,20 +201,23 @@ impl Frame {
 /// a beam hung below a slab's nodes, or a column whose face stays flush as
 /// its section steps. The member runs between the moved ends, and its local
 /// axes follow that line. With `axes` local, the offsets are in the axes
-/// the member would have between its nodes, so a cardinal point stays put
-/// when the member is moved.
+/// the member would have between its nodes.
 ///
 /// `end` is the length at each end, measured along the member from its
 /// moved end, that lies inside the joint: half the column depth a beam
 /// frames into, say. The member between the two is its clear length; section
 /// forces and diagrams are reported there and nowhere in the joints.
-/// `rigid_zone` of each end offset is rigid, from 0 (the default, where
-/// offsets only move the output to the faces) to 1. Releases act at the
-/// ends of the flexible length: at the faces when `rigid_zone` is 1.
+/// `rigid_zone` of each end offset is rigid in bending and shear, from 0
+/// (the default, where offsets only move the output to the faces) to 1, as
+/// ETABS's rigid-zone factor. Axial and torsional stiffness stay those of
+/// the whole length. Releases act at the ends of the flexible length: at
+/// the faces when `rigid_zone` is 1.
 ///
 /// Loads keep their positions along the whole member from its moved end I.
-/// A load inside a rigid zone goes to the node through the rigid zone. Mass
-/// and self-weight count the whole length, joints included, as ETABS does.
+/// The transverse part of a load inside a rigid zone goes to the node
+/// through the rigid zone; its axial force and torque load the whole length,
+/// which stays flexible to them. Mass and self-weight count the whole
+/// length, joints included, as ETABS does.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FrameOffsets {

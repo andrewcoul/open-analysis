@@ -34,8 +34,10 @@ fn len(v: f64) -> Length {
 fn at(x: f64, z: f64) -> [Length; 3] {
     [len(x), Length::ZERO, len(z)]
 }
-/// One material and two sections: the member's, and the same scaled by
-/// `stiff` for rigid zones modelled as members.
+/// One material and two sections: the member's, and the same with its
+/// bending stiffness scaled by `stiff` for rigid zones modelled as members.
+/// A rigid zone is rigid in bending and shear only, so its area and
+/// torsion constant are the member's.
 fn base(stiff: f64) -> Model {
     let mut m = Model::default();
     m.add_material(Material {
@@ -45,10 +47,10 @@ fn base(stiff: f64) -> Model {
     });
     for s in [1.0, stiff] {
         m.add_section(Section {
-            area: Area::from_si(A * s),
+            area: Area::from_si(A),
             iy: SecondMoment::from_si(IY * s),
             iz: SecondMoment::from_si(IZ * s),
-            torsion: SecondMoment::from_si(J * s),
+            torsion: SecondMoment::from_si(J),
             shear_y: None,
             shear_z: None,
         });
@@ -209,7 +211,16 @@ fn rigid_zones_match_very_stiff_members() {
         &a.frames.as_ref().unwrap()[0],
         &b.frames.as_ref().unwrap()[1],
     );
-    close_all(&fa.local_end_forces, &fb.local_end_forces, 1e-6);
+    // The flexible part's shear and bending at its ends are the middle
+    // member's. Its axial force and torque are at the member's ends, where
+    // the stiff members' differ by the axial load on the rigid zones; the
+    // section forces below check them.
+    let bending = |f: &[f64; 12]| [1, 2, 4, 5, 7, 8, 10, 11].map(|k| f[k]);
+    close_all(
+        &bending(&fa.local_end_forces),
+        &bending(&fb.local_end_forces),
+        1e-6,
+    );
     // And so are its section forces, at the same point in space.
     let combo = &offset.effective_combinations()[0];
     for x in [oi, 1.0, 2.2, L - oj] {
@@ -394,4 +405,106 @@ fn mass_counts_the_whole_member() {
     let c = solve(&m);
     let r = c.reactions.as_ref().unwrap();
     close(r[0][2] + r[1][2], 7850.0 * A * L * STANDARD_GRAVITY, 1e-10);
+}
+
+/// A rigid zone is rigid in bending and shear only: axial and torsional
+/// deformation span the whole member, as in CSI's programs.
+#[test]
+fn rigid_zones_leave_axial_and_torsional_flexibility() {
+    let (p, t) = (1000.0, 1000.0);
+    let mut m = base(1.0);
+    m.add_node(Node::fixed(at(0.0, 0.0)));
+    m.add_node(Node::new(at(L, 0.0)));
+    let mut f = frame(0, 1, 0);
+    f.offsets.end = [len(0.5), len(0.5)];
+    f.offsets.rigid_zone = 1.0;
+    m.add_frame(f);
+    m.add_load_case(LoadCase {
+        name: "load".into(),
+        nodal: vec![NodalLoad {
+            node: NodeId(1),
+            force: [Force::from_si(p), Force::ZERO, Force::ZERO],
+            moment: [Moment::from_si(t), Moment::ZERO, Moment::ZERO],
+        }],
+        // An axial load and a torque on each rigid zone, which the whole
+        // length carries as it would without one.
+        member: [0.25, 2.8]
+            .into_iter()
+            .map(|x| MemberLoad::Point {
+                member: FrameId(0),
+                position: len(x),
+                force: [Force::from_si(500.0), Force::ZERO, Force::ZERO],
+                moment: [Moment::from_si(200.0), Moment::ZERO, Moment::ZERO],
+                axes: Axes::Local,
+            })
+            .collect(),
+        ..Default::default()
+    });
+    let c = solve(&m);
+    let u = c.displacements.as_ref().unwrap()[1];
+    let g = E / 2.6;
+    // Loads at 0.25 and 2.8 stretch the bar over those lengths.
+    close(u[0], (p * L + 500.0 * (0.25 + 2.8)) / (E * A), 1e-10);
+    close(u[3], (t * L + 200.0 * (0.25 + 2.8)) / (g * J), 1e-10);
+    let combo = &m.effective_combinations()[0];
+    let fr = &c.frames.as_ref().unwrap()[0];
+    // Between the faces the cut carries the tip loads and the load at 2.8.
+    for x in [0.5, 1.5, 2.5] {
+        let s = frame_section_forces(&m, combo, FrameId(0), fr, len(x)).unwrap();
+        close(s.values[0], p + 500.0, 1e-10);
+        close(s.values[3], t + 200.0, 1e-10);
+    }
+}
+
+/// Stations come from the end offsets and the flexible part's ends from
+/// the rigid zone factor; roundoff between the two never puts a station
+/// off the member.
+#[test]
+fn diagrams_reach_both_faces_for_decimal_offsets() {
+    let mut failures = vec![];
+    for i in 1..10 {
+        for j in 1..10 {
+            for rigid in [1.0, 0.7, 0.0] {
+                let (oi, oj) = (i as f64 * 0.05, j as f64 * 0.05);
+                let mut m = base(1.0);
+                m.add_node(Node::fixed(at(0.0, 0.0)));
+                m.add_node(Node::fixed(at(1.0, 0.0)));
+                let mut f = frame(0, 1, 0);
+                f.offsets.end = [len(oi), len(oj)];
+                f.offsets.rigid_zone = rigid;
+                m.add_frame(f);
+                m.add_load_case(LoadCase {
+                    name: "dead".into(),
+                    self_weight: [0.0, 0.0, -1.0],
+                    ..Default::default()
+                });
+                let c = solve(&m);
+                let combo = &m.effective_combinations()[0];
+                let d = frame_diagrams(&m, combo, c.frames.as_ref().unwrap(), 7);
+                match d {
+                    Ok(d) => assert_eq!(d[0].stations[6], 1.0 - oj),
+                    Err(e) => failures.push(format!("{oi} {oj} {rigid}: {e}")),
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:?}");
+    // The reported 1 m member with offsets 0.1 and 0.2 and a factor of 1.
+    let mut m = base(1.0);
+    m.add_node(Node::fixed(at(0.0, 0.0)));
+    m.add_node(Node::fixed(at(1.0, 0.0)));
+    let mut f = frame(0, 1, 0);
+    f.offsets.end = [len(0.1), len(0.2)];
+    f.offsets.rigid_zone = 1.0;
+    m.add_frame(f);
+    m.add_load_case(tip_load(1, [0.0, 0.0, -1.0]));
+    let c = solve(&m);
+    let fr = &c.frames.as_ref().unwrap()[0];
+    let d = frame_diagram(&m, &m.effective_combinations()[0], FrameId(0), fr, 3).unwrap();
+    assert_eq!(d.stations[2], 0.8);
+    // A position a rounding step past the face is moved onto it; one well
+    // past it is refused.
+    let combo = &m.effective_combinations()[0];
+    assert!(frame_section_forces(&m, combo, FrameId(0), fr, len(0.8 + 1e-15)).is_ok());
+    assert!(frame_section_forces(&m, combo, FrameId(0), fr, len(0.85)).is_err());
 }
