@@ -944,10 +944,14 @@ pub fn add_distributed_load(document: Entity<Document>, window: &mut Window, cx:
             let model = document.read(cx).model();
             let mut load_case: LoadCase = model.load_cases[&case].clone();
             for frame in &frames {
-                let length = oa_model::frame_length(model, *frame);
-                if length <= 0.0 {
-                    continue;
-                }
+                let length = match oa_model::frame_length(model, *frame) {
+                    Ok(length) => length,
+                    Err(e) => {
+                        let message = format!("{}: {e}", model.describe(*frame));
+                        notify_error(window, cx, message);
+                        return false;
+                    }
+                };
                 load_case.member.push(MemberLoad::Distributed {
                     member: *frame,
                     start: Length::ZERO,

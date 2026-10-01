@@ -124,25 +124,28 @@ fn check_references<T: Entity>(model: &Model, problems: &mut Vec<Problem>) {
     }
 }
 
-/// Validates the model and produces solver input. Returns every problem
-/// found rather than stopping at the first.
-/// Length of a frame between its ends after joint offsets, as the solver
-/// computes it; zero when a node is missing or the offsets cannot be
-/// resolved, which validation reports separately.
-pub fn frame_length(model: &Model, frame: EntityId) -> f64 {
-    let Some(f) = model.frames.get(&frame) else {
-        return 0.0;
-    };
+/// Length of a frame between its ends after joint offsets and its cardinal
+/// point, as the solver computes it. Fails, with the problem validation
+/// would report, when the frame or a node is missing, the cardinal point
+/// cannot be placed, or the ends coincide.
+pub fn frame_length(model: &Model, frame: EntityId) -> Result<f64, String> {
+    let f = model
+        .frames
+        .get(&frame)
+        .ok_or_else(|| format!("no frame #{}", frame.0))?;
+    resolve_frame(model, f).map(|(_, length)| length)
+}
+
+/// The solver's frame for `f` on stand-in node ids 0 and 1, with its length
+/// between the ends its offsets and cardinal point leave.
+fn resolve_frame(model: &Model, f: &Frame) -> Result<(oa_core::Frame, f64), String> {
     let (Some(a), Some(b)) = (model.nodes.get(&f.nodes[0]), model.nodes.get(&f.nodes[1])) else {
-        return 0.0;
+        return Err("references a missing node".into());
     };
-    let Ok(probe) = solver_frame(model, f, [oa_core::NodeId(0), oa_core::NodeId(1)], 0, 0) else {
-        return 0.0;
-    };
-    let nodes = [a, b].map(|n| n.position.map(|v| v.si()));
-    probe.ends(nodes).map_or(0.0, |[a, b]| {
-        (0..3).map(|i| (b[i] - a[i]).powi(2)).sum::<f64>().sqrt()
-    })
+    let frame = solver_frame(model, f, [oa_core::NodeId(0), oa_core::NodeId(1)], 0, 0)?;
+    let [a, b] = frame.ends([a, b].map(|n| n.position.map(|v| v.si())))?;
+    let length = (0..3).map(|i| (b[i] - a[i]).powi(2)).sum::<f64>().sqrt();
+    Ok((frame, length))
 }
 
 /// The solver's frame for one model frame, its cardinal point folded into
@@ -248,6 +251,8 @@ fn check_levels(model: &Model, problems: &mut Vec<Problem>) {
     }
 }
 
+/// Validates the model and produces solver input. Returns every problem
+/// found rather than stopping at the first.
 pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
     let mut problems = vec![];
     check_names::<Level>(model, &mut problems);
@@ -416,7 +421,8 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
                 .member
                 .iter()
                 .map(|l| {
-                    let span = frame_length(model, l.member());
+                    // A frame that does not resolve is already a problem.
+                    let span = frame_length(model, l.member()).unwrap_or_default();
                     let along = |x: &oa_core::units::Length| snap_to_span(*x, span);
                     match l {
                         MemberLoad::Point {
@@ -661,18 +667,16 @@ pub fn geometry_problems(model: &Model, nodes: &BTreeSet<EntityId>) -> Vec<Probl
         let Some(mut solver) = probe(&f.nodes) else {
             continue;
         };
-        let span = frame_length(model, *id);
-        if !span.is_finite() || span <= 1e-12 {
-            problems.push(problem(*id, "zero or invalid length".into()));
-            continue;
-        }
-        match solver_frame(model, f, [oa_core::NodeId(0), oa_core::NodeId(1)], 0, 0) {
-            Ok(frame) => solver.frames.push(frame),
+        let span = match resolve_frame(model, f) {
+            Ok((frame, span)) => {
+                solver.frames.push(frame);
+                span
+            }
             Err(message) => {
                 problems.push(problem(*id, message));
                 continue;
             }
-        }
+        };
         if let Err(e) = solver.validate_frame(0) {
             problems.push(element_problem(model, *id, &e, "frame 0: "));
         }

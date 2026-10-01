@@ -1997,6 +1997,45 @@ fn format_v9_fixture_loads_with_frame_offsets() {
 }
 
 #[test]
+fn level_moves_name_what_keeps_a_frame_from_resolving() {
+    let mut editor = Editor::new(Model::default());
+    portal(&mut editor);
+    // A brace from N1 (6, 0, 0) up to N4 (0, 0, 8), hung by its top with
+    // local_y [-1, 0, 1]. Lowering L2 to 6 m turns it parallel to local_y,
+    // so its cardinal point has no axes to be read in.
+    let shaped = editor.model.allocate();
+    editor
+        .apply(Command::AddSection {
+            id: shaped,
+            section: Library::aisc().section("W14x90", "shaped").unwrap(),
+        })
+        .unwrap();
+    let steel = editor.model.find::<Material>("steel").unwrap();
+    let [n1, n4] = ["N1", "N4"].map(|n| editor.model.find::<Node>(n).unwrap());
+    let mut brace = Frame::new("D1", [n1, n4], steel, shaped);
+    brace.local_y = Some([-1.0, 0.0, 1.0]);
+    brace.cardinal_point = CardinalPoint::TopCenter;
+    let id = editor.model.allocate();
+    editor
+        .apply(Command::AddFrame { id, frame: brace })
+        .unwrap();
+    assert!((frame_length(&editor.model, id).unwrap() - 10.0).abs() < 1e-12);
+    let l2 = editor.model.find::<Level>("L2").unwrap();
+    let err = editor
+        .apply(Command::SetLevelElevation {
+            id: l2,
+            elevation: Length::from_si(6.0),
+            scope: ElevationScope::ThisLevel,
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("local_y is parallel") && !err.contains("zero or invalid length"),
+        "{err}"
+    );
+}
+
+#[test]
 fn cardinal_points_sit_across_the_member_their_joint_offsets_leave() {
     // Lift B2's end J 3 m so the member slopes from (0, 0.1, 0) to
     // (6, 0.1, 3). The top of its section must sit on those two points,
@@ -2143,6 +2182,9 @@ fn frame_offsets_are_validated_compiled_and_undone() {
             .any(|p| p.entity == Some(beam) && p.message.contains("cardinal point top center")),
         "{problems:?}"
     );
+    // Its length says why too, rather than passing for zero.
+    let err = frame_length(&editor.model, beam).unwrap_err();
+    assert!(err.contains("cardinal point top center"), "{err}");
     assert!(editor.undo().unwrap());
     assert!(editor.undo().unwrap());
     // A rigid zone stiffens the beam and compiles straight through.
