@@ -1696,3 +1696,272 @@ fn shell_local_axes_and_modifiers_reach_the_solver() {
         problems[0]
     );
 }
+
+#[test]
+fn format_v8_fixture_loads_with_mass_sources() {
+    let model = from_json(include_str!("fixtures/format_v8.json")).unwrap();
+    let seismic = model.find::<MassSource>("seismic").unwrap();
+    let dead_only = model.find::<MassSource>("dead only").unwrap();
+    assert_eq!(model.default_mass_source, Some(seismic));
+    assert_eq!(
+        model.mass_sources[&seismic].cases,
+        vec![(EntityId(6), 1.0), (EntityId(11), 0.25)]
+    );
+    assert!(!model.mass_sources[&seismic].vertical);
+    assert!(model.mass_sources[&dead_only].vertical);
+    assert_eq!(model.frames[&EntityId(5)].modifiers.mass, 0.5);
+    assert_eq!(from_json(&to_json(&model)).unwrap(), model);
+    // The default reaches the solver with cases by table position. The tip
+    // holds its own 100 kg, half of half the beam's mass, all of the
+    // superimposed dead load and a quarter of the storage live load, each
+    // 9806.65 N or 1000 kg, and no vertical mass.
+    let compiled = compile(&model).unwrap();
+    assert_eq!(
+        compiled.solver.mass_source.cases,
+        vec![
+            (oa_core::LoadCaseId(0), 1.0),
+            (oa_core::LoadCaseId(1), 0.25)
+        ]
+    );
+    let own = 100.0 + 0.5 * 7850.0 * 0.01 * 3.0 / 2.0;
+    let free = |solver: &oa_core::Model| {
+        oa_core::analyze_modal(solver, &Default::default())
+            .unwrap()
+            .total_free_mass
+    };
+    let seismic_mass = free(&compiled.solver);
+    assert!((seismic_mass[0] / (own + 1250.0) - 1.0).abs() < 1e-12);
+    assert_eq!(seismic_mass[2], 0.0);
+    // Another source is asked for by id.
+    let dead = free(&compiled.with_mass_source(&model, dead_only).unwrap());
+    assert!((dead[2] / (own + 1000.0) - 1.0).abs() < 1e-12);
+    assert!(compiled.with_mass_source(&model, EntityId(5)).is_none());
+    // A version 7 document has no sources and uses element and node mass.
+    let older = from_json(include_str!("fixtures/format_v7.json")).unwrap();
+    assert!(older.mass_sources.is_empty() && older.default_mass_source.is_none());
+    assert!(!to_json(&older).contains("default_mass_source"));
+    assert!(compile(&older).unwrap().solver.mass_source.is_default());
+}
+
+#[test]
+fn mass_sources_are_validated_and_undone() {
+    let mut editor = Editor::new(Model::default());
+    portal(&mut editor);
+    let frame = editor.model.find::<Frame>("B1").unwrap();
+    let [sdl, dead, seismic, other] = [(); 4].map(|_| editor.model.allocate());
+    editor
+        .apply(Command::AddLoadCase {
+            id: sdl,
+            load_case: LoadCase::new("SDL").with_type(LoadType::Dead),
+        })
+        .unwrap();
+    editor
+        .apply(Command::AddLoadCase {
+            id: dead,
+            load_case: LoadCase {
+                self_weight: [0.0, 0.0, -1.0],
+                ..LoadCase::new("D")
+            },
+        })
+        .unwrap();
+    let source = |cases: Vec<(EntityId, f64)>| MassSource {
+        cases,
+        ..MassSource::new("seismic")
+    };
+    let add = |mass_source: MassSource| Command::AddMassSource {
+        id: seismic,
+        mass_source,
+    };
+    fn refused(model: &Model, command: Command) -> String {
+        let mut probe = model.clone();
+        command.apply(&mut probe).unwrap_err().to_string()
+    }
+    let m = &editor.model;
+    let missing = EntityId(9_999);
+    assert!(refused(m, add(source(vec![(missing, 1.0)]))).contains("missing load case"));
+    assert!(refused(m, add(source(vec![(frame, 1.0)]))).contains("not a load case"));
+    assert!(refused(m, add(source(vec![(sdl, 1.0), (sdl, 1.0)]))).contains("twice"));
+    for bad in [0.0, -0.25, f64::NAN] {
+        assert!(refused(m, add(source(vec![(sdl, bad)]))).contains("positive and finite"));
+    }
+    let neither = MassSource {
+        lateral: false,
+        vertical: false,
+        ..source(vec![])
+    };
+    assert!(refused(m, add(neither)).contains("lateral or vertical"));
+
+    let seismic_source = MassSource {
+        element_mass: false,
+        vertical: false,
+        ..source(vec![(dead, 1.0), (sdl, 1.0)])
+    };
+    editor.apply(add(seismic_source.clone())).unwrap();
+    assert_eq!(editor.model.mass_sources[&seismic], seismic_source);
+    let err = refused(
+        &editor.model,
+        Command::AddMassSource {
+            id: other,
+            mass_source: MassSource::new("seismic"),
+        },
+    );
+    assert!(err.contains("already used"), "{err}");
+    editor
+        .apply(Command::SetDefaultMassSource { id: Some(seismic) })
+        .unwrap();
+    // A case a source lists, and the default source, cannot be removed.
+    let err = refused(&editor.model, Command::RemoveLoadCase { id: sdl });
+    assert!(err.contains("mass source"), "{err}");
+    let err = refused(&editor.model, Command::RemoveMassSource { id: seismic });
+    assert!(err.contains("default"), "{err}");
+    let err = refused(
+        &editor.model,
+        Command::SetDefaultMassSource { id: Some(frame) },
+    );
+    assert!(err.contains("not a mass source"), "{err}");
+    let err = refused(
+        &editor.model,
+        Command::SetDefaultMassSource { id: Some(missing) },
+    );
+    assert!(err.contains("no entity"), "{err}");
+    assert!(editor.undo().unwrap());
+    assert_eq!(editor.model.default_mass_source, None);
+    assert!(editor.undo().unwrap());
+    assert!(editor.model.mass_sources.is_empty());
+    assert!(editor.redo().unwrap());
+    assert!(editor.redo().unwrap());
+    assert_eq!(editor.model.default_mass_source, Some(seismic));
+
+    // Self-weight added to a source case afterwards, with element mass on,
+    // is caught when the model compiles, against that source.
+    editor
+        .apply(Command::UpdateMassSource {
+            id: seismic,
+            mass_source: source(vec![(sdl, 1.0)]),
+        })
+        .unwrap();
+    let mut weighed = editor.model.load_cases[&sdl].clone();
+    weighed.self_weight = [0.0, 0.0, -1.0];
+    editor
+        .apply(Command::UpdateLoadCase {
+            id: sdl,
+            load_case: weighed,
+        })
+        .unwrap();
+    let problems = compile(&editor.model).unwrap_err();
+    assert_eq!(problems[0].entity, Some(seismic));
+    assert!(
+        problems[0].message.contains("self-weight"),
+        "{}",
+        problems[0]
+    );
+
+    // That state is reachable, so every inverse out of it must apply:
+    // fixing the source and undoing the fix, removing it and undoing the
+    // removal, and a batch that removes it and then fails.
+    let broken = editor.model.mass_sources[&seismic].clone();
+    editor
+        .apply(Command::UpdateMassSource {
+            id: seismic,
+            mass_source: MassSource {
+                element_mass: false,
+                ..broken.clone()
+            },
+        })
+        .unwrap();
+    assert!(compile(&editor.model).is_ok());
+    assert!(editor.undo().unwrap());
+    assert_eq!(editor.model.mass_sources[&seismic], broken);
+    editor
+        .apply(Command::SetDefaultMassSource { id: None })
+        .unwrap();
+    editor
+        .apply(Command::RemoveMassSource { id: seismic })
+        .unwrap();
+    assert!(editor.undo().unwrap());
+    assert_eq!(editor.model.mass_sources[&seismic], broken);
+    let before = editor.model.clone();
+    let err = Command::Batch {
+        commands: vec![
+            Command::RemoveMassSource { id: seismic },
+            Command::RemoveLoadCase { id: missing },
+        ],
+    }
+    .apply(&mut editor.model)
+    .unwrap_err();
+    assert!(matches!(err, ModelError::Batch { index: 1, .. }), "{err}");
+    assert_eq!(editor.model, before);
+}
+
+/// A column up Z from Base through L1 at 4 m to a node 1 m above it, with
+/// 40 kg at 1 m, 8 kg halfway at 2 m and 10 kg at the top.
+fn lumped_column() -> (Model, [EntityId; 6]) {
+    let mut m = Model::default();
+    let base = m.base_level().unwrap();
+    let l1 = m.insert(Level::new("L1", Length::from_si(4.0)));
+    let mat = m.insert(steel());
+    let sec = m.insert(section());
+    let at = |x: f64, z: f64| [Length::from_si(x), Length::ZERO, Length::from_si(z)];
+    let node = |m: &mut Model, name: &str, level, z: f64, mass: f64| {
+        let mut n = Node::new(name, level, at(0.0, z));
+        n.mass = [Mass::from_si(mass); 3];
+        m.insert(n)
+    };
+    let n0 = m.insert(Node::fixed("N0", base, at(0.0, 0.0)));
+    let low = node(&mut m, "low", base, 1.0, 40.0);
+    let half = node(&mut m, "half", base, 2.0, 8.0);
+    let n1 = node(&mut m, "N1", l1, 4.0, 0.0);
+    let top = node(&mut m, "top", l1, 5.0, 10.0);
+    for (name, a, b) in [
+        ("C1", n0, low),
+        ("C2", low, half),
+        ("C3", half, n1),
+        ("C4", n1, top),
+    ] {
+        m.insert(Frame::new(name, [a, b], mat, sec));
+    }
+    let source = m.insert(MassSource {
+        element_mass: false,
+        lump_to_levels: true,
+        ..MassSource::new("lumped")
+    });
+    m.default_mass_source = Some(source);
+    (m, [n0, low, half, n1, top, source])
+}
+
+#[test]
+fn lumping_to_levels_moves_lateral_mass_to_the_nearest_level() {
+    let (mut model, [n0, low, half, n1, top, source]) = lumped_column();
+    let compiled = compile(&model).unwrap();
+    let index = |id: EntityId| oa_core::NodeId(compiled.mapping.node_index[&id]);
+    // Nearest Base, halfway between Base and L1, and above the highest level.
+    assert_eq!(
+        compiled.solver.mass_source.lump,
+        vec![
+            (index(low), vec![(index(n0), 1.0)]),
+            (index(half), vec![(index(n0), 0.5), (index(n1), 0.5)]),
+            (index(top), vec![(index(n1), 1.0)]),
+        ]
+    );
+    // Lateral mass lumped onto the fixed base is no longer free; vertical
+    // mass stays where it was.
+    let free = oa_core::analyze_modal(&compiled.solver, &Default::default())
+        .unwrap()
+        .total_free_mass;
+    assert!((free[0] - 14.0).abs() < 1e-9 && (free[2] - 58.0).abs() < 1e-9);
+    // A node off a level with no node directly below it on the nearest one.
+    let base = model.base_level().unwrap();
+    let stray = model.insert(Node::new(
+        "stray",
+        base,
+        [Length::from_si(3.0), Length::ZERO, Length::from_si(1.0)],
+    ));
+    let problems = compile(&model).unwrap_err();
+    assert_eq!(problems[0].entity, Some(source));
+    assert!(
+        problems[0].message.contains(&model.describe(stray))
+            && problems[0].message.contains("below it on level \"Base\""),
+        "{}",
+        problems[0]
+    );
+}

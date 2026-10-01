@@ -160,10 +160,13 @@ impl Frame {
     }
 }
 
-/// Stiffness modifiers for one frame, as ETABS and SAP2000 assign them. Each
-/// multiplies the section property it names in the stiffness only: mass and
-/// self-weight keep the section's area. ACI 318 cracked sections, for
-/// example, take 0.35 on iy and iz for beams and 0.70 for columns.
+/// Property modifiers for one frame, as ETABS and SAP2000 assign them. The
+/// first six multiply the section property they name in the stiffness only.
+/// ACI 318 cracked sections, for example, take 0.35 on iy and iz for beams
+/// and 0.70 for columns. `mass` multiplies the member's own mass and
+/// `weight` its self-weight, which a load case's self-weight factor applies
+/// and which a mass source case turns back into mass; zero on both leaves
+/// out a member whose mass and weight another member already carries.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FrameModifiers {
@@ -173,6 +176,8 @@ pub struct FrameModifiers {
     pub torsion: f64,
     pub iy: f64,
     pub iz: f64,
+    pub mass: f64,
+    pub weight: f64,
 }
 impl Default for FrameModifiers {
     fn default() -> Self {
@@ -183,6 +188,8 @@ impl Default for FrameModifiers {
             torsion: 1.0,
             iy: 1.0,
             iz: 1.0,
+            mass: 1.0,
+            weight: 1.0,
         }
     }
 }
@@ -190,6 +197,7 @@ impl FrameModifiers {
     pub fn is_unmodified(&self) -> bool {
         *self == Self::default()
     }
+    /// The stiffness modifiers, which must be positive and finite.
     pub fn values(&self) -> [f64; 6] {
         [
             self.area,
@@ -208,7 +216,7 @@ impl FrameModifiers {
 /// and `bending` the plate bending stiffness (m11, m22 and m12). The
 /// plane-stress matrix is scaled as S D S with S = diag(√fx, √fy, √f12), so
 /// the coupling term takes √(fx fy) and the matrix stays positive definite.
-/// Transverse shear, mass and self-weight are unchanged.
+/// Transverse shear is unchanged. `mass` and `weight` act as on frames.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ShellModifiers {
@@ -216,6 +224,8 @@ pub struct ShellModifiers {
     pub membrane_y: f64,
     pub membrane_shear: f64,
     pub bending: f64,
+    pub mass: f64,
+    pub weight: f64,
 }
 impl Default for ShellModifiers {
     fn default() -> Self {
@@ -224,6 +234,8 @@ impl Default for ShellModifiers {
             membrane_y: 1.0,
             membrane_shear: 1.0,
             bending: 1.0,
+            mass: 1.0,
+            weight: 1.0,
         }
     }
 }
@@ -231,6 +243,7 @@ impl ShellModifiers {
     pub fn is_unmodified(&self) -> bool {
         *self == Self::default()
     }
+    /// The stiffness modifiers, which must be positive and finite.
     pub fn values(&self) -> [f64; 4] {
         [
             self.membrane_x,
@@ -400,6 +413,50 @@ pub struct LoadCombination {
     pub terms: Vec<(LoadCaseId, f64)>,
 }
 
+/// A node whose lateral mass moves, and the nodes it moves to with their shares.
+pub type Lump = (NodeId, Vec<(NodeId, f64)>);
+
+/// Where modal and spectrum analysis take mass from, as the mass source of
+/// ETABS and SAP2000. Nodal mass always counts. `element_mass` adds the
+/// frames' and shells' own mass from material density. Each case in `cases`
+/// adds its gravity load, the -Z component, divided by g and scaled by the
+/// multiplier: superimposed dead load at 1 and storage live load at 0.25 for
+/// ASCE 7 12.7.2, for example. That mass is lumped to nodes as the members'
+/// own mass is, a member load statically to its two ends and a surface load
+/// by tributary area, and acts in X, Y and Z.
+///
+/// `lateral` keeps mass in X and Y translation and rotation about Z, and
+/// `vertical` keeps Z translation and rotation about X and Y, for every
+/// kind of mass alike; at least one must be on. `lump` moves the lateral
+/// mass of each listed node onto others in the given shares, which the
+/// model layer fills to lump mass between levels onto the levels.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MassSource {
+    pub element_mass: bool,
+    pub cases: Vec<(LoadCaseId, f64)>,
+    pub lateral: bool,
+    pub vertical: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lump: Vec<Lump>,
+}
+impl Default for MassSource {
+    fn default() -> Self {
+        Self {
+            element_mass: true,
+            cases: vec![],
+            lateral: true,
+            vertical: true,
+            lump: vec![],
+        }
+    }
+}
+impl MassSource {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 fn schema_version() -> u32 {
     1
 }
@@ -430,6 +487,8 @@ pub struct Model {
     pub load_cases: Vec<LoadCase>,
     #[serde(default)]
     pub combinations: Vec<LoadCombination>,
+    #[serde(default, skip_serializing_if = "MassSource::is_default")]
+    pub mass_source: MassSource,
 }
 impl Default for Model {
     fn default() -> Self {
@@ -444,6 +503,7 @@ impl Default for Model {
             diaphragms: vec![],
             load_cases: vec![],
             combinations: vec![],
+            mass_source: MassSource::default(),
         }
     }
 }
@@ -632,6 +692,14 @@ impl Model {
                     "frame {i}: stiffness modifiers must be positive and finite"
                 ));
             }
+            if [f.modifiers.mass, f.modifiers.weight]
+                .iter()
+                .any(|x| !x.is_finite() || *x < 0.0)
+            {
+                return fail(format!(
+                    "frame {i}: mass and weight modifiers must be finite and >= 0"
+                ));
+            }
         }
         for (i, s) in self.shells.iter().enumerate() {
             if s.nodes.iter().any(|n| n.0 >= self.nodes.len())
@@ -656,6 +724,14 @@ impl Model {
             {
                 return fail(format!(
                     "shell {i}: stiffness modifiers must be positive and finite"
+                ));
+            }
+            if [s.modifiers.mass, s.modifiers.weight]
+                .iter()
+                .any(|x| !x.is_finite() || *x < 0.0)
+            {
+                return fail(format!(
+                    "shell {i}: mass and weight modifiers must be finite and >= 0"
                 ));
             }
             if s.local_x.is_some_and(|v| v.iter().any(|x| !x.is_finite())) {
@@ -775,6 +851,62 @@ impl Model {
                     .any(|(id, f)| id.0 >= self.load_cases.len() || !f.is_finite())
             {
                 return fail(format!("invalid combination {:?}", c.name));
+            }
+        }
+        self.validate_mass_source(&self.mass_source)
+    }
+    /// Checks a mass source against this model: its cases and lumped nodes
+    /// exist, its multipliers and shares are valid, and it neither drops
+    /// every direction nor counts self-weight twice.
+    pub fn validate_mass_source(&self, source: &MassSource) -> Result<()> {
+        let fail = |s: String| Err(Error::Model(s));
+        if !source.lateral && !source.vertical {
+            return fail("mass source: keep lateral or vertical mass".into());
+        }
+        let mut lumped = vec![false; self.nodes.len()];
+        for (from, _) in &source.lump {
+            if from.0 >= self.nodes.len() || std::mem::replace(&mut lumped[from.0], true) {
+                return fail(format!(
+                    "mass source: lumped node {} is missing or listed twice",
+                    from.0
+                ));
+            }
+        }
+        for (from, targets) in &source.lump {
+            let total: f64 = targets.iter().map(|(_, s)| s).sum();
+            if targets.is_empty()
+                || targets.iter().any(|(t, s)| {
+                    t.0 >= self.nodes.len() || lumped[t.0] || !s.is_finite() || *s < 0.0
+                })
+                || (total - 1.0).abs() > 1e-9
+            {
+                return fail(format!(
+                    "mass source: node {} must lump onto existing nodes that are not lumped themselves, in shares summing to 1",
+                    from.0
+                ));
+            }
+        }
+        let mut seen = vec![false; self.load_cases.len()];
+        for &(id, multiplier) in &source.cases {
+            if id.0 >= self.load_cases.len() || std::mem::replace(&mut seen[id.0], true) {
+                return fail(format!(
+                    "mass source: load case {} is missing or listed twice",
+                    id.0
+                ));
+            }
+            if !multiplier.is_finite() || multiplier <= 0.0 {
+                return fail(format!(
+                    "mass source: multiplier on load case {} must be positive and finite",
+                    id.0
+                ));
+            }
+            // Self-weight is the element mass under gravity, so both at once
+            // would count it twice.
+            if source.element_mass && self.load_cases[id.0].self_weight[2] != 0.0 {
+                return fail(format!(
+                    "mass source: load case {:?} carries self-weight, which element mass already counts; turn element mass off or use a case without self-weight",
+                    self.load_cases[id.0].name
+                ));
             }
         }
         Ok(())

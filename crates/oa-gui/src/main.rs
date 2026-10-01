@@ -231,6 +231,8 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
         .show_load_cases(window, cx));
     on!(ShowCombinations, |ws, _, window, cx| ws
         .show_combinations(window, cx));
+    on!(ShowMassSources, |ws, _, window, cx| ws
+        .show_mass_sources(window, cx));
     on!(AddLoadCase, |ws, _, window, cx| ws
         .add_load_case(window, cx));
     on!(AddAsceLoadCase, |ws, _, window, cx| {

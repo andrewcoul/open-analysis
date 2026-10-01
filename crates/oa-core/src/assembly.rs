@@ -113,7 +113,7 @@ impl Prepared {
                 }
             }
             for e in &self.shells {
-                for (corner, &m) in e.nodal_mass.iter().enumerate() {
+                for (corner, &m) in e.nodal_weight_mass.iter().enumerate() {
                     for (axis, &w) in case.self_weight.iter().enumerate() {
                         out.nodal[e.dofs[6 * corner + axis]] += factor * m * g * w;
                     }
@@ -243,7 +243,9 @@ impl Prepared {
         }
         f
     }
-    pub fn mass(&self, model: &Model) -> Vec<f64> {
+    /// Lumped mass from the model's mass source.
+    pub fn mass(&self, model: &Model) -> Result<Vec<f64>> {
+        let source = &model.mass_source;
         let mut mass = vec![0.0; self.ndof];
         for (i, n) in model.nodes.iter().enumerate() {
             for j in 0..3 {
@@ -251,20 +253,127 @@ impl Prepared {
                 mass[6 * i + 3 + j] = n.mass_inertia[j].si();
             }
         }
-        for e in &self.frames {
-            for j in 0..3 {
-                mass[e.dofs[j]] += e.mass / 2.0;
-                mass[e.dofs[6 + j]] += e.mass / 2.0;
+        // Translational mass per node, the same in X, Y and Z.
+        let mut lumped = vec![0.0; model.nodes.len()];
+        // The size of everything that fed each node's mass, so rounding in
+        // a gravity component, such as cos(pi/2) of a horizontal load, is
+        // told apart from real uplift.
+        let mut size: Vec<f64> = model
+            .nodes
+            .iter()
+            .map(|n| n.mass.iter().map(|m| m.si()).fold(0.0, f64::max))
+            .collect();
+        if source.element_mass {
+            for e in &self.frames {
+                lumped[e.dofs[0] / 6] += e.mass / 2.0;
+                lumped[e.dofs[6] / 6] += e.mass / 2.0;
+                size[e.dofs[0] / 6] += e.mass / 2.0;
+                size[e.dofs[6] / 6] += e.mass / 2.0;
             }
-        }
-        for e in &self.shells {
-            for i in 0..4 {
-                for j in 0..3 {
-                    mass[e.dofs[6 * i + j]] += e.nodal_mass[i];
+            for e in &self.shells {
+                for (corner, &m) in e.nodal_mass.iter().enumerate() {
+                    lumped[e.dofs[6 * corner] / 6] += m;
+                    size[e.dofs[6 * corner] / 6] += m;
                 }
             }
         }
-        mass
+        let g = model.gravity.si();
+        for &(id, multiplier) in &source.cases {
+            let case = &model.load_cases[id.0];
+            let scale = multiplier / g;
+            for l in &case.nodal {
+                lumped[l.node.0] -= scale * l.force[2].si();
+                size[l.node.0] += scale * norm(&l.force.map(|f| f.si()));
+            }
+            for l in &case.member {
+                let e = &self.frames[l.member().0];
+                let [i, j] = e.gravity_at_ends(l);
+                lumped[e.dofs[0] / 6] += scale * i;
+                lumped[e.dofs[6] / 6] += scale * j;
+                for end in [0, 6] {
+                    size[e.dofs[end] / 6] += scale * member_load_size(l);
+                }
+            }
+            for l in &case.surface {
+                let e = &self.shells[l.shell.0];
+                // Pressure acts along local +z, whose global Z component is t[(2, 2)].
+                let down = -l.pressure.si() * e.t[(2, 2)];
+                for (corner, &a) in e.nodal_area.iter().enumerate() {
+                    lumped[e.dofs[6 * corner] / 6] += scale * down * a;
+                    size[e.dofs[6 * corner] / 6] += scale * l.pressure.si().abs() * a;
+                }
+            }
+            // Self-weight is the weight mass times g times the -Z factor.
+            let down = -multiplier * case.self_weight[2];
+            if down != 0.0 {
+                for e in &self.frames {
+                    lumped[e.dofs[0] / 6] += down * e.weight_mass / 2.0;
+                    lumped[e.dofs[6] / 6] += down * e.weight_mass / 2.0;
+                    size[e.dofs[0] / 6] += down.abs() * e.weight_mass / 2.0;
+                    size[e.dofs[6] / 6] += down.abs() * e.weight_mass / 2.0;
+                }
+                for e in &self.shells {
+                    for (corner, &m) in e.nodal_weight_mass.iter().enumerate() {
+                        lumped[e.dofs[6 * corner] / 6] += down * m;
+                        size[e.dofs[6 * corner] / 6] += down.abs() * m;
+                    }
+                }
+            }
+        }
+        for (i, &m) in lumped.iter().enumerate() {
+            for j in 0..3 {
+                let total = &mut mass[6 * i + j];
+                *total += m;
+                if *total < 0.0 && -*total <= 1e-9 * size[i] {
+                    *total = 0.0;
+                }
+            }
+        }
+        if let Some(d) = mass.iter().position(|m| *m < 0.0) {
+            return Err(Error::Model(format!(
+                "mass source gives node {} negative mass in DOF {}: its load cases push it upward more than its mass weighs",
+                d / 6,
+                d % 6
+            )));
+        }
+        // Lateral mass, X and Y translation and rotation about Z, moves as a
+        // whole; targets are never lumped themselves, so order is immaterial.
+        for (from, targets) in &source.lump {
+            for dof in [0, 1, 5] {
+                let m = std::mem::take(&mut mass[6 * from.0 + dof]);
+                for &(to, share) in targets {
+                    mass[6 * to.0 + dof] += share * m;
+                }
+            }
+        }
+        for (i, m) in mass.iter_mut().enumerate() {
+            let keep = if matches!(i % 6, 0 | 1 | 5) {
+                source.lateral
+            } else {
+                source.vertical
+            };
+            if !keep {
+                *m = 0.0;
+            }
+        }
+        Ok(mass)
+    }
+}
+
+/// The total force a member load applies, whatever its direction.
+fn member_load_size(load: &MemberLoad) -> f64 {
+    match load {
+        MemberLoad::Point { force, .. } => norm(&force.map(|f| f.si())),
+        MemberLoad::Distributed {
+            start,
+            end,
+            start_load,
+            end_load,
+            ..
+        } => {
+            let q = |v: &[crate::units::LineLoad; 3]| norm(&v.map(|q| q.si()));
+            (q(start_load) + q(end_load)) / 2.0 * (end.si() - start.si())
+        }
     }
 }
 

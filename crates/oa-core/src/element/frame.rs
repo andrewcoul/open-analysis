@@ -25,7 +25,11 @@ pub(crate) struct FrameElement {
     pub elastic: M12,
     pub geometric_unit: M12,
     pub releases: [bool; 12],
+    /// Own mass times the mass modifier.
     pub mass: f64,
+    /// Own mass times the weight modifier: the mass whose weight under
+    /// gravity is the member's self-weight.
+    pub weight_mass: f64,
     /// Shear parameter for bending in the local x-y plane, then x-z.
     phi: [f64; 2],
 }
@@ -56,8 +60,9 @@ impl FrameElement {
         y = y * frame.roll.si().cos() + x.cross(&y) * frame.roll.si().sin();
         let r = rotation(x, y);
         let t = block_rotation(&r);
-        // Modifiers scale the stiffness only; mass and the geometric
-        // stiffness's polar radius of gyration keep the section's values.
+        // Stiffness modifiers scale the stiffness only; mass and the
+        // geometric stiffness's polar radius of gyration keep the section's
+        // values, and mass and weight have modifiers of their own.
         let md = &frame.modifiers;
         let (ei_z, ei_y) = (
             m.young.si() * s.iz.si() * md.iz,
@@ -100,18 +105,20 @@ impl FrameElement {
             elastic: k,
             geometric_unit: kg,
             releases: frame.releases,
-            mass: m.density.si() * s.area.si() * length,
+            mass: m.density.si() * s.area.si() * length * md.mass,
+            weight_mass: m.density.si() * s.area.si() * length * md.weight,
             phi,
         })
     }
-    /// Uniform global-axis line load from density, area and gravity. None when zero.
+    /// Uniform global-axis line load from density, area, the weight modifier
+    /// and gravity. None when zero.
     pub fn self_weight_load(
         &self,
         member: FrameId,
         gravity: f64,
         factors: [f64; 3],
     ) -> Option<MemberLoad> {
-        let weight_per_length = self.mass / self.length * gravity;
+        let weight_per_length = self.weight_mass / self.length * gravity;
         let q = factors.map(|f| LineLoad::from_si(f * weight_per_length));
         if q.iter().all(|v| v.si() == 0.0) {
             return None;
@@ -161,6 +168,46 @@ impl FrameElement {
                         * (w * (b - a) / 2.0);
                 }
                 p
+            }
+        }
+    }
+    /// The load's gravity (-Z) resultant split statically between the two
+    /// ends, as a simply supported span would carry it. Moments carry none.
+    pub fn gravity_at_ends(&self, load: &MemberLoad) -> [f64; 2] {
+        let down = |axes: &Axes, v: Vector3<f64>| match axes {
+            Axes::Global => -v.z,
+            Axes::Local => -self.r.column(2).dot(&v),
+        };
+        let split = |x: f64, w: f64| [w * (1.0 - x / self.length), w * x / self.length];
+        match load {
+            MemberLoad::Point {
+                position,
+                force,
+                axes,
+                ..
+            } => split(
+                position.si(),
+                down(axes, Vector3::from(force.map(|v| v.si()))),
+            ),
+            MemberLoad::Distributed {
+                start,
+                end,
+                start_load,
+                end_load,
+                axes,
+                ..
+            } => {
+                let (a, b) = (start.si(), end.si());
+                let q0 = down(axes, Vector3::from(start_load.map(|v| v.si())));
+                let q1 = down(axes, Vector3::from(end_load.map(|v| v.si())));
+                let mut ends = [0.0; 2];
+                for (xi, w) in GAUSS3 {
+                    let t = (xi + 1.0) / 2.0;
+                    let [i, j] = split(a + t * (b - a), (q0 + (q1 - q0) * t) * w * (b - a) / 2.0);
+                    ends[0] += i;
+                    ends[1] += j;
+                }
+                ends
             }
         }
     }

@@ -43,17 +43,25 @@ generated combinations into commands moves from the dialog into
 
 ## 3. Modal and response spectrum
 
-Mass is the frames' and shells' own mass from material density, lumped to
-their nodes, plus any nodal `mass`. Superimposed dead load in a load case is
-not mass. The tool descriptions say so; otherwise an agent that models
-floor weight as loads will read periods that are far too short.
+Mass comes from a mass source: nodal `mass`, the frames' and shells' own
+mass from material density unless `element_mass` is off, and the downward
+load of each load case the source lists, divided by g and times its
+multiplier. `modal` and `response_spectrum` use the model's default source
+unless given another by name in `mass_source`; with no default, loads are
+not mass. `add_mass_source` and `set_default_mass_source` define them, and
+`describe_model` lists every source and names the default. The tool
+descriptions say all this; otherwise an agent that models floor weight as
+loads will read periods that are far too short. The command reference gives
+the ASCE 7 12.7.2 multipliers, says why compile reports a case with
+self-weight while element mass is on, and explains lateral, vertical and
+lumping to the nearest level, and the mass and weight modifiers.
 
-- `modal(modes = 6)` returns, per mode, the period, frequency, and mass
+- `modal(modes = 6, mass_source)` returns, per mode, the period, frequency, and mass
   ratio in X, Y, Z, then the cumulative ratios, the total free mass, the
   orthogonality error, and the Sturm check. It does not return mode shapes;
   they grow with the model and an agent rarely needs them as numbers.
 - `response_spectrum(spectrum, direction, damping = 0.05, combination =
-  "cqc", modes = 12, minimum_mass_ratio)` takes the spectrum as
+  "cqc", modes = 12, minimum_mass_ratio, mass_source)` takes the spectrum as
   `[period s, Sa]` pairs with Sa as a fraction of g, the way design spectra
   are written. g is the model's own gravity. It returns the modal summary,
   the captured mass ratio, and the base reaction, and keeps the peaks for

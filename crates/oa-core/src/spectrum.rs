@@ -133,7 +133,7 @@ fn spectrum_in_pool(model: &Model, options: &SpectrumOptions) -> Result<Spectrum
     }
     let states = prep.elastic_states()?;
     // No second factorization: element force recovery suffices for support reactions.
-    let mass = prep.mass(model);
+    let mass = prep.mass(model)?;
     let restrained: Vec<bool> = model.nodes.iter().flat_map(|n| n.restrained).collect();
     // Each mode's response is independent; modes are recovered in parallel
     // and kept in mode order for the combination.

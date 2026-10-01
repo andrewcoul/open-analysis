@@ -27,6 +27,7 @@ actions!(
         AddCustomSection,
         ShowLoadCases,
         ShowCombinations,
+        ShowMassSources,
         AddLoadCase,
         AddAsceLoadCase,
         AddCombination,

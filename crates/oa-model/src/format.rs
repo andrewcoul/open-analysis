@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
@@ -166,6 +166,9 @@ fn migrate(from: u32, mut value: serde_json::Value) -> Result<serde_json::Value,
         // a local x axis. A version 6 member has neither, keeps its full
         // stiffness and its first-edge axes, and needs no change.
         6 => Ok(value),
+        // Version 8 adds the mass source. A version 7 document has none, so
+        // it keeps element and node mass only, as before, and needs no change.
+        7 => Ok(value),
         _ => Ok(value),
     }
 }

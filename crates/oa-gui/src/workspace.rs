@@ -48,6 +48,7 @@ pub struct Workspace {
     properties: Entity<PropertyEditor>,
     load_cases: Entity<LoadPanel>,
     combinations: Entity<LoadPanel>,
+    mass_sources: Entity<LoadPanel>,
     levels: Entity<LevelPanel>,
     menu_bar: Entity<AppMenuBar>,
     /// The command palette's search state, made on first use.
@@ -65,6 +66,8 @@ impl Workspace {
             cx.new(|cx| LoadPanel::new(document.clone(), Section::Cases, window, cx));
         let combinations =
             cx.new(|cx| LoadPanel::new(document.clone(), Section::Combinations, window, cx));
+        let mass_sources =
+            cx.new(|cx| LoadPanel::new(document.clone(), Section::MassSources, window, cx));
         let levels = cx.new(|cx| LevelPanel::new(document.clone(), window, cx));
         let menu_bar = AppMenuBar::new(cx);
         crate::agent::start(document.clone(), cx);
@@ -96,6 +99,7 @@ impl Workspace {
             properties,
             load_cases,
             combinations,
+            mass_sources,
             levels,
             menu_bar,
             palette: None,
@@ -276,6 +280,8 @@ impl Workspace {
                     MenuItem::action("Add load combination", AddCombination),
                     MenuItem::action("Generate combinations from ASCE 7…", GenerateCombinations)
                         .disabled(gates.generate.is_some()),
+                    MenuItem::separator(),
+                    MenuItem::action("Mass sources…", ShowMassSources),
                     MenuItem::separator(),
                     MenuItem::action("Group from selection", AddGroupFromSelection)
                         .disabled(gates.group.is_some()),
@@ -634,10 +640,17 @@ impl Workspace {
                     });
                 }
             }
+            if model
+                .default_mass_source
+                .is_some_and(|d| doomed.contains(&d))
+            {
+                commands.push(Command::SetDefaultMassSource { id: None });
+            }
             // Dependents before the things they reference.
             let order = [
                 EntityKind::Group,
                 EntityKind::Underlay,
+                EntityKind::MassSource,
                 EntityKind::Combination,
                 EntityKind::LoadCase,
                 EntityKind::Diaphragm,
@@ -659,6 +672,7 @@ impl Workspace {
                     commands.push(match kind {
                         EntityKind::Group => Command::RemoveGroup { id },
                         EntityKind::Underlay => Command::RemoveUnderlay { id },
+                        EntityKind::MassSource => Command::RemoveMassSource { id },
                         EntityKind::Combination => Command::RemoveCombination { id },
                         EntityKind::LoadCase => Command::RemoveLoadCase { id },
                         EntityKind::Diaphragm => Command::RemoveDiaphragm { id },
@@ -911,6 +925,20 @@ impl Workspace {
                 .child(panel.clone())
         });
     }
+    /// The mass sources matrix: a name and five switches, then one
+    /// multiplier per load case.
+    pub fn show_mass_sources(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = self.mass_sources.clone();
+        let document = self.document.clone();
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let cases = document.read(cx).model().load_cases.len() as f32;
+            let widest = f32::from(window.viewport_size().width) - 64.;
+            let width = (720. + 100. * cases).clamp(720., widest.max(720.));
+            panel_dialog(dialog, width, window)
+                .title("Mass sources")
+                .child(panel.clone())
+        });
+    }
     /// The model tree, in a dialog. Click selects, double-click edits. The
     /// sections holding the selection open, so it is in sight.
     pub fn show_model_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1100,6 +1128,7 @@ impl Workspace {
                         Box::new(GenerateCombinations),
                         gates.generate,
                     ),
+                    item("Mass sources…", Box::new(ShowMassSources), None),
                 ],
             ),
             (

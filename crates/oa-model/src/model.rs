@@ -17,6 +17,7 @@ pub enum EntityKind {
     Combination,
     Group,
     Underlay,
+    MassSource,
 }
 impl std::fmt::Display for EntityKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -32,6 +33,7 @@ impl std::fmt::Display for EntityKind {
             Self::Combination => "combination",
             Self::Group => "group",
             Self::Underlay => "underlay",
+            Self::MassSource => "mass source",
         };
         f.write_str(s)
     }
@@ -90,6 +92,12 @@ pub struct Model {
     pub groups: BTreeMap<EntityId, Group>,
     #[serde(default)]
     pub underlays: BTreeMap<EntityId, Underlay>,
+    #[serde(default)]
+    pub mass_sources: BTreeMap<EntityId, MassSource>,
+    /// The source modal and spectrum analysis use unless told otherwise.
+    /// None means element and node mass in every direction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_mass_source: Option<EntityId>,
 }
 /// A new model starts with one level, `Base` at elevation zero, so there is
 /// always a datum to bind nodes to.
@@ -113,6 +121,8 @@ impl Default for Model {
             combinations: BTreeMap::new(),
             groups: BTreeMap::new(),
             underlays: BTreeMap::new(),
+            mass_sources: BTreeMap::new(),
+            default_mass_source: None,
         }
     }
 }
@@ -181,6 +191,11 @@ entity!(Combination, Combination, combinations, |s| s
     .map(|(id, _)| (*id, EntityKind::LoadCase))
     .collect());
 entity!(Underlay, Underlay, underlays, |s| vec![(s.level, EntityKind::Level)]);
+entity!(MassSource, MassSource, mass_sources, |s| s
+    .cases
+    .iter()
+    .map(|(id, _)| (*id, EntityKind::LoadCase))
+    .collect());
 impl Entity for Group {
     const KIND: EntityKind = EntityKind::Group;
     fn name(&self) -> &str {
@@ -227,6 +242,7 @@ impl Model {
             .chain(self.combinations.keys())
             .chain(self.groups.keys())
             .chain(self.underlays.keys())
+            .chain(self.mass_sources.keys())
             .copied()
     }
     /// The highest id any table holds.
@@ -270,6 +286,7 @@ impl Model {
             (self.combinations.contains_key(&id), EntityKind::Combination),
             (self.groups.contains_key(&id), EntityKind::Group),
             (self.underlays.contains_key(&id), EntityKind::Underlay),
+            (self.mass_sources.contains_key(&id), EntityKind::MassSource),
         ]
         .into_iter()
         .find(|(present, _)| *present)
@@ -289,6 +306,7 @@ impl Model {
             .or_else(|| self.combinations.get(&id).map(|e| e.name.as_str()))
             .or_else(|| self.groups.get(&id).map(|e| e.name.as_str()))
             .or_else(|| self.underlays.get(&id).map(|e| e.name.as_str()))
+            .or_else(|| self.mass_sources.get(&id).map(|e| e.name.as_str()))
     }
     /// Human-readable handle for messages: `node "N7" (#12)`.
     pub fn describe(&self, id: EntityId) -> String {
@@ -321,6 +339,7 @@ impl Model {
         scan::<LoadCase>(self, id, &mut out);
         scan::<Combination>(self, id, &mut out);
         scan::<Underlay>(self, id, &mut out);
+        scan::<MassSource>(self, id, &mut out);
         out
     }
     /// Existing members of a group. Stale ids are skipped.
@@ -532,6 +551,23 @@ impl Model {
                 name: c.name.clone(),
                 terms: c.terms.iter().map(|(id, f)| (cases[id.0], *f)).collect(),
             });
+        }
+        // A source other than the default becomes the default entity. Solver
+        // input has no levels, so explicit lumping has nothing to map onto.
+        let source = &solver.mass_source;
+        if *source != oa_core::MassSource::default() {
+            let id = m.insert(MassSource {
+                element_mass: source.element_mass,
+                cases: source
+                    .cases
+                    .iter()
+                    .map(|(id, f)| (cases[id.0], *f))
+                    .collect(),
+                lateral: source.lateral,
+                vertical: source.vertical,
+                ..MassSource::new("MS0")
+            });
+            m.default_mass_source = Some(id);
         }
         m
     }

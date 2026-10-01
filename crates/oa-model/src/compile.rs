@@ -47,6 +47,15 @@ impl Compiled {
     pub fn content_hash(&self) -> String {
         self.solver.content_hash()
     }
+    /// The solver model with `source` in place of the default mass source;
+    /// None when no mass source has that id. Compilation checked every
+    /// source, so the result is valid.
+    pub fn with_mass_source(&self, model: &Model, source: EntityId) -> Option<oa_core::Model> {
+        let source = model.mass_sources.get(&source)?;
+        let mut solver = self.solver.clone();
+        solver.mass_source = solver_mass_source(model, &self.mapping, source).ok()?;
+        Some(solver)
+    }
     /// Solver indices for the members of a group, by kind.
     pub fn group_indices(&self, model: &Model, group: EntityId) -> GroupIndices {
         let mut out = GroupIndices::default();
@@ -194,12 +203,23 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
     check_names::<LoadCase>(model, &mut problems);
     check_names::<Combination>(model, &mut problems);
     check_names::<Group>(model, &mut problems);
+    check_names::<MassSource>(model, &mut problems);
     check_references::<Node>(model, &mut problems);
     check_references::<Frame>(model, &mut problems);
     check_references::<Shell>(model, &mut problems);
     check_references::<Diaphragm>(model, &mut problems);
     check_references::<LoadCase>(model, &mut problems);
     check_references::<Combination>(model, &mut problems);
+    check_references::<MassSource>(model, &mut problems);
+    if let Some(id) = model.default_mass_source
+        && !model.mass_sources.contains_key(&id)
+    {
+        problems.push(Problem {
+            entity: Some(id),
+            name: None,
+            message: format!("the default mass source #{} does not exist", id.0),
+        });
+    }
     for id in model.duplicate_ids() {
         problems.push(Problem {
             entity: Some(id),
@@ -388,12 +408,36 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
                 .collect(),
         });
     }
+    // Every source is checked, not only the default, so one that analysis
+    // is asked for by name later cannot fail then.
+    let mut source_problems = vec![];
+    for (id, source) in &model.mass_sources {
+        let checked = solver_mass_source(model, &mapping, source).and_then(|core| {
+            solver.validate_mass_source(&core).map_err(|e| match e {
+                oa_core::Error::Model(m) => m.trim_start_matches("mass source: ").to_string(),
+                other => other.to_string(),
+            })?;
+            Ok(core)
+        });
+        match checked {
+            Ok(core) if model.default_mass_source == Some(*id) => solver.mass_source = core,
+            Ok(_) => {}
+            Err(message) => source_problems.push(Problem {
+                entity: Some(*id),
+                name: Some(source.name.clone()),
+                message,
+            }),
+        }
+    }
     if let Err(e) = solver.validate() {
         return Err(vec![Problem {
             entity: None,
             name: None,
             message: e.to_string(),
         }]);
+    }
+    if !source_problems.is_empty() {
+        return Err(source_problems);
     }
     // Element geometry is checked here too, so a degenerate shell or an
     // unusable frame orientation is a named problem at compile time rather
@@ -413,6 +457,102 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
         return Err(problems);
     }
     Ok(Compiled { solver, mapping })
+}
+
+/// A mass source in solver terms: cases by table position, and the lumping
+/// of lateral mass to levels as explicit node shares.
+fn solver_mass_source(
+    model: &Model,
+    mapping: &Mapping,
+    source: &MassSource,
+) -> Result<oa_core::MassSource, String> {
+    Ok(oa_core::MassSource {
+        element_mass: source.element_mass,
+        cases: source
+            .cases
+            .iter()
+            .map(|(case, f)| (oa_core::LoadCaseId(mapping.load_case_index[case]), *f))
+            .collect(),
+        lateral: source.lateral,
+        vertical: source.vertical,
+        lump: if source.lump_to_levels {
+            lump_to_levels(model, mapping)?
+        } else {
+            vec![]
+        },
+    })
+}
+
+/// Shares that move the lateral mass of every node off a level onto the node
+/// directly below or above it on the nearest level, as ETABS lumps lateral
+/// mass at story levels; a node halfway between two levels splits evenly.
+/// Nodes on a level stay.
+fn lump_to_levels(model: &Model, mapping: &Mapping) -> Result<Vec<oa_core::Lump>, String> {
+    use crate::levels::TOLERANCE;
+    let elevations: Vec<(f64, &str)> = model
+        .levels_by_elevation()
+        .iter()
+        .map(|id| {
+            (
+                model.levels[id].elevation.si(),
+                model.levels[id].name.as_str(),
+            )
+        })
+        .collect();
+    let on_level = |z: f64| elevations.iter().any(|(e, _)| (z - e).abs() <= TOLERANCE);
+    // Nodes on levels, by grid cell of their position, to find the one
+    // directly above or below a point without scanning every node.
+    let cell = |v: f64| (v / TOLERANCE).round() as i64;
+    let mut at_level = std::collections::HashMap::<(i64, i64, i64), Vec<EntityId>>::new();
+    for (id, n) in &model.nodes {
+        if on_level(n.position[2].si()) {
+            let p = n.position.map(|v| cell(v.si()));
+            at_level.entry((p[0], p[1], p[2])).or_default().push(*id);
+        }
+    }
+    let find = |x: f64, y: f64, z: f64| -> Option<EntityId> {
+        let (cx, cy, cz) = (cell(x), cell(y), cell(z));
+        (-1..=1)
+            .flat_map(|i| (-1..=1).flat_map(move |j| (-1..=1).map(move |k| (i, j, k))))
+            .filter_map(|(i, j, k)| at_level.get(&(cx + i, cy + j, cz + k)))
+            .flatten()
+            .copied()
+            .find(|id| {
+                let p = model.nodes[id].position.map(|v| v.si());
+                (p[0] - x).abs() <= TOLERANCE
+                    && (p[1] - y).abs() <= TOLERANCE
+                    && (p[2] - z).abs() <= TOLERANCE
+            })
+    };
+    let index = |id: EntityId| oa_core::NodeId(mapping.node_index[&id]);
+    let mut out = vec![];
+    for (id, n) in &model.nodes {
+        let [x, y, z] = n.position.map(|v| v.si());
+        if on_level(z) {
+            continue;
+        }
+        let below = elevations.iter().rev().find(|(e, _)| *e < z);
+        let above = elevations.iter().find(|(e, _)| *e > z);
+        let target = |&(e, level): &(f64, &str)| {
+            find(x, y, e).map(index).ok_or_else(|| {
+                format!(
+                    "lumping to levels: {} has no node directly {} it on level {level:?}",
+                    model.describe(*id),
+                    if e < z { "below" } else { "above" },
+                )
+            })
+        };
+        let shares = match (below, above) {
+            (Some(b), Some(a)) if ((z - b.0) - (a.0 - z)).abs() <= TOLERANCE => {
+                vec![(target(b)?, 0.5), (target(a)?, 0.5)]
+            }
+            (Some(b), Some(a)) => vec![(target(if z - b.0 < a.0 - z { b } else { a })?, 1.0)],
+            (Some(level), None) | (None, Some(level)) => vec![(target(level)?, 1.0)],
+            (None, None) => continue,
+        };
+        out.push((index(*id), shares));
+    }
+    Ok(out)
 }
 
 /// Geometry problems of the frames and shells on any of `nodes`, and of the

@@ -207,6 +207,9 @@ struct ModalArgs {
     /// Number of modes, lowest first. Default 6.
     #[serde(default = "six")]
     modes: usize,
+    /// The mass source to use, by name; the model's default when absent.
+    #[serde(default)]
+    mass_source: Option<String>,
 }
 fn six() -> usize {
     6
@@ -482,16 +485,17 @@ impl Server {
         self.call(move |s| s.entity_indices(&ids)).await
     }
     #[tool(
-        description = "Natural periods, frequencies, and mass participation of the lowest modes. Mass is the frames' and shells' own mass from material density plus node mass; loads in load cases are not mass."
+        description = "Natural periods, frequencies, and mass participation of the lowest modes. Mass comes from the mass source named in mass_source, or the model's default one (describe_model lists them): node mass, the frames' and shells' own mass from material density unless turned off, and the downward load of the load cases the source lists. With no default source, it is node and element mass only; loads are not mass."
     )]
     async fn modal(
         &self,
         Parameters(a): Parameters<ModalArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.call(move |s| s.modal(a.modes)).await
+        self.call(move |s| s.modal(a.modes, a.mass_source.as_deref()))
+            .await
     }
     #[tool(
-        description = "Response-spectrum analysis along one direction: modal summary, captured mass ratio, base reaction, and the largest peak displacements. Mass as for modal. The spectrum is in g and must span every mode's period. Peaks are kept for spectrum_peaks until the next edit."
+        description = "Response-spectrum analysis along one direction: modal summary, captured mass ratio, base reaction, and the largest peak displacements. Mass as for modal, from the source named in mass_source or the default. The spectrum is in g and must span every mode's period. Peaks are kept for spectrum_peaks until the next edit."
     )]
     async fn response_spectrum(
         &self,

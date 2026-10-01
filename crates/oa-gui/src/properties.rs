@@ -160,8 +160,8 @@ const SHELL_LOCAL_X: [(&str, Option<[f64; 3]>); 4] = [
     ("Global Z", Some([0.0, 0.0, 1.0])),
 ];
 /// Cracked-section stiffness from ACI 318 Table 6.6.3.1.1(a), assigned to
-/// every selected frame or shell at once. Each preset replaces all of a
-/// member's modifiers.
+/// every selected frame or shell at once. Each preset replaces a member's
+/// stiffness modifiers and keeps its mass and weight modifiers.
 const fn cracked_frame(i: f64) -> FrameModifiers {
     FrameModifiers {
         area: 1.0,
@@ -170,6 +170,8 @@ const fn cracked_frame(i: f64) -> FrameModifiers {
         torsion: 1.0,
         iy: i,
         iz: i,
+        mass: 1.0,
+        weight: 1.0,
     }
 }
 const FRAME_PRESETS: [(&str, FrameModifiers); 3] = [
@@ -183,6 +185,8 @@ const fn cracked_shell(membrane: f64, bending: f64) -> ShellModifiers {
         membrane_y: membrane,
         membrane_shear: 1.0,
         bending,
+        mass: 1.0,
+        weight: 1.0,
     }
 }
 const SHELL_PRESETS: [(&str, ShellModifiers); 4] = [
@@ -291,6 +295,8 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
             ] {
                 f.push(num(key, name, value).span(THIRD));
             }
+            f.push(num("mod_mass", "Mass modifier", md.mass).span(HALF));
+            f.push(num("mod_weight", "Weight modifier", md.weight).span(HALF));
             for (i, dof) in DOF.iter().enumerate() {
                 f.push(check(
                     format!("rel{i}"),
@@ -351,6 +357,8 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
                     md.membrane_shear,
                 ),
                 ("mod_bending", "Bending modifier", md.bending),
+                ("mod_mass", "Mass modifier", md.mass),
+                ("mod_weight", "Weight modifier", md.weight),
             ] {
                 f.push(num(key, name, value).span(HALF));
             }
@@ -426,6 +434,19 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
         EntityKind::Group => {
             let e = &model.groups[&id];
             f.push(text("name", "Name", &e.name));
+        }
+        EntityKind::MassSource => {
+            // Load case multipliers are edited in the mass sources table.
+            let e = &model.mass_sources[&id];
+            f.push(text("name", "Name", &e.name));
+            for (key, label, value) in [
+                ("element_mass", "Members' own mass", e.element_mass),
+                ("lateral", "Lateral mass", e.lateral),
+                ("vertical", "Vertical mass", e.vertical),
+                ("lump", "Lump lateral mass to levels", e.lump_to_levels),
+            ] {
+                f.push(check(key.into(), "Mass", label, value));
+            }
         }
         EntityKind::Underlay => {
             let e = &model.underlays[&id];
@@ -527,11 +548,14 @@ fn frame_modifier_commands(model: &Model, frames: &[EntityId], name: &str) -> Ve
     };
     frames
         .iter()
-        .filter(|id| model.frames[id].modifiers != *modifiers)
-        .map(|&id| {
+        .filter_map(|&id| {
             let mut frame = model.frames[&id].clone();
-            frame.modifiers = *modifiers;
-            Command::UpdateFrame { id, frame }
+            frame.modifiers = FrameModifiers {
+                mass: frame.modifiers.mass,
+                weight: frame.modifiers.weight,
+                ..*modifiers
+            };
+            (frame != model.frames[&id]).then_some(Command::UpdateFrame { id, frame })
         })
         .collect()
 }
@@ -544,11 +568,14 @@ fn shell_modifier_commands(model: &Model, shells: &[EntityId], name: &str) -> Ve
     };
     shells
         .iter()
-        .filter(|id| model.shells[id].modifiers != *modifiers)
-        .map(|&id| {
+        .filter_map(|&id| {
             let mut shell = model.shells[&id].clone();
-            shell.modifiers = *modifiers;
-            Command::UpdateShell { id, shell }
+            shell.modifiers = ShellModifiers {
+                mass: shell.modifiers.mass,
+                weight: shell.modifiers.weight,
+                ..*modifiers
+            };
+            (shell != model.shells[&id]).then_some(Command::UpdateShell { id, shell })
         })
         .collect()
 }
@@ -647,6 +674,8 @@ fn command_for(
                 ("mod_area", "A modifier", &mut md.area),
                 ("mod_shear_y", "Shear y modifier", &mut md.shear_y),
                 ("mod_shear_z", "Shear z modifier", &mut md.shear_z),
+                ("mod_mass", "Mass modifier", &mut md.mass),
+                ("mod_weight", "Weight modifier", &mut md.weight),
             ] {
                 *value = v.num(key, name, *value)?;
             }
@@ -681,6 +710,8 @@ fn command_for(
                     &mut md.membrane_shear,
                 ),
                 ("mod_bending", "Bending modifier", &mut md.bending),
+                ("mod_mass", "Mass modifier", &mut md.mass),
+                ("mod_weight", "Weight modifier", &mut md.weight),
             ] {
                 *value = v.num(key, name, *value)?;
             }
@@ -765,6 +796,16 @@ fn command_for(
             let mut e = model.groups[&id].clone();
             e.name = name;
             (e != model.groups[&id]).then_some(Command::UpdateGroup { id, group: e })
+        }
+        EntityKind::MassSource => {
+            let mut e = model.mass_sources[&id].clone();
+            e.name = name;
+            e.element_mass = v.check("element_mass");
+            e.lateral = v.check("lateral");
+            e.vertical = v.check("vertical");
+            e.lump_to_levels = v.check("lump");
+            (e != model.mass_sources[&id])
+                .then_some(Command::UpdateMassSource { id, mass_source: e })
         }
         EntityKind::Underlay => {
             let mut e = model.underlays[&id].clone();

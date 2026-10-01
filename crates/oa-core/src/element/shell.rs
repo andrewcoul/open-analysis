@@ -16,7 +16,13 @@ pub(crate) struct ShellElement {
     pub t: M24,
     pub k: M24,
     pub pressure_load: V24,
+    /// Own mass at each corner times the mass modifier.
     pub nodal_mass: [f64; 4],
+    /// Own mass at each corner times the weight modifier: the mass whose
+    /// weight under gravity is the shell's self-weight.
+    pub nodal_weight_mass: [f64; 4],
+    /// Tributary area of each corner, the integral of its shape function.
+    pub nodal_area: [f64; 4],
     /// Center stress, moment and shear recovery operators applied to local displacements.
     stress_op: B3,
     moment_op: B3,
@@ -130,6 +136,8 @@ impl ShellElement {
             k: M24::zeros(),
             pressure_load: V24::zeros(),
             nodal_mass: [0.0; 4],
+            nodal_weight_mass: [0.0; 4],
+            nodal_area: [0.0; 4],
             stress_op: B3::zeros(),
             moment_op: B3::zeros(),
             shear_op: B2::zeros(),
@@ -180,11 +188,17 @@ impl ShellElement {
                 let (n, _, det) = out.geometry(a, b)?;
                 let bm = out.membrane(a, b)?;
                 out.k += bm.transpose() * dm * bm * (h * det);
-                for (mass, shape) in out.nodal_mass.iter_mut().zip(n) {
-                    *mass += material.density.si() * h * shape * det;
+                for (area, shape) in out.nodal_area.iter_mut().zip(n) {
+                    *area += shape * det;
                 }
             }
         }
+        out.nodal_mass = out
+            .nodal_area
+            .map(|a| material.density.si() * h * a * md.mass);
+        out.nodal_weight_mass = out
+            .nodal_area
+            .map(|a| material.density.si() * h * a * md.weight);
         // Same weak drilling stabilization used by the Pynite reference.
         // This artificial stiffness is reported/documented and excluded from stress recovery.
         let kd = (0..4)

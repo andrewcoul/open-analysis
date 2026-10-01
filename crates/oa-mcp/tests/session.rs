@@ -427,3 +427,87 @@ fn analyze_takes_a_service_stiffness_factor() {
     assert_eq!(service["cracked_stiffness_factor"], json!(1.4));
     assert!((cracked / drift(&s) - 1.4).abs() < 1e-9);
 }
+
+#[test]
+fn mass_sources_turn_gravity_load_into_modal_mass() {
+    let mut s = Session::default();
+    s.new_model("mass").unwrap();
+    let steel = s.add_material_from_library("A992", "steel").unwrap();
+    let base = s.find(EntityKind::Level, "Base").unwrap();
+    let [section, a, b, column, sdl, seismic, half] = <[_; 7]>::try_from(s.next_ids(7)).unwrap();
+    s.apply(vec![
+        cmd(json!({"command": "add_section", "id": section, "section":
+            {"name": "col", "area": 20, "iy": 500, "iz": 500, "torsion": 5}})),
+        cmd(
+            json!({"command": "add_node", "id": a, "node": {"name": "A", "level": base,
+            "position": [0, 0, 0], "restrained": [true, true, true, true, true, true]}}),
+        ),
+        cmd(
+            json!({"command": "add_node", "id": b, "node": {"name": "B", "level": base,
+            "position": [0, 0, 12]}}),
+        ),
+        cmd(
+            json!({"command": "add_frame", "id": column, "frame": {"name": "C1", "nodes": [a, b],
+            "material": steel, "section": section}}),
+        ),
+        cmd(
+            json!({"command": "add_load_case", "id": sdl, "load_case": {"name": "SDL",
+            "load_type": "dead", "nodal": [{"node": b, "force": [0, 0, -40]}]}}),
+        ),
+    ])
+    .unwrap();
+    let tip = |s: &mut Session, source: Option<&str>| {
+        s.modal(1, source).unwrap()["total_free_mass"][0]
+            .as_f64()
+            .unwrap()
+    };
+    let own = tip(&mut s, None);
+    assert_eq!(s.describe()["mass_sources"], json!([]));
+    assert_eq!(s.describe()["default_mass_source"], json!(null));
+
+    s.apply(vec![
+        cmd(
+            json!({"command": "add_mass_source", "id": seismic, "mass_source":
+            {"name": "seismic", "cases": [[sdl, 1.0]], "vertical": false}}),
+        ),
+        cmd(
+            json!({"command": "add_mass_source", "id": half, "mass_source":
+            {"name": "half", "cases": [[sdl, 0.5]]}}),
+        ),
+        cmd(json!({"command": "set_default_mass_source", "id": seismic})),
+    ])
+    .unwrap();
+    let described = s.describe();
+    assert_eq!(described["default_mass_source"], json!("seismic"));
+    let row = &described["mass_sources"][0];
+    assert_eq!(
+        row["cases"],
+        json!([{"id": sdl, "name": "SDL", "multiplier": 1.0}])
+    );
+    assert_eq!(
+        (&row["default"], &row["vertical"]),
+        (&json!(true), &json!(false))
+    );
+    // 40 kip over g in ft/s², in kip·s²/ft, from the default source, and
+    // half of it from the one asked for by name.
+    let g = described["gravity"].as_f64().unwrap();
+    assert!((tip(&mut s, None) - own - 40.0 / g).abs() < 1e-9);
+    assert!((tip(&mut s, Some("half")) - own - 20.0 / g).abs() < 1e-9);
+    let vertical = s.modal(1, None).unwrap()["total_free_mass"][2].clone();
+    assert_eq!(vertical, json!(0.0));
+    let err = s.modal(1, Some("nope")).unwrap_err().to_string();
+    assert!(err.contains("no mass source named"), "{err}");
+    for (command, refusal) in [
+        (
+            json!({"command": "remove_load_case", "id": sdl}),
+            "mass source",
+        ),
+        (
+            json!({"command": "remove_mass_source", "id": seismic}),
+            "default",
+        ),
+    ] {
+        let err = s.apply(vec![cmd(command)]).unwrap_err().to_string();
+        assert!(err.contains(refusal), "{err}");
+    }
+}
