@@ -456,6 +456,8 @@ impl Model {
                     releases: f.releases,
                     behavior: f.behavior,
                     modifiers: f.modifiers,
+                    offsets: f.offsets,
+                    cardinal_point: CardinalPoint::Centroid,
                 })
             })
             .collect();

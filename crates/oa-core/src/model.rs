@@ -144,6 +144,8 @@ pub struct Frame {
     pub behavior: AxialBehavior,
     #[serde(default, skip_serializing_if = "FrameModifiers::is_unmodified")]
     pub modifiers: FrameModifiers,
+    #[serde(default, skip_serializing_if = "FrameOffsets::is_none")]
+    pub offsets: FrameOffsets,
 }
 impl Frame {
     pub fn new(nodes: [NodeId; 2], material: MaterialId, section: SectionId) -> Self {
@@ -156,7 +158,102 @@ impl Frame {
             releases: [false; 12],
             behavior: AxialBehavior::Both,
             modifiers: FrameModifiers::default(),
+            offsets: FrameOffsets::default(),
         }
+    }
+    /// Local axes x, y and z as unit vectors in global coordinates, for
+    /// this frame along `span`: local y from `local_y`, or global Y (global
+    /// -X for a vertical member), turned by the roll.
+    pub fn axes_along(&self, span: [f64; 3]) -> std::result::Result<[[f64; 3]; 3], String> {
+        let r = crate::element::frame::orientation(self, Vector3::from(span))?;
+        Ok(std::array::from_fn(|i| [r[(i, 0)], r[(i, 1)], r[(i, 2)]]))
+    }
+    /// Where the member's two ends are, given its nodes' positions: each
+    /// node moved by its joint offset. Local joint offsets are read in the
+    /// axes of the line between the nodes.
+    pub fn ends(&self, nodes: [[f64; 3]; 2]) -> std::result::Result<[[f64; 3]; 2], String> {
+        let joint = self.offsets.joint_si();
+        let joint = match self.offsets.axes {
+            Axes::Local if joint != [[0.0; 3]; 2] => {
+                let span = std::array::from_fn(|i| nodes[1][i] - nodes[0][i]);
+                let [x, y, z] = self.axes_along(span)?;
+                joint.map(|v| std::array::from_fn(|i| x[i] * v[0] + y[i] * v[1] + z[i] * v[2]))
+            }
+            _ => joint,
+        };
+        let ends: [[f64; 3]; 2] =
+            std::array::from_fn(|k| std::array::from_fn(|i| nodes[k][i] + joint[k][i]));
+        let length = (0..3)
+            .map(|i| (ends[1][i] - ends[0][i]).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        if !length.is_finite() || length <= 1e-12 {
+            return Err("zero or invalid length".into());
+        }
+        Ok(ends)
+    }
+}
+
+/// Where a frame's analytical member sits relative to its two nodes, as the
+/// insertion points and end length offsets of ETABS and SAP2000.
+///
+/// `joint` moves each end of the member off its node through a rigid link:
+/// a beam hung below a slab's nodes, or a column whose face stays flush as
+/// its section steps. The member runs between the moved ends, and its local
+/// axes follow that line. With `axes` local, the offsets are in the axes
+/// the member would have between its nodes, so a cardinal point stays put
+/// when the member is moved.
+///
+/// `end` is the length at each end, measured along the member from its
+/// moved end, that lies inside the joint: half the column depth a beam
+/// frames into, say. The member between the two is its clear length; section
+/// forces and diagrams are reported there and nowhere in the joints.
+/// `rigid_zone` of each end offset is rigid, from 0 (the default, where
+/// offsets only move the output to the faces) to 1. Releases act at the
+/// ends of the flexible length: at the faces when `rigid_zone` is 1.
+///
+/// Loads keep their positions along the whole member from its moved end I.
+/// A load inside a rigid zone goes to the node through the rigid zone. Mass
+/// and self-weight count the whole length, joints included, as ETABS does.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FrameOffsets {
+    pub joint: [[Length; 3]; 2],
+    pub axes: Axes,
+    pub end: [Length; 2],
+    pub rigid_zone: f64,
+}
+impl Default for FrameOffsets {
+    fn default() -> Self {
+        Self {
+            joint: [[Length::ZERO; 3]; 2],
+            axes: Axes::Global,
+            end: [Length::ZERO; 2],
+            rigid_zone: 0.0,
+        }
+    }
+}
+impl FrameOffsets {
+    pub fn is_none(&self) -> bool {
+        *self == Self::default()
+    }
+    /// Checks what each value can be on its own: finite offsets, end
+    /// offsets of at least zero, and a rigid zone factor from 0 to 1.
+    pub fn check(&self) -> std::result::Result<(), String> {
+        if self.joint_si().iter().flatten().any(|x| !x.is_finite())
+            || self.end.iter().any(|x| !x.si().is_finite() || x.si() < 0.0)
+            || !(0.0..=1.0).contains(&self.rigid_zone)
+        {
+            return Err(
+                "offsets must be finite, end offsets >= 0, and the rigid zone factor from 0 to 1"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+    /// Joint offsets of end I then J, metres.
+    pub fn joint_si(&self) -> [[f64; 3]; 2] {
+        self.joint.map(|v| v.map(Length::si))
     }
 }
 
@@ -679,10 +776,12 @@ impl Model {
             {
                 return fail(format!("frame {i}: nonfinite orientation"));
             }
-            let l = self.frame_length(FrameId(i));
-            if !l.is_finite() || l <= 1e-12 {
-                return fail(format!("frame {i}: zero or invalid length"));
+            if let Err(e) = f.offsets.check() {
+                return fail(format!("frame {i}: {e}"));
             }
+            // Orientation and the clear length are element checks, which
+            // `validate_frame` makes.
+            self.frame_length(FrameId(i))?;
             if f.modifiers
                 .values()
                 .iter()
@@ -793,7 +892,7 @@ impl Model {
                 if l.member().0 >= self.frames.len() {
                     return fail(format!("load case {i}: invalid member ID"));
                 }
-                let len = self.frame_length(l.member());
+                let len = self.frame_length(l.member())?;
                 let valid = match l {
                     MemberLoad::Point {
                         position,
@@ -953,10 +1052,13 @@ impl Model {
         }
         out
     }
-    pub(crate) fn frame_length(&self, id: FrameId) -> f64 {
+    /// Length of the member between its ends, after joint offsets: the
+    /// length member load positions run along.
+    pub fn frame_length(&self, id: FrameId) -> Result<f64> {
         let f = &self.frames[id.0];
-        let a = self.nodes[f.nodes[0].0].xyz();
-        let b = self.nodes[f.nodes[1].0].xyz();
-        (0..3).map(|i| (b[i] - a[i]).powi(2)).sum::<f64>().sqrt()
+        let [a, b] = f
+            .ends(f.nodes.map(|n| self.nodes[n.0].xyz()))
+            .map_err(|e| Error::Model(format!("frame {}: {e}", id.0)))?;
+        Ok((0..3).map(|i| (b[i] - a[i]).powi(2)).sum::<f64>().sqrt())
     }
 }

@@ -22,8 +22,8 @@ use gpui_kit::*;
 use oa_core::units::Length;
 use oa_core::units::*;
 use oa_model::{
-    AxialBehavior, Axis, Command, ElevationScope, EntityId, EntityKind, FrameModifiers, Level,
-    MemberLoad, Model, Role, ShellFormulation, ShellModifiers,
+    Axes, AxialBehavior, Axis, CardinalPoint, Command, ElevationScope, EntityId, EntityKind,
+    FrameModifiers, Level, MemberLoad, Model, Role, ShellFormulation, ShellModifiers,
 };
 use std::collections::HashMap;
 
@@ -152,6 +152,20 @@ const FORMULATIONS: [(&str, ShellFormulation); 2] = [
     ("Rectangular", ShellFormulation::Rectangular),
 ];
 const AXES: [(&str, Axis); 3] = [("X", Axis::X), ("Y", Axis::Y), ("Z", Axis::Z)];
+/// Insertion points, numbered as ETABS numbers them.
+const CARDINAL_POINTS: [(&str, CardinalPoint); 10] = [
+    ("1 Bottom left", CardinalPoint::BottomLeft),
+    ("2 Bottom center", CardinalPoint::BottomCenter),
+    ("3 Bottom right", CardinalPoint::BottomRight),
+    ("4 Middle left", CardinalPoint::MiddleLeft),
+    ("5 Middle center", CardinalPoint::MiddleCenter),
+    ("6 Middle right", CardinalPoint::MiddleRight),
+    ("7 Top left", CardinalPoint::TopLeft),
+    ("8 Top center", CardinalPoint::TopCenter),
+    ("9 Top right", CardinalPoint::TopRight),
+    ("10 Centroid", CardinalPoint::Centroid),
+];
+const OFFSET_AXES: [(&str, Axes); 2] = [("Global", Axes::Global), ("Local", Axes::Local)];
 /// A shell's local x reference, projected into its plane.
 const SHELL_LOCAL_X: [(&str, Option<[f64; 3]>); 4] = [
     ("Along first edge", None),
@@ -297,6 +311,61 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
             }
             f.push(num("mod_mass", "Mass modifier", md.mass).span(HALF));
             f.push(num("mod_weight", "Weight modifier", md.weight).span(HALF));
+            let o = &e.offsets;
+            let cardinal = CARDINAL_POINTS
+                .iter()
+                .position(|(_, c)| *c == e.cardinal_point);
+            f.push(
+                choice(
+                    "cardinal",
+                    "Insertion point",
+                    labels(&CARDINAL_POINTS),
+                    cardinal,
+                )
+                .span(TWO_THIRDS),
+            );
+            let axes = OFFSET_AXES.iter().position(|(_, a)| *a == o.axes);
+            f.push(
+                choice(
+                    "offset_axes",
+                    "Joint offset axes",
+                    labels(&OFFSET_AXES),
+                    axes,
+                )
+                .span(THIRD),
+            );
+            for (end, label) in ["I", "J"].iter().enumerate() {
+                for (i, axis) in ["x", "y", "z"].iter().enumerate() {
+                    f.push(
+                        qty(
+                            &format!("joint{end}{i}"),
+                            &format!("Joint offset {axis} at {label}"),
+                            Role::SectionLength,
+                            o.joint[end][i].si(),
+                        )
+                        .span(THIRD),
+                    );
+                }
+            }
+            f.push(
+                qty(
+                    "end_i",
+                    "End offset at I",
+                    Role::SectionLength,
+                    o.end[0].si(),
+                )
+                .span(THIRD),
+            );
+            f.push(
+                qty(
+                    "end_j",
+                    "End offset at J",
+                    Role::SectionLength,
+                    o.end[1].si(),
+                )
+                .span(THIRD),
+            );
+            f.push(num("rigid_zone", "Rigid zone factor", o.rigid_zone).span(THIRD));
             for (i, dof) in DOF.iter().enumerate() {
                 f.push(check(
                     format!("rel{i}"),
@@ -679,6 +748,28 @@ fn command_for(
             ] {
                 *value = v.num(key, name, *value)?;
             }
+            e.cardinal_point = v.item("cardinal", &CARDINAL_POINTS, e.cardinal_point);
+            let o = &mut e.offsets;
+            o.axes = v.item("offset_axes", &OFFSET_AXES, o.axes);
+            for end in 0..2 {
+                for i in 0..3 {
+                    o.joint[end][i] = Length::from_si(v.qty(
+                        &format!("joint{end}{i}"),
+                        Role::SectionLength,
+                        "Joint offset",
+                        o.joint[end][i].si(),
+                    )?);
+                }
+            }
+            for (end, key) in ["end_i", "end_j"].iter().enumerate() {
+                o.end[end] = Length::from_si(v.qty(
+                    key,
+                    Role::SectionLength,
+                    "End offset",
+                    o.end[end].si(),
+                )?);
+            }
+            o.rigid_zone = v.num("rigid_zone", "Rigid zone factor", o.rigid_zone)?;
             for i in 0..12 {
                 e.releases[i] = v.check(&format!("rel{i}"));
             }

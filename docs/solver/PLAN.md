@@ -378,6 +378,67 @@ Left out:
 - **Section-level mass and weight modifiers**, for the reason section-level
   stiffness modifiers are declined above.
 
+### End offsets and insertion points (added 2026-10-01)
+
+A beam framing into a column spends half the column's depth inside the
+joint, and a beam hung below a slab sits half its depth below the slab's
+nodes. Both changed nothing here: every member ran node to node at its
+centroid. A frame now carries `offsets`, as the end length offsets and
+insertion points of ETABS and SAP2000 (CSI Analysis Reference Manual, frame
+end offsets and insertion point):
+
+- **`joint`** moves each end of the member off its node through a rigid
+  link, in global axes or, with `axes` local, in the axes of the line
+  between the nodes. The member runs between the moved ends and takes its
+  local axes from that line. Member load positions run along it.
+- **`end`** is the length at each end, from the moved end, that lies in the
+  joint. The rest is the clear length; section forces and diagrams cover it
+  and nothing in the joints, and `FrameDiagram` gains `origin`, the moved
+  end I its stations start from.
+- **`rigid_zone`** (0 to 1, default 0) of each end offset is rigid, as the
+  rigid-zone factor. The flexible part is the length less the rigid parts;
+  its stiffness, Timoshenko shear parameter and geometric stiffness use that
+  length.
+
+The element is the old one on the flexible part, carried to the nodes by
+`t = R A`, where `A` is a rigid link per end: the end of the flexible part
+moves `u + θ × r` and turns with its node, `r` being its arm from the node
+through the joint offset and the rigid zone. Recovered end forces and
+displacements are at the ends of the flexible part, so releases act there:
+at the faces when the rigid-zone factor is 1. A member load on the flexible
+part becomes fixed-end forces as before. A load on a rigid zone is carried
+by statics to the end of the flexible part and then to the node through
+`Aᵀ`, as a nodal load, without entering the condensed member load: it sits
+on the node's side of any release, and a beam pinned at its faces carries
+none of it. Section recovery takes the end forces at the start of the
+flexible part and adds only loads on the flexible part.
+
+Mass and self-weight count the whole member, joints included, as ETABS
+does by default; frame mass is still lumped half to each node. Offsets that
+are all zero are left out of the JSON, so existing models and their content
+hashes are unchanged. Validation refuses nonfinite offsets, negative end
+offsets and a factor outside 0 to 1, and element checks refuse end offsets
+that leave no clear length. Tests: `crates/oa-core/tests/end_offsets.rs`
+checks a cantilever's tip deflection and end forces against the closed form
+for its flexible length at several factors, a beam on rigid zones against
+the same beam with each zone a member 10⁶ times stiffer under a trapezoid
+running into both zones and a point load in one, a beam pinned at its faces
+carrying none of its rigid-zone loads, an axial load through joint offsets
+bending the member but leaving no moment at the support, local against
+global joint offsets, validation, and self-weight over the full length.
+
+Left out:
+
+- **Automatic end offsets from connectivity.** ETABS can set each end offset
+  from the depth of what the member frames into. The model layer could fill
+  them from the sections at each node; for now they are entered.
+- **Rigid zones in P-Delta.** The geometric stiffness covers the flexible
+  part only, so an axial force does not soften the rigid zones' sway. Rigid
+  zones are short and stiff, so the effect is small.
+- **Releases at the faces with a factor below 1.** CSI puts releases at the
+  faces whatever the factor. Here they sit at the ends of the flexible part,
+  which are the faces only when the factor is 1.
+
 ### Equilibrium check and iterative refinement (revised 2026-09-14)
 
 The linear solve originally did one step of iterative refinement and then

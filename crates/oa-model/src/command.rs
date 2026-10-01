@@ -547,12 +547,14 @@ impl Command {
             }
             AddFrame { id, frame } => {
                 check_modifiers(&frame.modifiers.values())?;
+                frame.offsets.check().map_err(ModelError::Invalid)?;
                 check_mass_weight(frame.modifiers.mass, frame.modifiers.weight)?;
                 add(model, id, frame)?;
                 RemoveFrame { id }
             }
             UpdateFrame { id, frame } => {
                 check_modifiers(&frame.modifiers.values())?;
+                frame.offsets.check().map_err(ModelError::Invalid)?;
                 check_mass_weight(frame.modifiers.mass, frame.modifiers.weight)?;
                 UpdateFrame {
                     id,
