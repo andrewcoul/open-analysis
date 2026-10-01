@@ -531,6 +531,17 @@ fn specs(model: &Model, id: EntityId) -> Option<(EntityKind, Vec<FieldSpec>)> {
                 f.push(qty(&format!("o{i}"), axis, Role::Length, e.origin[i].si()).span(HALF));
             }
         }
+        EntityKind::GridLine => {
+            let e = &model.grid_lines[&id];
+            f.push(text("name", "Label", &e.name));
+            for (end, key, point) in [("Bubble", "s", e.start), ("End", "e", e.end)] {
+                for (i, axis) in ["X", "Y"].iter().enumerate() {
+                    let label = format!("{end} {axis}");
+                    let field = qty(&format!("{key}{i}"), &label, Role::Length, point[i].si());
+                    f.push(field.span(HALF));
+                }
+            }
+        }
     }
     Some((kind, f))
 }
@@ -911,6 +922,21 @@ fn command_for(
                 )?);
             }
             (e != model.underlays[&id]).then_some(Command::UpdateUnderlay { id, underlay: e })
+        }
+        EntityKind::GridLine => {
+            let mut e = model.grid_lines[&id].clone();
+            e.name = name;
+            for (key, label, point) in [("s", "Bubble", &mut e.start), ("e", "End", &mut e.end)] {
+                for (i, value) in point.iter_mut().enumerate() {
+                    *value = Length::from_si(v.qty(
+                        &format!("{key}{i}"),
+                        Role::Length,
+                        label,
+                        value.si(),
+                    )?);
+                }
+            }
+            (e != model.grid_lines[&id]).then_some(Command::UpdateGridLine { id, grid_line: e })
         }
     })
 }

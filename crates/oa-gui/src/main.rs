@@ -201,6 +201,7 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
         dialogs::add_node(ws.document().clone(), active, window, cx)
     });
     on!(ShowLevels, |ws, _, window, cx| ws.show_levels(window, cx));
+    on!(AddGrid, |ws, _, window, cx| ws.add_grid(window, cx));
     on!(LevelUp, |ws, _, _, cx| ws.step_level(1, cx));
     on!(LevelDown, |ws, _, _, cx| ws.step_level(-1, cx));
     on!(SetActiveLevel, |ws, action: &SetActiveLevel, _, cx| ws
@@ -269,6 +270,8 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
         .toggle_option(|o| o.frame_labels = !o.frame_labels, cx));
     on!(ToggleUnderlays, |ws, _, _, cx| ws
         .toggle_option(|o| o.hide_underlays = !o.hide_underlays, cx));
+    on!(ToggleGridLines, |ws, _, _, cx| ws
+        .toggle_option(|o| o.hide_grid_lines = !o.hide_grid_lines, cx));
     on!(ToggleDeformedShape, |ws, _, _, cx| ws
         .toggle_option(|o| o.deformed = !o.deformed, cx));
     on!(ToggleUpAxis, |ws, _, _, cx| ws.toggle_up_axis(cx));

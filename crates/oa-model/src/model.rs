@@ -18,6 +18,7 @@ pub enum EntityKind {
     Group,
     Underlay,
     MassSource,
+    GridLine,
 }
 impl std::fmt::Display for EntityKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -34,6 +35,7 @@ impl std::fmt::Display for EntityKind {
             Self::Group => "group",
             Self::Underlay => "underlay",
             Self::MassSource => "mass source",
+            Self::GridLine => "grid line",
         };
         f.write_str(s)
     }
@@ -98,6 +100,8 @@ pub struct Model {
     /// None means element and node mass in every direction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_mass_source: Option<EntityId>,
+    #[serde(default)]
+    pub grid_lines: BTreeMap<EntityId, GridLine>,
 }
 /// A new model starts with one level, `Base` at elevation zero, so there is
 /// always a datum to bind nodes to.
@@ -123,6 +127,7 @@ impl Default for Model {
             underlays: BTreeMap::new(),
             mass_sources: BTreeMap::new(),
             default_mass_source: None,
+            grid_lines: BTreeMap::new(),
         }
     }
 }
@@ -196,6 +201,7 @@ entity!(MassSource, MassSource, mass_sources, |s| s
     .iter()
     .map(|(id, _)| (*id, EntityKind::LoadCase))
     .collect());
+entity!(GridLine, GridLine, grid_lines, |_s| vec![]);
 impl Entity for Group {
     const KIND: EntityKind = EntityKind::Group;
     fn name(&self) -> &str {
@@ -243,6 +249,7 @@ impl Model {
             .chain(self.groups.keys())
             .chain(self.underlays.keys())
             .chain(self.mass_sources.keys())
+            .chain(self.grid_lines.keys())
             .copied()
     }
     /// The highest id any table holds.
@@ -287,6 +294,7 @@ impl Model {
             (self.groups.contains_key(&id), EntityKind::Group),
             (self.underlays.contains_key(&id), EntityKind::Underlay),
             (self.mass_sources.contains_key(&id), EntityKind::MassSource),
+            (self.grid_lines.contains_key(&id), EntityKind::GridLine),
         ]
         .into_iter()
         .find(|(present, _)| *present)
@@ -307,6 +315,7 @@ impl Model {
             .or_else(|| self.groups.get(&id).map(|e| e.name.as_str()))
             .or_else(|| self.underlays.get(&id).map(|e| e.name.as_str()))
             .or_else(|| self.mass_sources.get(&id).map(|e| e.name.as_str()))
+            .or_else(|| self.grid_lines.get(&id).map(|e| e.name.as_str()))
     }
     /// Human-readable handle for messages: `node "N7" (#12)`.
     pub fn describe(&self, id: EntityId) -> String {

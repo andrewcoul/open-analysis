@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const FORMAT_VERSION: u32 = 9;
+pub const FORMAT_VERSION: u32 = 10;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
@@ -173,6 +173,10 @@ fn migrate(from: u32, mut value: serde_json::Value) -> Result<serde_json::Value,
         // zone factor and a cardinal point. A version 8 frame has none, runs
         // node to node at its centroid, and needs no change.
         8 => Ok(value),
+        // Version 10 adds plan grid lines. A version 9 document has none and
+        // needs no change; the bump keeps an older build from opening a
+        // document whose grid lines it would not understand.
+        9 => Ok(value),
         _ => Ok(value),
     }
 }

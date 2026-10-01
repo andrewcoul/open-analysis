@@ -513,6 +513,39 @@ fn mass_sources_turn_gravity_load_into_modal_mass() {
 }
 
 #[test]
+fn grid_lines_go_in_and_come_back_in_feet() {
+    let mut s = Session::default();
+    s.new_model("grid").unwrap();
+    let [a, one] = <[_; 2]>::try_from(s.next_ids(2)).unwrap();
+    s.apply(vec![
+        cmd(json!({"command": "add_grid_line", "id": a, "grid_line":
+            {"name": "A", "start": [0, -5], "end": [0, 55]}})),
+        cmd(json!({"command": "add_grid_line", "id": one, "grid_line":
+            {"name": "1", "start": [-5, 0], "end": [95, 0]}})),
+    ])
+    .unwrap();
+    let described = s.describe();
+    assert_eq!(described["grid_lines"], json!(["A", "1"]));
+    assert_eq!(described["counts"]["grid_lines"], json!(2));
+    assert_eq!(s.find(EntityKind::GridLine, "1"), Some(one));
+    let got = s.get(a).unwrap();
+    assert_eq!(got["kind"], json!("grid_line"));
+    let ft = |v: &serde_json::Value| v.as_f64().unwrap();
+    assert!((ft(&got["entity"]["end"][1]) - 55.0).abs() < 1e-9);
+    let listed = s.list(EntityKind::GridLine, None, 10);
+    assert!((ft(&listed["rows"][1]["start"][0]) + 5.0).abs() < 1e-9);
+    // A grid line with both ends at one point has no direction.
+    let err = s
+        .apply(vec![cmd(
+            json!({"command": "update_grid_line", "id": a, "grid_line":
+            {"name": "A", "start": [0, 0], "end": [0, 0]}}),
+        )])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("two different ends"), "{err}");
+}
+
+#[test]
 fn frames_carry_offsets_and_cardinal_points() {
     let mut s = Session::default();
     s.new_model("offsets").unwrap();

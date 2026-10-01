@@ -64,7 +64,7 @@ fn kind(name: &str) -> Result<EntityKind, McpError> {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct ListArgs {
-    /// One of: level, node, material, section, frame, shell, diaphragm, load_case, combination, group, underlay.
+    /// One of: level, node, material, section, frame, shell, diaphragm, load_case, combination, group, underlay, mass_source, grid_line.
     kind: String,
     /// Substring of the name to match.
     filter: Option<String>,
@@ -80,7 +80,7 @@ struct IdArgs {
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 struct FindArgs {
-    /// One of: level, node, material, section, frame, shell, diaphragm, load_case, combination, group, underlay.
+    /// One of: level, node, material, section, frame, shell, diaphragm, load_case, combination, group, underlay, mass_source, grid_line.
     kind: String,
     name: String,
 }

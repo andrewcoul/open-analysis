@@ -1,0 +1,28 @@
+{
+  "format_version": 10,
+  "metadata": { "name": "offset beams", "display_units": "si", "created_unix": 0, "modified_unix": 0 },
+  "gravity": 9.80665,
+  "next_id": 12,
+  "levels": { "1": { "name": "Base", "elevation": 0.0 } },
+  "nodes": {
+    "2": { "name": "left", "level": 1, "position": [0, 0, 0], "restrained": [true, true, true, true, true, true] },
+    "3": { "name": "right", "level": 1, "position": [6, 0, 0], "restrained": [true, true, true, true, true, true] }
+  },
+  "materials": { "4": { "name": "steel", "young": 200000000000, "poisson": 0.3, "density": 7850 } },
+  "sections": {
+    "5": { "name": "W", "area": 0.0171, "iy": 0.000151, "iz": 0.000416, "torsion": 0.00000169,
+           "shape": { "kind": "W", "properties": { "d": 0.356, "bf": 0.369 } } }
+  },
+  "frames": {
+    "6": { "name": "B1", "nodes": [2, 3], "material": 4, "section": 5, "local_y": [0, 0, 1],
+           "offsets": { "end": [0.2, 0.3], "rigid_zone": 0.5 } },
+    "7": { "name": "B2", "nodes": [2, 3], "material": 4, "section": 5, "local_y": [0, 0, 1],
+           "offsets": { "joint": [[0, 0.1, 0], [0, 0.1, 0]] }, "cardinal_point": "top_center" }
+  },
+  "load_cases": { "8": { "name": "dead", "self_weight": [0, 0, -1] } },
+  "grid_lines": {
+    "9": { "name": "A", "start": [0, -1], "end": [0, 1] },
+    "10": { "name": "B", "start": [3, -1], "end": [3, 1] },
+    "11": { "name": "1", "start": [-1, 0], "end": [4, 0] }
+  }
+}

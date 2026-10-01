@@ -12,8 +12,9 @@ use std::collections::BTreeSet;
 /// Rows shown per section before the list is cut, to keep large models responsive.
 const MAX_ROWS: usize = 2000;
 
-const KINDS: [EntityKind; 12] = [
+const KINDS: [EntityKind; 13] = [
     EntityKind::Level,
+    EntityKind::GridLine,
     EntityKind::Node,
     EntityKind::Frame,
     EntityKind::Shell,
@@ -41,6 +42,7 @@ fn section_title(kind: EntityKind) -> &'static str {
         EntityKind::Group => "Groups",
         EntityKind::Underlay => "Underlays",
         EntityKind::MassSource => "Mass sources",
+        EntityKind::GridLine => "Grid lines",
     }
 }
 
@@ -65,6 +67,7 @@ pub fn rows_of(model: &Model, kind: EntityKind) -> Vec<(EntityId, String)> {
         EntityKind::Group => rows::<oa_model::Group>(model),
         EntityKind::Underlay => rows::<oa_model::Underlay>(model),
         EntityKind::MassSource => rows::<oa_model::MassSource>(model),
+        EntityKind::GridLine => rows::<oa_model::GridLine>(model),
     }
 }
 

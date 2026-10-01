@@ -294,6 +294,13 @@ impl MapQuantities for Underlay {
         }
     }
 }
+impl MapQuantities for GridLine {
+    fn map_quantities(&mut self, f: &mut dyn FnMut(Role, f64) -> f64) {
+        for v in self.start.iter_mut().chain(self.end.iter_mut()) {
+            remap!(f, Role::Length, *v, Length);
+        }
+    }
+}
 impl MapQuantities for NodalLoad {
     fn map_quantities(&mut self, f: &mut dyn FnMut(Role, f64) -> f64) {
         for i in 0..3 {
@@ -383,6 +390,9 @@ impl MapQuantities for Command {
             Command::AddUnderlay { underlay, .. } | Command::UpdateUnderlay { underlay, .. } => {
                 underlay.map_quantities(f)
             }
+            Command::AddGridLine { grid_line, .. } | Command::UpdateGridLine { grid_line, .. } => {
+                grid_line.map_quantities(f)
+            }
             Command::SetGravity { gravity } => {
                 remap!(f, Role::Acceleration, *gravity, Acceleration);
             }
@@ -412,7 +422,8 @@ impl MapQuantities for Command {
             | Command::RemoveLoadCase { .. }
             | Command::RemoveCombination { .. }
             | Command::RemoveGroup { .. }
-            | Command::RemoveUnderlay { .. } => {}
+            | Command::RemoveUnderlay { .. }
+            | Command::RemoveGridLine { .. } => {}
         }
     }
 }
