@@ -16,7 +16,7 @@ pub struct Gates {
     /// Shell on the four selected nodes.
     pub shell: Option<&'static str>,
     /// The Frame tool: needs a material, a section, and nodes to click or
-    /// an underlay to snap new ones to.
+    /// an underlay or grid line to snap new ones to.
     pub frame_tool: Option<&'static str>,
     pub shell_tool: Option<&'static str>,
     pub group: Option<&'static str>,
@@ -39,7 +39,7 @@ impl Gates {
             .is_empty()
             .then_some("Define a material first");
         let no_section = model.sections.is_empty().then_some("Define a section first");
-        let traceable = !model.underlays.is_empty();
+        let traceable = !model.underlays.is_empty() || !model.grid_lines.is_empty();
         let no_case = model
             .load_cases
             .is_empty()

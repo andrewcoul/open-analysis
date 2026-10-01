@@ -296,6 +296,21 @@ blank for a case the source leaves out. The first source added becomes the
 default, removing the default clears it first, and removing a load case
 takes it out of every source in the same undo step.
 
+- **Grid lines are model-wide, one entity per line.** A `GridLine` holds
+  its label as its name and two ends in plan, the first the bubble end.
+  It stands for a vertical plane through every level, as an ETABS grid
+  does, so it binds to no level and nothing references it; it is never
+  compiled. Add and update refuse non-finite ends and ends closer than the
+  level tolerance. There is no grid system entity: `grids::RectangularGrid`
+  turns an origin, X and Y spacings, two first labels and an overhang into
+  one `Batch` of `AddGridLine`, so a whole grid is one undo step and each
+  line can be moved, relabelled or removed alone afterwards. X grid lines
+  (constant X, lettered A, B, C, skipping I and O) come first, then Y grid
+  lines (constant Y, numbered); a label ending in digits counts on with its
+  prefix (C1, C2). Labels are names, so a second grid with the same labels
+  is refused whole. The file format went to version 9 for them; a version
+  8 document has none.
+
 ## Phases
 
 ### Phase M0: Entities and compilation

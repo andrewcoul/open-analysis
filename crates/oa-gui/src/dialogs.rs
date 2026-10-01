@@ -331,6 +331,78 @@ pub fn add_node(
     );
 }
 
+/// A rectangular plan grid as one undo step: X grid lines lettered across,
+/// Y grid lines numbered up, at spacings typed as a list such as "3@30, 25".
+/// `on_added` runs once the grid is in the model.
+pub fn add_grid(
+    document: Entity<Document>,
+    on_added: impl Fn(&mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let [x_spacings, y_spacings, origin_x, origin_y, overhang] = [
+        "X spacings",
+        "Y spacings",
+        "Origin X",
+        "Origin Y",
+        "Overhang",
+    ]
+    .map(|name| label(name, Role::Length));
+    let inputs = Inputs::default()
+        .with_text(&x_spacings, "3@30", Width::Full, window, cx)
+        .with_text("First X label", "A", Width::Half, window, cx)
+        .with_text(&y_spacings, "2@25", Width::Full, window, cx)
+        .with_text("First Y label", "1", Width::Half, window, cx)
+        .with_text(&origin_x, "0", Width::Third, window, cx)
+        .with_text(&origin_y, "0", Width::Third, window, cx)
+        .with_text(&overhang, "5", Width::Third, window, cx);
+    open(
+        "Add grid",
+        "Add",
+        inputs,
+        window,
+        cx,
+        move |inputs, window, cx| {
+            let spacings = |field: &str| {
+                oa_model::grids::parse_spacings(&inputs.text(field, cx), |v| {
+                    parse_q(Role::Length, field, v)
+                })
+                .map(|v| v.into_iter().map(Length::from_si).collect::<Vec<_>>())
+            };
+            let read = || -> Result<oa_model::grids::RectangularGrid, String> {
+                Ok(oa_model::grids::RectangularGrid {
+                    origin: [
+                        Length::from_si(inputs.qty(&origin_x, Role::Length, cx)?),
+                        Length::from_si(inputs.qty(&origin_y, Role::Length, cx)?),
+                    ],
+                    x_spacings: spacings(&x_spacings)?,
+                    y_spacings: spacings(&y_spacings)?,
+                    x_label: inputs.text("First X label", cx),
+                    y_label: inputs.text("First Y label", cx),
+                    overhang: Length::from_si(inputs.qty(&overhang, Role::Length, cx)?),
+                })
+            };
+            let command = read().and_then(|grid| {
+                grid.command(document.read(cx).model())
+                    .map_err(|e| e.to_string())
+            });
+            match command {
+                Ok(command) => {
+                    let added = apply(&document, command, window, cx);
+                    if added {
+                        on_added(cx);
+                    }
+                    added
+                }
+                Err(e) => {
+                    notify_error(window, cx, e);
+                    false
+                }
+            }
+        },
+    );
+}
+
 /// Lays a drawing read from `path` on a level. The units default to what the
 /// file declares and the origin to the model's; both are asked for because
 /// many drawings declare no unit and few share the model's origin.

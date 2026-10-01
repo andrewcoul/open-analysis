@@ -565,3 +565,17 @@ pub struct Underlay {
     /// Segment ends in plan, relative to `origin`.
     pub segments: Vec<[[Length; 2]; 2]>,
 }
+
+/// A plan grid line, as in ETABS: a labelled line in plan that stands for a
+/// vertical plane through every level. The GUI draws it with its bubble on
+/// the level in view, and the draw tools snap to it and to where grid lines
+/// cross. It is a reference only: the solver never sees it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GridLine {
+    /// The label in the bubble, such as "A" or "3".
+    pub name: String,
+    /// The bubble end, in plan.
+    pub start: [Length; 2],
+    pub end: [Length; 2],
+}

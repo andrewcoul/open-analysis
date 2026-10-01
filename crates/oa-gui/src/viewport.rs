@@ -38,6 +38,7 @@ pub struct DisplayOptions {
     pub diagram: Option<Diagram>,
     /// Inverted so that the default shows them.
     pub hide_underlays: bool,
+    pub hide_grid_lines: bool,
     /// The object snaps the draw tools use.
     pub snaps: snap::Modes,
 }
@@ -112,7 +113,8 @@ struct Snapshot {
     nodes: Vec<(EntityId, Point<Pixels>)>,
     frames: Vec<(EntityId, Point<Pixels>, Point<Pixels>)>,
     shells: Vec<(EntityId, [Point<Pixels>; 4])>,
-    /// Lines the draw tools snap to: frames, shell edges, and underlays.
+    /// Lines the draw tools snap to: frames, shell edges, underlays, and
+    /// grid lines.
     /// Empty while nothing is being drawn.
     segments: Vec<snap::Segment>,
 }
@@ -728,6 +730,7 @@ struct Palette {
     /// Storeys shown beside the active level, and members spanning to them.
     context: Hsla,
     underlay: Hsla,
+    grid: Hsla,
     snap: Hsla,
     axes: [Hsla; 3],
 }
@@ -744,6 +747,16 @@ struct Segment {
     selected: bool,
     label: Option<SharedString>,
 }
+/// A grid line as drawn: the line, and its label in a circle off the
+/// bubble end.
+struct GridMark {
+    a: Point<Pixels>,
+    b: Point<Pixels>,
+    bubble: Point<Pixels>,
+    label: SharedString,
+}
+/// Diameter of a grid bubble.
+const BUBBLE: f32 = 22.;
 struct Quad {
     points: [Point<Pixels>; 4],
     depth: f64,
@@ -770,6 +783,9 @@ struct Scene {
     context_shells: Vec<[Point<Pixels>; 4]>,
     /// CAD drawings on the levels in view. Reference only: never picked.
     underlays: Vec<(Point<Pixels>, Point<Pixels>)>,
+    /// Grid lines on the active level's plane, each with its bubble.
+    /// Reference only: never picked.
+    grid_lines: Vec<GridMark>,
     /// Where members spanning to another level meet the active plane. Not
     /// nodes: they cannot be picked or snapped to.
     crossings: Vec<Point<Pixels>>,
@@ -845,6 +861,22 @@ impl Viewport {
                     })
                 })
         };
+        // Grid lines stand for vertical planes through every level, so they
+        // are drawn, and snapped to, on the active level's plane.
+        let grid_z = active_level
+            .or_else(|| model.base_level())
+            .and_then(|l| model.levels.get(&l))
+            .map_or(0.0, |l| l.elevation.si());
+        let hide_grid = self.options.hide_grid_lines;
+        let grid_world: Vec<(&oa_model::GridLine, [[f64; 3]; 2])> = model
+            .grid_lines
+            .values()
+            .filter(|_| !hide_grid)
+            .map(|g| {
+                let at = |p: [oa_core::units::Length; 2]| [p[0].si(), p[1].si(), grid_z];
+                (g, [at(g.start), at(g.end)])
+            })
+            .collect();
         let width = f64::from(bounds.size.width);
         let height = f64::from(bounds.size.height);
         if self.fit_on_next_paint && width > 0.0 && height > 0.0 {
@@ -854,7 +886,8 @@ impl Viewport {
                     .iter()
                     .filter(|(id, _)| node_shown(id))
                     .map(|(_, p)| *p)
-                    .chain(underlay_segments().flatten()),
+                    .chain(underlay_segments().flatten())
+                    .chain(grid_world.iter().flat_map(|(_, w)| *w)),
                 width,
                 height,
             );
@@ -959,6 +992,28 @@ impl Viewport {
             .map(|(world, a, b)| {
                 snappable(world, [a, b]);
                 (a, b)
+            })
+            .collect();
+        let grid_lines = grid_world
+            .iter()
+            .map(|(g, world)| {
+                let [a, b] = world.map(|p| project(p).0);
+                snappable(*world, [a, b]);
+                // The bubble sits off the start, along the line, clear of it.
+                let (dx, dy) = (f32::from(a.x - b.x), f32::from(a.y - b.y));
+                let length = dx.hypot(dy);
+                let (ux, uy) = if length > 1e-3 {
+                    (dx / length, dy / length)
+                } else {
+                    (0., -1.)
+                };
+                let r = BUBBLE / 2.;
+                GridMark {
+                    a,
+                    b,
+                    bubble: point(a.x + px(ux * r), a.y + px(uy * r)),
+                    label: g.name.clone().into(),
+                }
             })
             .collect();
         snapshot.segments = segments;
@@ -1225,6 +1280,7 @@ impl Viewport {
             context_frames,
             context_shells,
             underlays,
+            grid_lines,
             crossings,
             traces,
             deformed_frames,
@@ -1361,6 +1417,29 @@ pub(crate) fn paint_label(
         .ok();
 }
 
+/// A label centred on a point, as in a grid bubble.
+fn paint_centred_label(
+    text: &SharedString,
+    centre: Point<Pixels>,
+    color: Hsla,
+    style: &TextStyle,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let font_size = style.font_size.to_pixels(window.rem_size()) * 0.85;
+    let run = TextRun {
+        color,
+        ..style.to_run(text.len())
+    };
+    let line = window
+        .text_system()
+        .shape_line(text.clone(), font_size, &[run], None);
+    let line_height = font_size * 1.2;
+    let origin = point(centre.x - line.width / 2., centre.y - line_height / 2.);
+    line.paint(origin, line_height, TextAlign::Left, None, window, cx)
+        .ok();
+}
+
 fn paint_scene(
     scene: Scene,
     palette: Palette,
@@ -1379,6 +1458,16 @@ fn paint_scene(
                 palette.underlay,
                 window,
             );
+            stroke_segments(
+                scene.grid_lines.iter().map(|g| (g.a, g.b)),
+                px(1.),
+                palette.grid,
+                window,
+            );
+            for g in &scene.grid_lines {
+                paint_ring(g.bubble, BUBBLE, 1., palette.grid, window);
+                paint_centred_label(&g.label, g.bubble, palette.grid, &style, window, cx);
+            }
             // Context sits under everything, faint enough not to read as the floor.
             for points in &scene.context_shells {
                 let mut builder = PathBuilder::fill();
@@ -2000,6 +2089,7 @@ impl Render for Viewport {
             legend: theme.foreground,
             context: theme.muted_foreground.opacity(0.45),
             underlay: theme.chart_4.opacity(0.6),
+            grid: theme.muted_foreground.opacity(0.7),
             snap: theme.success,
             axes: [theme.red, theme.green, theme.blue],
         };
@@ -2007,7 +2097,7 @@ impl Render for Viewport {
         let hint_color = theme.muted_foreground;
         let empty = {
             let model = self.document.read(cx).model();
-            model.nodes.is_empty() && model.underlays.is_empty()
+            model.nodes.is_empty() && model.underlays.is_empty() && model.grid_lines.is_empty()
         };
         let card = empty.then(|| start_card(theme));
         let controls = self.view_controls(cx);

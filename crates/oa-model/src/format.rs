@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 9;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
@@ -169,6 +169,10 @@ fn migrate(from: u32, mut value: serde_json::Value) -> Result<serde_json::Value,
         // Version 8 adds the mass source. A version 7 document has none, so
         // it keeps element and node mass only, as before, and needs no change.
         7 => Ok(value),
+        // Version 9 adds plan grid lines. A version 8 document has none and
+        // needs no change; the bump keeps an older build from opening a
+        // document whose grid lines it would not understand.
+        8 => Ok(value),
         _ => Ok(value),
     }
 }

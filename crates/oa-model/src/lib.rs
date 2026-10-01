@@ -10,6 +10,7 @@ pub mod compile;
 pub mod editor;
 pub mod entity;
 pub mod format;
+pub mod grids;
 pub mod levels;
 pub mod library;
 pub mod model;
