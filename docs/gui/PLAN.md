@@ -189,10 +189,19 @@ Actions are routed to `Workspace` methods in `main.rs`.
   the property editor (name, level, origin), deleted like anything else, and
   undoable. They cannot be picked in the view, but the draw tools snap to
   them.
+- Grid lines: Define > Grid… adds a rectangular grid in one undo step from
+  X and Y spacings typed as lists ("3@30, 25"), first labels (A and 1), an
+  origin, and an overhang past the outer lines. Each grid line is drawn on
+  the active level's plane, in every view mode, with its label in a bubble
+  off its start, and the draw tools snap to grid lines like any other line,
+  so their crossings are intersection snaps. View > Grid lines hides them.
+  Grid lines are listed in the model browser, edited in the property
+  editor (label and both ends), deleted like anything else, and undoable;
+  like underlays they cannot be picked in the view.
 - Object snaps (`snap.rs`): endpoint, midpoint, intersection, and
-  perpendicular, on frames, shell edges, and underlay lines alike, for the
-  Node, Frame, and Shell tools. The search is in screen space within 10 px of
-  the pointer; intersections and perpendiculars are worked out in plan, and
+  perpendicular, on frames, shell edges, underlay lines, and grid lines
+  alike, for the Node, Frame, and Shell tools. The search is in screen space
+  within 10 px of the pointer; intersections and perpendiculars are worked out in plan, and
   a perpendicular is dropped from the last corner taken, so a pointer resting
   anywhere on a line finds its foot. The marker is drawn on the geometry
   (square, triangle, cross, right angle) and the point itself always lands
@@ -220,8 +229,9 @@ Actions are routed to `Workspace` methods in `main.rs`.
 - A node made at a snap point on a frame's span does not split the frame,
   so it is not connected to it. Snap settings are not saved. No box
   selection.
-- Grids. There is no grid system yet; levels exist (see below) but no plan
-  grid lines to snap to.
+- Grids: no grid system with its own origin and rotation, no curved or
+  radial grids, and bubbles only at the start of a line. A grid line cannot
+  be dragged in the view, and moving one does not move what was drawn on it.
 - SI display. Every field shows US customary units through
   `oa_model::units` (see `text.rs`); adding SI is a second factor table
   there plus a selector wired to the `display_units` preference in metadata.

@@ -187,6 +187,18 @@ pub enum Command {
     RemoveUnderlay {
         id: EntityId,
     },
+    /// A grid line needs a label and two distinct, finite ends in plan.
+    AddGridLine {
+        id: EntityId,
+        grid_line: GridLine,
+    },
+    UpdateGridLine {
+        id: EntityId,
+        grid_line: GridLine,
+    },
+    RemoveGridLine {
+        id: EntityId,
+    },
     SetGravity {
         gravity: Acceleration,
     },
@@ -403,6 +415,23 @@ fn check_underlay(underlay: &Underlay) -> Result<()> {
         return Err(ModelError::Invalid(
             "underlay coordinates must be finite".into(),
         ));
+    }
+    Ok(())
+}
+/// A grid line is drawn and snapped to as it is stored, so its ends must be
+/// finite and apart.
+fn check_grid_line(line: &GridLine) -> Result<()> {
+    let [a, b] = [line.start, line.end].map(|p| p.map(|v| v.si()));
+    if !a.iter().chain(&b).all(|v| v.is_finite()) {
+        return Err(ModelError::Invalid(
+            "grid line coordinates must be finite".into(),
+        ));
+    }
+    if (a[0] - b[0]).hypot(a[1] - b[1]) <= TOLERANCE {
+        return Err(ModelError::Invalid(format!(
+            "grid line {:?} needs two different ends",
+            line.name
+        )));
     }
     Ok(())
 }
@@ -683,6 +712,28 @@ impl Command {
                     AddUnderlay {
                         id,
                         underlay: entity,
+                    },
+                    groups,
+                )
+            }
+            AddGridLine { id, grid_line } => {
+                check_grid_line(&grid_line)?;
+                add(model, id, grid_line)?;
+                RemoveGridLine { id }
+            }
+            UpdateGridLine { id, grid_line } => {
+                check_grid_line(&grid_line)?;
+                UpdateGridLine {
+                    id,
+                    grid_line: update(model, id, grid_line)?,
+                }
+            }
+            RemoveGridLine { id } => {
+                let (entity, groups) = remove(model, id)?;
+                removal_inverse(
+                    AddGridLine {
+                        id,
+                        grid_line: entity,
                     },
                     groups,
                 )

@@ -257,6 +257,8 @@ impl Workspace {
                         .checked(options.frame_labels),
                     MenuItem::action("Underlays", ToggleUnderlays)
                         .checked(!options.hide_underlays),
+                    MenuItem::action("Grid lines", ToggleGridLines)
+                        .checked(!options.hide_grid_lines),
                     MenuItem::action("Z is up", ToggleUpAxis)
                         .checked(viewport.up_axis() == UpAxis::Z),
                 ],
@@ -266,6 +268,7 @@ impl Workspace {
                 name: "Define".into(),
                 items: vec![
                     MenuItem::action("Levels…", ShowLevels),
+                    MenuItem::action("Grid…", AddGrid),
                     MenuItem::separator(),
                     MenuItem::action("Material from library…", AddMaterialFromLibrary),
                     MenuItem::action("Custom material…", AddCustomMaterial),
@@ -519,6 +522,16 @@ impl Workspace {
             Err(e) => self.error(e, window, cx),
         }
     }
+    /// A rectangular grid, then the view zoomed to take it in.
+    pub fn add_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let viewport = self.viewport.clone();
+        crate::dialogs::add_grid(
+            self.document.clone(),
+            move |cx| viewport.update(cx, |viewport, cx| viewport.zoom_extents(cx)),
+            window,
+            cx,
+        );
+    }
     /// Picks a DXF drawing, then asks which level it lies on and how.
     pub fn import_cad(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
@@ -651,6 +664,7 @@ impl Workspace {
             let order = [
                 EntityKind::Group,
                 EntityKind::Underlay,
+                EntityKind::GridLine,
                 EntityKind::MassSource,
                 EntityKind::Combination,
                 EntityKind::LoadCase,
@@ -673,6 +687,7 @@ impl Workspace {
                     commands.push(match kind {
                         EntityKind::Group => Command::RemoveGroup { id },
                         EntityKind::Underlay => Command::RemoveUnderlay { id },
+                        EntityKind::GridLine => Command::RemoveGridLine { id },
                         EntityKind::MassSource => Command::RemoveMassSource { id },
                         EntityKind::Combination => Command::RemoveCombination { id },
                         EntityKind::LoadCase => Command::RemoveLoadCase { id },
@@ -1143,6 +1158,7 @@ impl Workspace {
                 "Define",
                 vec![
                     item("Levels…", Box::new(ShowLevels), None),
+                    item("Grid…", Box::new(AddGrid), None),
                     item("Material from library…", Box::new(AddMaterialFromLibrary), None),
                     item("Custom material…", Box::new(AddCustomMaterial), None),
                     item("Section from library…", Box::new(AddSectionFromLibrary), None),
@@ -1194,6 +1210,7 @@ impl Workspace {
                     item(&on("Node labels", options.node_labels), Box::new(ToggleNodeLabels), None),
                     item(&on("Frame labels", options.frame_labels), Box::new(ToggleFrameLabels), None),
                     item(&on("Underlays", !options.hide_underlays), Box::new(ToggleUnderlays), None),
+                    item(&on("Grid lines", !options.hide_grid_lines), Box::new(ToggleGridLines), None),
                     item(
                         match viewport.up_axis() {
                             UpAxis::Y => "Draw Z as up",
@@ -1421,7 +1438,7 @@ impl Workspace {
                         .child(heading("Results"))
                         .child("After a run, a row under the view controls turns the deformed shape on and off, draws a section force along every member, and steps through the combinations. Results > Member results plots the shear, moment, and deflection of one selected frame. Any edit drops the results until the next run.")
                         .child(heading("Drawing"))
-                        .child("Node places a node where you click, on the active level. Frame joins node I to node J and carries on from J. Shell takes four nodes in order around it. The draw tools snap to the ends, midpoints, and intersections of frames, shell edges, and underlay lines, and to the foot of the perpendicular from the last point; a snapped point lands on the active level, and Frame and Shell make a node there if none stands on it. The icons at the right of the status bar, or Draw > Snap, switch each snap on and off. With nodes already selected, Frame and Shell draw on them at once. Loads go on the selected nodes or frames.")
+                        .child("Node places a node where you click, on the active level. Frame joins node I to node J and carries on from J. Shell takes four nodes in order around it. The draw tools snap to the ends, midpoints, and intersections of frames, shell edges, underlay lines, and grid lines, and to the foot of the perpendicular from the last point; a snapped point lands on the active level, and Frame and Shell make a node there if none stands on it. The icons at the right of the status bar, or Draw > Snap, switch each snap on and off. With nodes already selected, Frame and Shell draw on them at once. Loads go on the selected nodes or frames.")
                         .child(heading("Agents"))
                         .child("An AI agent can work on the open model through MCP. Point the client at the command oa-mcp --attach; the status bar shows when one is attached. Its edits appear here as it makes them and undo with Ctrl+Z like your own, its analyses are drawn in the view, and it cannot open or start another model while yours has unsaved changes."),
                 )

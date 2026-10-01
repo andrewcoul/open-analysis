@@ -1967,6 +1967,110 @@ fn lumping_to_levels_moves_lateral_mass_to_the_nearest_level() {
 }
 
 #[test]
+fn format_v10_fixture_loads_with_grid_lines() {
+    let model = from_json(include_str!("fixtures/format_v10.json")).unwrap();
+    let b = model.find::<GridLine>("B").unwrap();
+    assert_eq!(model.grid_lines.len(), 3);
+    assert_eq!(model.grid_lines[&b].start[0].si(), 3.0);
+    assert_eq!(model.kind_of(b), Some(EntityKind::GridLine));
+    assert_eq!(from_json(&to_json(&model)).unwrap(), model);
+    // Without its grid lines the document is the migrated version 9 fixture.
+    let mut bare = model.clone();
+    bare.grid_lines.clear();
+    bare.next_id = 9;
+    assert_eq!(
+        bare,
+        from_json(include_str!("fixtures/format_v9.json")).unwrap()
+    );
+}
+
+/// Grid lines are model-wide reference geometry: they go in and out
+/// through commands, a rectangular grid is one undo step, labels are
+/// names, and the solver never sees them.
+#[test]
+fn grid_lines_are_reference_geometry_added_as_one_step() {
+    let mut editor = Editor::new(Model::default());
+    portal(&mut editor);
+    let hash = compile(&editor.model).unwrap().content_hash();
+    let ft = |v: f64| Length::from_si(v * 0.3048);
+    let grid = grids::RectangularGrid {
+        origin: [ft(0.0), ft(0.0)],
+        x_spacings: vec![ft(30.0); 3],
+        y_spacings: vec![ft(25.0); 2],
+        x_label: "A".into(),
+        y_label: "1".into(),
+        overhang: ft(5.0),
+    };
+    let command = grid.command(&editor.model).unwrap();
+    editor.apply(command).unwrap();
+    assert_eq!(editor.model.grid_lines.len(), 7);
+    let d = editor.model.find::<GridLine>("D").unwrap();
+    let line = editor.model.grid_lines[&d].clone();
+    assert!((line.start[0].si() - ft(90.0).si()).abs() < 1e-12);
+    assert!((line.end[1].si() - ft(55.0).si()).abs() < 1e-12);
+    assert_eq!(compile(&editor.model).unwrap().content_hash(), hash);
+    assert_eq!(from_json(&to_json(&editor.model)).unwrap(), editor.model);
+
+    // A second grid with the same labels is refused whole.
+    let again = grid.command(&editor.model).unwrap();
+    assert!(matches!(editor.apply(again), Err(ModelError::Batch { .. })));
+    assert_eq!(editor.model.grid_lines.len(), 7);
+    // So is one whose X and Y labels run into each other.
+    let clash = grids::RectangularGrid {
+        x_label: "10".into(),
+        y_label: "11".into(),
+        ..grid.clone()
+    };
+    let clash = clash.command(&editor.model).unwrap();
+    assert!(matches!(editor.apply(clash), Err(ModelError::Batch { .. })));
+    assert_eq!(editor.model.grid_lines.len(), 7);
+
+    // Lines are edited and removed one at a time.
+    let moved = GridLine {
+        name: "D.5".into(),
+        start: [ft(105.0), ft(-5.0)],
+        ..line.clone()
+    };
+    editor
+        .apply(Command::UpdateGridLine {
+            id: d,
+            grid_line: moved.clone(),
+        })
+        .unwrap();
+    assert_eq!(editor.model.grid_lines[&d], moved);
+    let point = GridLine {
+        end: moved.start,
+        ..moved.clone()
+    };
+    assert!(matches!(
+        editor.apply(Command::UpdateGridLine {
+            id: d,
+            grid_line: point
+        }),
+        Err(ModelError::Invalid(_))
+    ));
+    let nan = GridLine {
+        start: [Length::from_si(f64::NAN), ft(0.0)],
+        ..moved
+    };
+    assert!(matches!(
+        editor.apply(Command::UpdateGridLine {
+            id: d,
+            grid_line: nan
+        }),
+        Err(ModelError::Invalid(_))
+    ));
+    editor.apply(Command::RemoveGridLine { id: d }).unwrap();
+    assert_eq!(editor.model.grid_lines.len(), 6);
+    assert!(editor.undo().unwrap());
+    assert!(editor.undo().unwrap());
+    assert_eq!(editor.model.grid_lines[&d], line);
+    // Undoing the grid takes every line out at once.
+    assert!(editor.undo().unwrap());
+    assert!(editor.model.grid_lines.is_empty());
+}
+
+#[test]
 fn format_v9_fixture_loads_with_frame_offsets() {
     let model = from_json(include_str!("fixtures/format_v9.json")).unwrap();
     let b1 = model.find::<Frame>("B1").unwrap();

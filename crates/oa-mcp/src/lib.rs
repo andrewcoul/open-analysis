@@ -412,11 +412,13 @@ impl Session {
                 "nodes": m.nodes.len(), "materials": m.materials.len(), "sections": m.sections.len(),
                 "frames": m.frames.len(), "shells": m.shells.len(), "diaphragms": m.diaphragms.len(),
                 "load_cases": m.load_cases.len(), "combinations": m.combinations.len(), "groups": m.groups.len(),
+                "grid_lines": m.grid_lines.len(),
             },
             "levels": m.levels_by_elevation().into_iter().map(|id| self.level_row(id)).collect::<Vec<_>>(),
             "load_cases": names(m.load_cases.values().map(|c| c.name.as_str()).collect()),
             "combinations": names(m.combinations.values().map(|c| c.name.as_str()).collect()),
             "groups": m.groups.iter().map(|(id, g)| json!({"id": id, "name": g.name, "size": g.members.len()})).collect::<Vec<_>>(),
+            "grid_lines": names(m.grid_lines.values().map(|g| g.name.as_str()).collect()),
             "unsaved_changes": self.is_dirty(),
             "compiled": self.compiled.is_some(),
             "results": self.store.as_ref().map(|s| json!({"combinations": s.combinations(), "current": true})),
@@ -549,6 +551,10 @@ impl Session {
                 |id, e| json!({"id": id, "name": e.name, "level": m.name_of(e.level), "segments": e.segments.len()})
             ),
             EntityKind::MassSource => rows!(m.mass_sources, |id, e| self.mass_source_row(*id, e)),
+            EntityKind::GridLine => rows!(
+                m.grid_lines,
+                |id, e| json!({"id": id, "name": e.name, "start": e.start.map(|v| display(Role::Length, v.si())), "end": e.end.map(|v| display(Role::Length, v.si()))})
+            ),
         }
         json!({"total": total, "rows": rows, "truncated": total > rows.len()})
     }
@@ -568,6 +574,7 @@ impl Session {
             EntityKind::Group => serde_json::to_value(&m.groups[&id])?,
             EntityKind::Underlay => serde_json::to_value(UNITS.display(&m.underlays[&id]))?,
             EntityKind::MassSource => serde_json::to_value(&m.mass_sources[&id])?,
+            EntityKind::GridLine => serde_json::to_value(UNITS.display(&m.grid_lines[&id]))?,
         };
         Ok(json!({"id": id, "kind": kind, "entity": value}))
     }
@@ -586,6 +593,7 @@ impl Session {
             EntityKind::Group => m.find::<Group>(name),
             EntityKind::Underlay => m.find::<Underlay>(name),
             EntityKind::MassSource => m.find::<MassSource>(name),
+            EntityKind::GridLine => m.find::<GridLine>(name),
         }
     }
     /// Fresh ids for commands that add entities.
@@ -1248,6 +1256,12 @@ add_combination {"command":"add_combination","id":9,"combination":{"name":"1.2D+
 add_group     {"command":"add_group","id":10,"group":{"name":"roof","members":[5,6]}}
 add_underlay  {"command":"add_underlay","id":12,"underlay":{"name":"grid","level":11,"origin":[0,0],"segments":[[[0,0],[20,0]],[[0,0],[0,20]]]}}
               plan line work on a level, drawn by the GUI as a tracing reference; the solver never sees it
+add_grid_line {"command":"add_grid_line","id":15,"grid_line":{"name":"A","start":[0,-5],"end":[0,55]}}
+              a plan grid line: name is its bubble label, start the bubble end, both ends in plan [x, y] and apart.
+              It stands for a vertical plane through every level; the GUI draws it on the level in view and the draw
+              tools snap to it and its crossings. The solver never sees it. A rectangular grid is one batch of these:
+              X grid lines A, B, C... at constant x running along Y, Y grid lines 1, 2, 3... at constant y running
+              along X, each a little past the outermost lines it crosses. Labels are names, so each is used once
 update_*, remove_* exist for every kind. set_gravity {"command":"set_gravity","gravity":32.174}
 set_metadata  {"command":"set_metadata","metadata":{"name":"Office block"}}   replaces the whole metadata record
 batch         {"command":"batch","commands":[...]}   all or nothing (apply_commands already wraps its list in a batch)
