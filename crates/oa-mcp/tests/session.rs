@@ -544,3 +544,57 @@ fn grid_lines_go_in_and_come_back_in_feet() {
         .to_string();
     assert!(err.contains("two different ends"), "{err}");
 }
+
+#[test]
+fn frames_carry_offsets_and_cardinal_points() {
+    let mut s = Session::default();
+    s.new_model("offsets").unwrap();
+    let steel = s.add_material_from_library("A992", "steel").unwrap();
+    let section = s.add_section_from_library("W14X90", "beam").unwrap();
+    let base = s.find(EntityKind::Level, "Base").unwrap();
+    let [a, b, beam, hung, dead] = <[_; 5]>::try_from(s.next_ids(5)).unwrap();
+    s.apply(vec![
+        cmd(
+            json!({"command": "add_node", "id": a, "node": {"name": "A", "level": base,
+            "position": [0, 0, 0], "restrained": [true, true, true, true, true, true]}}),
+        ),
+        cmd(
+            json!({"command": "add_node", "id": b, "node": {"name": "B", "level": base,
+            "position": [20, 0, 0], "restrained": [true, true, true, true, true, true]}}),
+        ),
+        cmd(
+            json!({"command": "add_frame", "id": beam, "frame": {"name": "B1", "nodes": [a, b],
+            "material": steel, "section": section, "local_y": [0, 0, 1],
+            "offsets": {"end": [7, 7], "rigid_zone": 1}}}),
+        ),
+        cmd(
+            json!({"command": "add_frame", "id": hung, "frame": {"name": "B2", "nodes": [a, b],
+            "material": steel, "section": section, "local_y": [0, 0, 1],
+            "cardinal_point": "top_center"}}),
+        ),
+        cmd(
+            json!({"command": "add_load_case", "id": dead, "load_case": {"name": "dead",
+            "self_weight": [0, 0, -1]}}),
+        ),
+    ])
+    .unwrap();
+    // Offsets read back in inches, and leave a plain frame's JSON alone.
+    let got = &s.get(beam).unwrap()["entity"];
+    assert!((got["offsets"]["end"][0].as_f64().unwrap() - 7.0).abs() < 1e-9);
+    assert_eq!(got["offsets"]["rigid_zone"], json!(1.0));
+    assert!(got.get("cardinal_point").is_none());
+    assert_eq!(
+        s.get(hung).unwrap()["entity"]["cardinal_point"],
+        json!("top_center")
+    );
+    s.analyze(Default::default(), None).unwrap();
+    let err = s
+        .apply(vec![cmd(
+            json!({"command": "update_frame", "id": beam, "frame": {"name": "B1",
+            "nodes": [a, b], "material": steel, "section": section,
+            "offsets": {"rigid_zone": 2}}}),
+        )])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("rigid zone factor"), "{err}");
+}

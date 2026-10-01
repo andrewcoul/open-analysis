@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const FORMAT_VERSION: u32 = 9;
+pub const FORMAT_VERSION: u32 = 10;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
@@ -169,10 +169,14 @@ fn migrate(from: u32, mut value: serde_json::Value) -> Result<serde_json::Value,
         // Version 8 adds the mass source. A version 7 document has none, so
         // it keeps element and node mass only, as before, and needs no change.
         7 => Ok(value),
-        // Version 9 adds plan grid lines. A version 8 document has none and
+        // Version 9 lets a frame carry joint and end length offsets, a rigid
+        // zone factor and a cardinal point. A version 8 frame has none, runs
+        // node to node at its centroid, and needs no change.
+        8 => Ok(value),
+        // Version 10 adds plan grid lines. A version 9 document has none and
         // needs no change; the bump keeps an older build from opening a
         // document whose grid lines it would not understand.
-        8 => Ok(value),
+        9 => Ok(value),
         _ => Ok(value),
     }
 }

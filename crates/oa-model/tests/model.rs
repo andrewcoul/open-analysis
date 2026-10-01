@@ -1967,20 +1967,20 @@ fn lumping_to_levels_moves_lateral_mass_to_the_nearest_level() {
 }
 
 #[test]
-fn format_v9_fixture_loads_with_grid_lines() {
-    let model = from_json(include_str!("fixtures/format_v9.json")).unwrap();
+fn format_v10_fixture_loads_with_grid_lines() {
+    let model = from_json(include_str!("fixtures/format_v10.json")).unwrap();
     let b = model.find::<GridLine>("B").unwrap();
     assert_eq!(model.grid_lines.len(), 3);
     assert_eq!(model.grid_lines[&b].start[0].si(), 3.0);
     assert_eq!(model.kind_of(b), Some(EntityKind::GridLine));
     assert_eq!(from_json(&to_json(&model)).unwrap(), model);
-    // Without its grid lines the document is the migrated version 8 fixture.
+    // Without its grid lines the document is the migrated version 9 fixture.
     let mut bare = model.clone();
     bare.grid_lines.clear();
-    bare.next_id = 14;
+    bare.next_id = 9;
     assert_eq!(
         bare,
-        from_json(include_str!("fixtures/format_v8.json")).unwrap()
+        from_json(include_str!("fixtures/format_v9.json")).unwrap()
     );
 }
 
@@ -2059,4 +2059,244 @@ fn grid_lines_are_reference_geometry_added_as_one_step() {
     // Undoing the grid takes every line out at once.
     assert!(editor.undo().unwrap());
     assert!(editor.model.grid_lines.is_empty());
+}
+
+#[test]
+fn format_v9_fixture_loads_with_frame_offsets() {
+    let model = from_json(include_str!("fixtures/format_v9.json")).unwrap();
+    let b1 = model.find::<Frame>("B1").unwrap();
+    let b2 = model.find::<Frame>("B2").unwrap();
+    assert_eq!(model.frames[&b1].offsets.rigid_zone, 0.5);
+    assert_eq!(model.frames[&b1].cardinal_point, CardinalPoint::Centroid);
+    assert_eq!(model.frames[&b2].cardinal_point, CardinalPoint::TopCenter);
+    assert_eq!(model.frames[&b2].cardinal_point.number(), 8);
+    assert_eq!(from_json(&to_json(&model)).unwrap(), model);
+    // The offsets reach the solver as they are; the cardinal point adds to
+    // the joint offsets: the top of a 0.356 m beam on its nodes puts the
+    // centroid 0.178 m below them.
+    let compiled = compile(&model).unwrap();
+    let [f1, f2] = [b1, b2].map(|id| &compiled.solver.frames[compiled.mapping.frame_index[&id]]);
+    assert_eq!(f1.offsets, model.frames[&b1].offsets);
+    for end in f2.offsets.joint {
+        assert!((end[0].si()).abs() < 1e-15);
+        assert!((end[1].si() - 0.1).abs() < 1e-15);
+        assert!((end[2].si() + 0.178).abs() < 1e-12);
+    }
+    let results = oa_core::analyze_static(&compiled.solver, &Default::default()).unwrap();
+    assert!(results.combinations[0].frames.is_some());
+    // A version 8 frame has no offsets and writes none.
+    let older = from_json(include_str!("fixtures/format_v8.json")).unwrap();
+    assert!(older.frames.values().all(|f| f.offsets.is_none()));
+    assert!(!to_json(&older).contains("offsets"));
+    assert!(!to_json(&older).contains("cardinal_point"));
+}
+
+#[test]
+fn level_moves_name_what_keeps_a_frame_from_resolving() {
+    let mut editor = Editor::new(Model::default());
+    portal(&mut editor);
+    // A brace from N1 (6, 0, 0) up to N4 (0, 0, 8), hung by its top with
+    // local_y [-1, 0, 1]. Lowering L2 to 6 m turns it parallel to local_y,
+    // so its cardinal point has no axes to be read in.
+    let shaped = editor.model.allocate();
+    editor
+        .apply(Command::AddSection {
+            id: shaped,
+            section: Library::aisc().section("W14x90", "shaped").unwrap(),
+        })
+        .unwrap();
+    let steel = editor.model.find::<Material>("steel").unwrap();
+    let [n1, n4] = ["N1", "N4"].map(|n| editor.model.find::<Node>(n).unwrap());
+    let mut brace = Frame::new("D1", [n1, n4], steel, shaped);
+    brace.local_y = Some([-1.0, 0.0, 1.0]);
+    brace.cardinal_point = CardinalPoint::TopCenter;
+    let id = editor.model.allocate();
+    editor
+        .apply(Command::AddFrame { id, frame: brace })
+        .unwrap();
+    assert!((frame_length(&editor.model, id).unwrap() - 10.0).abs() < 1e-12);
+    let l2 = editor.model.find::<Level>("L2").unwrap();
+    let err = editor
+        .apply(Command::SetLevelElevation {
+            id: l2,
+            elevation: Length::from_si(6.0),
+            scope: ElevationScope::ThisLevel,
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("local_y is parallel") && !err.contains("zero or invalid length"),
+        "{err}"
+    );
+}
+
+#[test]
+fn cardinal_points_sit_across_the_member_their_joint_offsets_leave() {
+    // Lift B2's end J 3 m so the member slopes from (0, 0.1, 0) to
+    // (6, 0.1, 3). The top of its section must sit on those two points,
+    // measured across the sloped member, not the level line between nodes.
+    let fixture = from_json(include_str!("fixtures/format_v9.json")).unwrap();
+    let b2 = fixture.find::<Frame>("B2").unwrap();
+    let in_global = [[0.0, 0.1, 0.0], [0.0, 0.1, 3.0]];
+    // The same move in the axes of the level line: x along global X, y up,
+    // and z toward global -Y.
+    let in_local = [[0.0, 0.0, -0.1], [0.0, 3.0, -0.1]];
+    for (axes, joint) in [
+        (oa_core::Axes::Global, in_global),
+        (oa_core::Axes::Local, in_local),
+    ] {
+        let mut model = fixture.clone();
+        let frame = model.frames.get_mut(&b2).unwrap();
+        frame.offsets.axes = axes;
+        frame.offsets.joint = joint.map(|end| end.map(Length::from_si));
+        let compiled = compile(&model).unwrap();
+        let solver = &compiled.solver.frames[compiled.mapping.frame_index[&b2]];
+        assert_eq!(solver.offsets.axes, oa_core::Axes::Global);
+        let centroid = solver.ends([[0.0; 3], [6.0, 0.0, 0.0]]).unwrap();
+        let span = std::array::from_fn(|i| centroid[1][i] - centroid[0][i]);
+        let [_, up, _] = solver.axes_along(span).unwrap();
+        for (k, expected) in [[0.0, 0.1, 0.0], [6.0, 0.1, 3.0]].into_iter().enumerate() {
+            for i in 0..3 {
+                let top = centroid[k][i] + up[i] * 0.356 / 2.0;
+                assert!(
+                    (top - expected[i]).abs() < 1e-12,
+                    "{axes:?} end {k}: {:?}",
+                    centroid[k]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn cardinal_points_follow_the_section_shape() {
+    let library = Library::aisc();
+    let at = |designation: &str, point: CardinalPoint| {
+        let section = library.section(designation, "s").unwrap();
+        let shape = section.shape.as_ref().unwrap();
+        (
+            point.centroid_offset(&section).unwrap(),
+            shape.properties.clone(),
+        )
+    };
+    // A doubly symmetric W: the corners are half the depth and width away.
+    let ([y, z], p) = at("W14x90", CardinalPoint::BottomLeft);
+    assert!((y - p[&SectionProperty::Depth] / 2.0).abs() < 1e-15);
+    assert!((z - p[&SectionProperty::FlangeWidth] / 2.0).abs() < 1e-15);
+    let ([y, z], _) = at("W14x90", CardinalPoint::MiddleCenter);
+    assert_eq!([y, z], [0.0, 0.0]);
+    // A channel's centroid sits x-bar from the back of its web, at the left.
+    let ([_, z], p) = at("C10x15.3", CardinalPoint::MiddleLeft);
+    assert!((z - p[&SectionProperty::CentroidX]).abs() < 1e-15);
+    // A tee's centroid sits y-bar below the top of its flange.
+    let ([y, _], p) = at("WT7x45", CardinalPoint::TopCenter);
+    assert!((y + p[&SectionProperty::CentroidY]).abs() < 1e-15);
+    // A round tube is its diameter square.
+    let ([y, z], p) = at("HSS10.000x0.500", CardinalPoint::TopRight);
+    let od = p[&SectionProperty::OutsideDiameter];
+    assert!((y + od / 2.0).abs() < 1e-15 && (z + od / 2.0).abs() < 1e-15);
+    // A section with no shape has nothing to measure but its centroid.
+    let plain = Section {
+        shape: None,
+        ..library.section("W14x90", "s").unwrap()
+    };
+    assert!(CardinalPoint::TopCenter.centroid_offset(&plain).is_none());
+    assert_eq!(
+        CardinalPoint::Centroid.centroid_offset(&plain),
+        Some([0.0; 2])
+    );
+}
+
+#[test]
+fn frame_offsets_are_validated_compiled_and_undone() {
+    let mut editor = Editor::new(Model::default());
+    portal(&mut editor);
+    let beam = editor.model.find::<Frame>("B1").unwrap();
+    let original = editor.model.frames[&beam].clone();
+    for bad in [
+        FrameOffsets {
+            rigid_zone: 1.5,
+            ..Default::default()
+        },
+        FrameOffsets {
+            end: [Length::from_si(-0.1), Length::ZERO],
+            ..Default::default()
+        },
+        FrameOffsets {
+            joint: [[Length::from_si(f64::NAN), Length::ZERO, Length::ZERO]; 2],
+            ..Default::default()
+        },
+    ] {
+        let mut probe = editor.model.clone();
+        let mut edited = original.clone();
+        edited.offsets = bad;
+        let err = Command::UpdateFrame {
+            id: beam,
+            frame: edited,
+        }
+        .apply(&mut probe)
+        .unwrap_err();
+        assert!(err.to_string().contains("offsets must be finite"), "{err}");
+    }
+    // End offsets that swallow the member are a problem on that frame.
+    let mut long = original.clone();
+    long.offsets.end = [Length::from_si(1e3), Length::ZERO];
+    editor
+        .apply(Command::UpdateFrame {
+            id: beam,
+            frame: long,
+        })
+        .unwrap();
+    let problems = compile(&editor.model).unwrap_err();
+    assert!(
+        problems.iter().any(|p| p.entity == Some(beam)),
+        "{problems:?}"
+    );
+    assert!(editor.undo().unwrap());
+    // A cardinal point on a section with no shape is a problem too.
+    let mut hung = original.clone();
+    hung.cardinal_point = CardinalPoint::TopCenter;
+    let mut plain = editor.model.sections[&original.section].clone();
+    plain.shape = None;
+    editor
+        .apply(Command::UpdateSection {
+            id: original.section,
+            section: plain,
+        })
+        .unwrap();
+    editor
+        .apply(Command::UpdateFrame {
+            id: beam,
+            frame: hung.clone(),
+        })
+        .unwrap();
+    let problems = compile(&editor.model).unwrap_err();
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.entity == Some(beam) && p.message.contains("cardinal point top center")),
+        "{problems:?}"
+    );
+    // Its length says why too, rather than passing for zero.
+    let err = frame_length(&editor.model, beam).unwrap_err();
+    assert!(err.contains("cardinal point top center"), "{err}");
+    assert!(editor.undo().unwrap());
+    assert!(editor.undo().unwrap());
+    // A rigid zone stiffens the beam and compiles straight through.
+    let mut stiff = original.clone();
+    stiff.offsets.end = [Length::from_si(0.5), Length::from_si(0.5)];
+    stiff.offsets.rigid_zone = 1.0;
+    editor
+        .apply(Command::UpdateFrame {
+            id: beam,
+            frame: stiff.clone(),
+        })
+        .unwrap();
+    let compiled = compile(&editor.model).unwrap();
+    assert_eq!(
+        compiled.solver.frames[compiled.mapping.frame_index[&beam]].offsets,
+        stiff.offsets
+    );
+    assert!(editor.undo().unwrap());
+    assert_eq!(editor.model.frames[&beam], original);
 }

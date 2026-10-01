@@ -100,7 +100,7 @@ impl Prepared {
             }
         }
         for l in &case.member {
-            out.member[l.member().0] += self.frames[l.member().0].equivalent_load(l) * factor;
+            self.add_member_load(l.member().0, l, factor, out);
         }
         for l in &case.surface {
             out.pressure[l.shell.0] += factor * l.pressure.si();
@@ -109,7 +109,7 @@ impl Prepared {
             let g = model.gravity.si();
             for (i, e) in self.frames.iter().enumerate() {
                 if let Some(load) = e.self_weight_load(FrameId(i), g, case.self_weight) {
-                    out.member[i] += e.equivalent_load(&load) * factor;
+                    self.add_member_load(i, &load, factor, out);
                 }
             }
             for e in &self.shells {
@@ -119,6 +119,14 @@ impl Prepared {
                     }
                 }
             }
+        }
+    }
+    fn add_member_load(&self, member: usize, load: &MemberLoad, factor: f64, out: &mut Loads) {
+        let e = &self.frames[member];
+        let (p, rigid) = e.equivalent_load(load);
+        out.member[member] += p * factor;
+        for i in 0..12 {
+            out.nodal[e.dofs[i]] += rigid[i] * factor;
         }
     }
     pub fn zero_loads(&self) -> Loads {

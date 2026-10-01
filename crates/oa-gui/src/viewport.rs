@@ -1179,7 +1179,7 @@ impl Viewport {
                 UNITS.symbol(which.role()),
                 result.combination
             )));
-            for (id, frame) in model.frames.iter().filter(|(id, _)| frame_shown(id)) {
+            for (id, _) in model.frames.iter().filter(|(id, _)| frame_shown(id)) {
                 let Some(diagram) = analysis
                     .compiled
                     .mapping
@@ -1189,9 +1189,9 @@ impl Viewport {
                 else {
                     continue;
                 };
-                let Some(origin) = positions.get(&frame.nodes[0]) else {
-                    continue;
-                };
+                // Stations run from the member's end I, which a joint offset
+                // moves off its node.
+                let origin = &diagram.origin;
                 let (along, normal) = (diagram.axes[0], diagram.axes[which.axis()]);
                 let values: Vec<f64> = diagram.forces.iter().map(|f| f[column]).collect();
                 let world = |x: f64, value: f64| {
@@ -1208,9 +1208,10 @@ impl Viewport {
                     .zip(&values)
                     .map(|(x, v)| project(world(*x, *v)).0)
                     .collect();
+                let ends = [diagram.stations[0], diagram.stations[diagram.stations.len() - 1]];
                 let mut outline = vec![
-                    project(*origin).0,
-                    project(world(diagram.length, 0.0)).0,
+                    project(world(ends[0], 0.0)).0,
+                    project(world(ends[1], 0.0)).0,
                 ];
                 outline.extend(curve.iter().rev().copied());
                 let labels = labelled_stations(&values, max)

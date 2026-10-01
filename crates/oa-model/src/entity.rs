@@ -2,8 +2,8 @@
 //! other by [`EntityId`] instead of table position, and carry a name.
 use oa_core::units::*;
 pub use oa_core::{
-    Axes, AxialBehavior, Axis, FrameModifiers, PrescribedDisplacement, ShellFormulation,
-    ShellModifiers,
+    Axes, AxialBehavior, Axis, FrameModifiers, FrameOffsets, PrescribedDisplacement,
+    ShellFormulation, ShellModifiers,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -275,6 +275,15 @@ pub struct Frame {
     pub behavior: AxialBehavior,
     #[serde(default, skip_serializing_if = "FrameModifiers::is_unmodified")]
     pub modifiers: FrameModifiers,
+    /// Joint offsets, end length offsets and the rigid zone factor, as the
+    /// solver takes them; see [`FrameOffsets`].
+    #[serde(default, skip_serializing_if = "FrameOffsets::is_none")]
+    pub offsets: FrameOffsets,
+    /// The point of the section that sits on the line between the nodes.
+    /// Compilation turns it into joint offsets from the section's steel
+    /// shape and adds them to `offsets.joint`.
+    #[serde(default, skip_serializing_if = "CardinalPoint::is_centroid")]
+    pub cardinal_point: CardinalPoint,
 }
 impl Frame {
     pub fn new(
@@ -293,7 +302,95 @@ impl Frame {
             releases: [false; 12],
             behavior: AxialBehavior::Both,
             modifiers: FrameModifiers::default(),
+            offsets: FrameOffsets::default(),
+            cardinal_point: CardinalPoint::Centroid,
         }
+    }
+}
+
+/// The point of a frame's section placed on the line between its nodes,
+/// or between the ends its joint offsets move it to, numbered 1 to 10 as in
+/// ETABS and SAP2000. The section is seen from end I looking toward J, with
+/// local y up, so top is +y and right is +z, in the axes of that line. The
+/// bounding box is the steel shape's depth along y and width along z. A
+/// channel's web is at the left and a tee's flange at the top, the way the
+/// shape tables measure their centroids. A beam whose nodes sit at the top
+/// of the slab takes `TopCenter` and hangs below them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CardinalPoint {
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+    MiddleLeft,
+    MiddleCenter,
+    MiddleRight,
+    TopLeft,
+    TopCenter,
+    TopRight,
+    #[default]
+    Centroid,
+}
+impl CardinalPoint {
+    pub const ALL: [Self; 10] = [
+        Self::BottomLeft,
+        Self::BottomCenter,
+        Self::BottomRight,
+        Self::MiddleLeft,
+        Self::MiddleCenter,
+        Self::MiddleRight,
+        Self::TopLeft,
+        Self::TopCenter,
+        Self::TopRight,
+        Self::Centroid,
+    ];
+    pub fn is_centroid(&self) -> bool {
+        *self == Self::Centroid
+    }
+    /// ETABS's number for it, 1 to 10.
+    pub fn number(self) -> usize {
+        Self::ALL.iter().position(|c| *c == self).unwrap_or(9) + 1
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::BottomLeft => "Bottom left",
+            Self::BottomCenter => "Bottom center",
+            Self::BottomRight => "Bottom right",
+            Self::MiddleLeft => "Middle left",
+            Self::MiddleCenter => "Middle center",
+            Self::MiddleRight => "Middle right",
+            Self::TopLeft => "Top left",
+            Self::TopCenter => "Top center",
+            Self::TopRight => "Top right",
+            Self::Centroid => "Centroid",
+        }
+    }
+    /// Where the section's centroid sits relative to this point, in local y
+    /// and z, metres; None when the section has no shape to measure.
+    pub fn centroid_offset(self, section: &Section) -> Option<[f64; 2]> {
+        if self.is_centroid() {
+            return Some([0.0; 2]);
+        }
+        let shape = section.shape.as_ref()?;
+        let p = |property| shape.properties.get(&property).copied();
+        use SectionProperty::*;
+        // Bounding box, then the centroid measured from its bottom left.
+        let (depth, width) = if let Some(od) = p(OutsideDiameter) {
+            (od, od)
+        } else if let (Some(d), Some(b)) = (p(HssDepth), p(HssWidth)) {
+            (d, b)
+        } else {
+            (p(Depth)?, p(FlangeWidth)?)
+        };
+        let (cy, cz) = match shape.kind {
+            ShapeKind::C | ShapeKind::MC => (depth / 2.0, p(CentroidX)?),
+            ShapeKind::WT | ShapeKind::MT | ShapeKind::ST => (depth - p(CentroidY)?, width / 2.0),
+            _ => (depth / 2.0, width / 2.0),
+        };
+        let index = self.number() - 1;
+        let y = [0.0, depth / 2.0, depth][index / 3];
+        let z = [0.0, width / 2.0, width][index % 3];
+        Some([cy - y, cz - z])
     }
 }
 
