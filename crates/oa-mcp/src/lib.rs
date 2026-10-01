@@ -1209,14 +1209,15 @@ add_mass_source {"command":"add_mass_source","id":14,"mass_source":{"name":"seis
               what modal and response_spectrum take as mass. Node mass always counts; element_mass (default true)
               adds the members' own mass from density; each [case id, multiplier] adds that case's downward (-Z)
               load divided by g, in X, Y and Z. ASCE 7 12.7.2: superimposed dead and partitions at 1.0, storage
-              live at 0.25. A case with self-weight is refused while element_mass is true (it would count twice);
-              set element_mass false to take member mass from a dead case's self-weight instead. optional:
-              lateral (default true) keeps X and Y mass and rotation about Z, vertical (default true) keeps Z mass
-              and rotation about X and Y; "vertical":false keeps modal runs from spending modes on beams bouncing.
-              lump_to_levels (default false) moves the lateral mass of each node between two levels onto the
-              nodes directly below and above it on those levels, split by its height between them (all onto the
-              nearest level for a node above the top or below the bottom level); refused at compile when such a
-              node has no node directly below or above it on the level. A case a source lists cannot be removed.
+              live at 0.25. A listed case with self-weight while element_mass is true would count member mass
+              twice, and compile reports it against the source; set element_mass false to take member mass from
+              a dead case's self-weight instead. optional: lateral (default true) keeps X and Y mass and rotation
+              about Z, vertical (default true) keeps Z mass and rotation about X and Y; "vertical":false keeps
+              modal runs from spending modes on beams bouncing. lump_to_levels (default false) moves all the
+              lateral mass of each node that is not on a level onto the node directly below or above it on the
+              NEAREST level, as ETABS does: mass at z=1 between levels at 0 and 4 goes wholly to level 0. Only a
+              node exactly halfway between two levels splits 50/50. Compile reports a node with no node directly
+              below or above it on that level. A case a source lists cannot be removed.
 set_default_mass_source {"command":"set_default_mass_source","id":14}   the source modal and response_spectrum use
               unless given mass_source by name; id null goes back to node and element mass only. The default
               source cannot be removed. describe_model lists every source and names the default.

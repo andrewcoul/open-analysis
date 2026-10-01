@@ -52,9 +52,9 @@ not mass. `add_mass_source` and `set_default_mass_source` define them, and
 `describe_model` lists every source and names the default. The tool
 descriptions say all this; otherwise an agent that models floor weight as
 loads will read periods that are far too short. The command reference gives
-the ASCE 7 12.7.2 multipliers, says why a case with self-weight is refused
-while element mass is on, and explains lateral, vertical and lumping to
-levels, and the mass and weight modifiers.
+the ASCE 7 12.7.2 multipliers, says why compile reports a case with
+self-weight while element mass is on, and explains lateral, vertical and
+lumping to the nearest level, and the mass and weight modifiers.
 
 - `modal(modes = 6, mass_source)` returns, per mode, the period, frequency, and mass
   ratio in X, Y, Z, then the cumulative ratios, the total free mass, the

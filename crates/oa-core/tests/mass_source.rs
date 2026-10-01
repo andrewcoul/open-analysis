@@ -245,6 +245,37 @@ fn modal_error(m: &Model) -> String {
 }
 
 #[test]
+fn rounding_in_a_horizontal_load_is_not_uplift() {
+    // Rolled 90°, local z is horizontal, but its global Z component is
+    // cos(pi/2), about 6e-17, which left the massless support at about
+    // -7e-14 kg and failed the run.
+    let mut m = cantilever(0.0);
+    m.nodes[1].mass = [Mass::from_si(100.0); 3];
+    m.frames[0].roll = Angle::from_si(std::f64::consts::FRAC_PI_2);
+    let q = [LineLoad::ZERO, LineLoad::ZERO, LineLoad::from_si(7e3)];
+    m.load_cases[0].member.push(MemberLoad::Distributed {
+        member: FrameId(0),
+        start: Length::ZERO,
+        end: Length::from_si(L),
+        start_load: q,
+        end_load: q,
+        axes: Axes::Local,
+    });
+    m.mass_source.cases = vec![(LoadCaseId(0), 1.0)];
+    assert!((tip_mass(&m) - 100.0).abs() < 1e-9);
+    // Real uplift of the same size is still refused.
+    m.load_cases[0].member[0] = MemberLoad::Distributed {
+        member: FrameId(0),
+        start: Length::ZERO,
+        end: Length::from_si(L),
+        start_load: q,
+        end_load: q,
+        axes: Axes::Global,
+    };
+    assert!(modal_error(&m).contains("negative mass"));
+}
+
+#[test]
 fn refuses_invalid_sources_and_negative_mass() {
     let mut m = cantilever(0.0);
     m.mass_source.cases = vec![(LoadCaseId(1), 1.0)];

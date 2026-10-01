@@ -182,9 +182,10 @@ pub enum Command {
         metadata: Metadata,
     },
     /// A mass source's cases must be load cases, each listed once with a
-    /// positive multiplier, and none may carry self-weight while element mass
-    /// is on, which would count the members' mass twice. It must keep lateral
-    /// or vertical mass, and lumps only lateral mass.
+    /// positive multiplier, and it must keep lateral or vertical mass; it
+    /// lumps only lateral mass. A listed case that carries self-weight while
+    /// element mass is on would count the members' mass twice, which
+    /// compilation reports.
     AddMassSource {
         id: EntityId,
         mass_source: MassSource,
@@ -393,6 +394,12 @@ fn check_underlay(underlay: &Underlay) -> Result<()> {
     }
     Ok(())
 }
+/// Checks only what belongs to the source itself, plus references, which a
+/// source keeps alive. Whether a listed case carries self-weight while
+/// element mass is on depends on the case, which may change after the
+/// source does, so compilation reports that instead: a check here would
+/// refuse the inverse that undo or a batch rollback needs to restore a
+/// source accepted earlier.
 fn check_mass_source(model: &Model, source: &MassSource) -> Result<()> {
     if !source.lateral && !source.vertical {
         return Err(ModelError::Invalid(
@@ -400,7 +407,7 @@ fn check_mass_source(model: &Model, source: &MassSource) -> Result<()> {
         ));
     }
     for (i, &(case, multiplier)) in source.cases.iter().enumerate() {
-        let Some(load_case) = model.load_cases.get(&case) else {
+        if !model.load_cases.contains_key(&case) {
             return Err(match model.kind_of(case) {
                 Some(actual) => ModelError::WrongKind {
                     entity: model.describe(case),
@@ -413,7 +420,7 @@ fn check_mass_source(model: &Model, source: &MassSource) -> Result<()> {
                     kind: EntityKind::LoadCase,
                 },
             });
-        };
+        }
         if source.cases[..i].iter().any(|(c, _)| *c == case) {
             return Err(ModelError::Invalid(format!(
                 "mass source lists {} twice",
@@ -424,12 +431,6 @@ fn check_mass_source(model: &Model, source: &MassSource) -> Result<()> {
             return Err(ModelError::Invalid(
                 "mass source multipliers must be positive and finite".into(),
             ));
-        }
-        if source.element_mass && load_case.self_weight[2] != 0.0 {
-            return Err(ModelError::Invalid(format!(
-                "{} carries self-weight, which element mass already counts; turn element mass off or use a case without self-weight",
-                model.describe(case)
-            )));
         }
     }
     Ok(())

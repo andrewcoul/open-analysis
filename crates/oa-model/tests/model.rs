@@ -1784,7 +1784,6 @@ fn mass_sources_are_validated_and_undone() {
     for bad in [0.0, -0.25, f64::NAN] {
         assert!(refused(m, add(source(vec![(sdl, bad)]))).contains("positive and finite"));
     }
-    assert!(refused(m, add(source(vec![(dead, 1.0)]))).contains("self-weight"));
     let neither = MassSource {
         lateral: false,
         vertical: false,
@@ -1856,6 +1855,42 @@ fn mass_sources_are_validated_and_undone() {
         "{}",
         problems[0]
     );
+
+    // That state is reachable, so every inverse out of it must apply:
+    // fixing the source and undoing the fix, removing it and undoing the
+    // removal, and a batch that removes it and then fails.
+    let broken = editor.model.mass_sources[&seismic].clone();
+    editor
+        .apply(Command::UpdateMassSource {
+            id: seismic,
+            mass_source: MassSource {
+                element_mass: false,
+                ..broken.clone()
+            },
+        })
+        .unwrap();
+    assert!(compile(&editor.model).is_ok());
+    assert!(editor.undo().unwrap());
+    assert_eq!(editor.model.mass_sources[&seismic], broken);
+    editor
+        .apply(Command::SetDefaultMassSource { id: None })
+        .unwrap();
+    editor
+        .apply(Command::RemoveMassSource { id: seismic })
+        .unwrap();
+    assert!(editor.undo().unwrap());
+    assert_eq!(editor.model.mass_sources[&seismic], broken);
+    let before = editor.model.clone();
+    let err = Command::Batch {
+        commands: vec![
+            Command::RemoveMassSource { id: seismic },
+            Command::RemoveLoadCase { id: missing },
+        ],
+    }
+    .apply(&mut editor.model)
+    .unwrap_err();
+    assert!(matches!(err, ModelError::Batch { index: 1, .. }), "{err}");
+    assert_eq!(editor.model, before);
 }
 
 /// A column up Z from Base through L1 at 4 m to a node 1 m above it, with

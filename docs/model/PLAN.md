@@ -267,10 +267,13 @@ Decisions made during implementation:
   source cannot be removed. `Compiled::with_mass_source` hands analysis any
   other source, so modal and spectrum runs can compare them without
   recompiling. Add and update refuse a repeated case, a multiplier that is
-  not positive and finite, a source with neither lateral nor vertical mass,
-  and a case with self-weight while element mass is on. Compilation checks
-  every source, not only the default, and names the source in a problem, so
-  self-weight added to a source case later is caught there.
+  not positive and finite, and a source with neither lateral nor vertical
+  mass: checks on the source alone. A listed case with self-weight while
+  element mass is on is left to compilation, which checks every source,
+  not only the default, and names the source in a problem. That depends on
+  the case, which can gain self-weight after the source accepted it, and a
+  command check would refuse the inverse that undo or a batch rollback
+  needs to restore such a source.
 - **Lumping to levels follows the nearest level.** ETABS documents only
   that lateral mass between story levels moves to the nearest one. Here a
   node off every level sends its lateral mass to the node directly below
