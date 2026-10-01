@@ -1190,6 +1190,20 @@ add_frame     {"command":"add_frame","id":4,"frame":{"name":"C1","nodes":[1,5],"
               beams {"iy":0.35,"iz":0.35}, columns {"iy":0.7,"iz":0.7}. modifiers "mass" and "weight" (each 1
               unless given, 0 allowed) scale the member's own mass and its self-weight; 0 on both leaves out a
               member another one already carries, such as a beam under a slab modelled with the slab's weight
+              optional offsets {"end":[i,j],"rigid_zone":0.5,"joint":[[x,y,z],[x,y,z]],"axes":"global"|"local"}, in in:
+              end is the length at each end inside the joint (half the depth of the column a beam frames into);
+              section forces and diagrams cover the clear length between them, and rigid_zone (0 to 1, default 0)
+              of each is rigid in bending and shear, as ETABS's rigid-zone factor; axial and torsional stiffness
+              stay the whole length's. Releases act at the ends of the flexible part. The transverse part of a
+              member load inside a rigid zone goes straight to the node. joint moves each end of the member off
+              its node through a rigid link, in global axes or the member's local axes; member load positions
+              then run along the moved member. optional cardinal_point: which point of the section sits on the
+              line between the moved ends, in that line's local axes, as ETABS numbers 1-10:
+              "bottom_left","bottom_center","bottom_right","middle_left",
+              "middle_center","middle_right","top_left","top_center","top_right","centroid" (default). Seen
+              from end I with local y up: top is +y, right is +z. A beam with local_y [0,0,1] whose nodes sit at
+              the slab top takes "top_center" and hangs below them. It needs a section from the shape library,
+              whose depth and width it measures; compile reports it on a section without a shape
 split_frames  {"command":"split_frames","frames":[4],"nodes":[5]}
               a frame only connects to the nodes at its two ends: a node placed on a span, or a beam drawn to land
               on a girder's midspan, is not joined until the frame is split there. This splits the listed frames at
@@ -1197,7 +1211,8 @@ split_frames  {"command":"split_frames","frames":[4],"nodes":[5]}
               all of them, so {"command":"split_frames"} splits every frame at every node on it. The frame keeps
               its id and name as the first piece; the others are new frames named "C1-2", "C1-3", ... with its
               material, section, orientation and modifiers, its groups, and its share of every member load (point
-              loads by position, distributed loads cut and interpolated). End releases stay at the outer ends.
+              loads by position, distributed loads cut and interpolated). End releases and end offsets stay at the
+              outer ends; joint offsets are interpolated to the new joints so the pieces stay on the moved line.
 add_shell     {"command":"add_shell","id":6,"shell":{"name":"S1","nodes":[1,2,3,4],"material":2,"thickness":8}}
               optional local_x [x,y,z]: reference for local x, projected into the shell's plane; by default local x
               runs from the first node to the second. Modifiers act, and stresses are reported, in these axes.

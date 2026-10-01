@@ -30,7 +30,8 @@ pub enum Role {
     Area,
     /// Second moment of area and torsion constant.
     SecondMoment,
-    /// A section's dimensions and radii of gyration.
+    /// A section's dimensions and radii of gyration, and a frame's joint
+    /// and end offsets, which are lengths on the same scale.
     SectionLength,
     /// Elastic and plastic section moduli, and the HSS torsional constant.
     SectionModulus,
@@ -266,6 +267,10 @@ impl SectionProperty {
 impl MapQuantities for Frame {
     fn map_quantities(&mut self, f: &mut dyn FnMut(Role, f64) -> f64) {
         remap!(f, Role::Angle, self.roll, Angle);
+        let o = &mut self.offsets;
+        for v in o.joint.iter_mut().flatten().chain(o.end.iter_mut()) {
+            remap!(f, Role::SectionLength, *v, Length);
+        }
     }
 }
 impl MapQuantities for Shell {

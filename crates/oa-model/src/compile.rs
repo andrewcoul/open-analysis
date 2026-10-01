@@ -124,21 +124,82 @@ fn check_references<T: Entity>(model: &Model, problems: &mut Vec<Problem>) {
     }
 }
 
-/// Validates the model and produces solver input. Returns every problem
-/// found rather than stopping at the first.
-/// Length of a frame from its nodes' positions, as the solver computes it;
-/// zero when a node is missing, which validation reports separately.
-fn frame_length(model: &Model, frame: EntityId) -> f64 {
-    let Some(f) = model.frames.get(&frame) else {
-        return 0.0;
-    };
+/// Length of a frame between its ends after joint offsets and its cardinal
+/// point, as the solver computes it. Fails, with the problem validation
+/// would report, when the frame or a node is missing, the cardinal point
+/// cannot be placed, or the ends coincide.
+pub fn frame_length(model: &Model, frame: EntityId) -> Result<f64, String> {
+    let f = model
+        .frames
+        .get(&frame)
+        .ok_or_else(|| format!("no frame #{}", frame.0))?;
+    resolve_frame(model, f).map(|(_, length)| length)
+}
+
+/// The solver's frame for `f` on stand-in node ids 0 and 1, with its length
+/// between the ends its offsets and cardinal point leave.
+fn resolve_frame(model: &Model, f: &Frame) -> Result<(oa_core::Frame, f64), String> {
     let (Some(a), Some(b)) = (model.nodes.get(&f.nodes[0]), model.nodes.get(&f.nodes[1])) else {
-        return 0.0;
+        return Err("references a missing node".into());
     };
-    (0..3)
-        .map(|i| (b.position[i].si() - a.position[i].si()).powi(2))
-        .sum::<f64>()
-        .sqrt()
+    let frame = solver_frame(model, f, [oa_core::NodeId(0), oa_core::NodeId(1)], 0, 0)?;
+    let [a, b] = frame.ends([a, b].map(|n| n.position.map(|v| v.si())))?;
+    let length = (0..3).map(|i| (b[i] - a[i]).powi(2)).sum::<f64>().sqrt();
+    Ok((frame, length))
+}
+
+/// The solver's frame for one model frame, its cardinal point folded into
+/// its joint offsets. Fails when the cardinal point needs a shape the
+/// section does not have, or the member has no direction to read it in.
+pub(crate) fn solver_frame(
+    model: &Model,
+    f: &Frame,
+    nodes: [oa_core::NodeId; 2],
+    material: usize,
+    section: usize,
+) -> Result<oa_core::Frame, String> {
+    let mut frame = oa_core::Frame {
+        nodes,
+        material: oa_core::MaterialId(material),
+        section: oa_core::SectionId(section),
+        local_y: f.local_y,
+        roll: f.roll,
+        releases: f.releases,
+        behavior: f.behavior,
+        modifiers: f.modifiers,
+        offsets: f.offsets,
+    };
+    if f.cardinal_point.is_centroid() {
+        return Ok(frame);
+    }
+    let [dy, dz] = model
+        .sections
+        .get(&f.section)
+        .and_then(|s| f.cardinal_point.centroid_offset(s))
+        .ok_or_else(|| {
+            format!(
+                "cardinal point {} needs the depth and width of a steel shape, which its section does not have",
+                f.cardinal_point.label().to_lowercase()
+            )
+        })?;
+    // The point sits in the plane of the member as its joint offsets leave
+    // it, so resolve those first, in global axes, and shift both ends
+    // across that line. The shift is the same at both ends, so the line
+    // keeps its direction and its local axes.
+    let (Some(a), Some(b)) = (model.nodes.get(&f.nodes[0]), model.nodes.get(&f.nodes[1])) else {
+        return Ok(frame);
+    };
+    let nodes = [a, b].map(|n| n.position.map(|v| v.si()));
+    let ends = frame.ends(nodes)?;
+    let span = std::array::from_fn(|i| ends[1][i] - ends[0][i]);
+    let [_, y, z] = frame.axes_along(span)?;
+    frame.offsets.axes = oa_core::Axes::Global;
+    frame.offsets.joint = std::array::from_fn(|k| {
+        std::array::from_fn(|i| {
+            oa_core::units::Length::from_si(ends[k][i] - nodes[k][i] + y[i] * dy + z[i] * dz)
+        })
+    });
+    Ok(frame)
 }
 
 /// A position along a member, moved onto the member's end (or start) when
@@ -190,6 +251,8 @@ fn check_levels(model: &Model, problems: &mut Vec<Problem>) {
     }
 }
 
+/// Validates the model and produces solver input. Returns every problem
+/// found rather than stopping at the first.
 pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
     let mut problems = vec![];
     check_names::<Level>(model, &mut problems);
@@ -271,16 +334,23 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
     for (id, f) in &model.frames {
         mapping.frame_index.insert(*id, solver.frames.len());
         mapping.frame_id.push(*id);
-        solver.frames.push(oa_core::Frame {
-            nodes: [node(&f.nodes[0]), node(&f.nodes[1])],
-            material: oa_core::MaterialId(mapping.material_index[&f.material]),
-            section: oa_core::SectionId(mapping.section_index[&f.section]),
-            local_y: f.local_y,
-            roll: f.roll,
-            releases: f.releases,
-            behavior: f.behavior,
-            modifiers: f.modifiers,
-        });
+        match solver_frame(
+            model,
+            f,
+            [node(&f.nodes[0]), node(&f.nodes[1])],
+            mapping.material_index[&f.material],
+            mapping.section_index[&f.section],
+        ) {
+            Ok(frame) => solver.frames.push(frame),
+            Err(message) => problems.push(Problem {
+                entity: Some(*id),
+                name: Some(f.name.clone()),
+                message,
+            }),
+        }
+    }
+    if !problems.is_empty() {
+        return Err(problems);
     }
     for (id, s) in &model.shells {
         mapping.shell_index.insert(*id, solver.shells.len());
@@ -351,7 +421,8 @@ pub fn compile(model: &Model) -> Result<Compiled, Vec<Problem>> {
                 .member
                 .iter()
                 .map(|l| {
-                    let span = frame_length(model, l.member());
+                    // A frame that does not resolve is already a problem.
+                    let span = frame_length(model, l.member()).unwrap_or_default();
                     let along = |x: &oa_core::units::Length| snap_to_span(*x, span);
                     match l {
                         MemberLoad::Point {
@@ -596,21 +667,16 @@ pub fn geometry_problems(model: &Model, nodes: &BTreeSet<EntityId>) -> Vec<Probl
         let Some(mut solver) = probe(&f.nodes) else {
             continue;
         };
-        let span = frame_length(model, *id);
-        if !span.is_finite() || span <= 1e-12 {
-            problems.push(problem(*id, "zero or invalid length".into()));
-            continue;
-        }
-        solver.frames.push(oa_core::Frame {
-            nodes: [oa_core::NodeId(0), oa_core::NodeId(1)],
-            material: oa_core::MaterialId(0),
-            section: oa_core::SectionId(0),
-            local_y: f.local_y,
-            roll: f.roll,
-            releases: f.releases,
-            behavior: f.behavior,
-            modifiers: f.modifiers,
-        });
+        let span = match resolve_frame(model, f) {
+            Ok((frame, span)) => {
+                solver.frames.push(frame);
+                span
+            }
+            Err(message) => {
+                problems.push(problem(*id, message));
+                continue;
+            }
+        };
         if let Err(e) = solver.validate_frame(0) {
             problems.push(element_problem(model, *id, &e, "frame 0: "));
         }

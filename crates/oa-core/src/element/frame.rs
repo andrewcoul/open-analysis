@@ -16,11 +16,85 @@ use std::ops::Deref;
 pub(crate) type M12 = SMatrix<f64, 12, 12>;
 pub(crate) type V12 = SVector<f64, 12>;
 
+/// A member's line in space: where it starts after its joint offset at I,
+/// its length to the moved end J, and its local axes as rows.
+pub(crate) struct FrameLine {
+    pub start: Vector3<f64>,
+    pub length: f64,
+    pub r: Matrix3<f64>,
+}
+impl FrameLine {
+    pub fn new(model: &Model, id: usize) -> Result<Self> {
+        let frame = &model.frames[id];
+        let nodes = frame.nodes.map(|n| model.nodes[n.0].xyz());
+        let tagged = |e: String| Error::Model(format!("frame {id}: {e}"));
+        let [a, b] = frame.ends(nodes).map_err(tagged)?.map(Vector3::from);
+        Ok(Self {
+            start: a,
+            length: (b - a).norm(),
+            r: Matrix3::from(frame.axes_along((b - a).into()).map_err(tagged)?).transpose(),
+        })
+    }
+}
+
+/// Local axes as rows for a member along `span`: local y from the frame's
+/// hint, or global Y (global -X for a vertical member), turned by its roll.
+pub(crate) fn orientation(
+    frame: &Frame,
+    span: Vector3<f64>,
+) -> std::result::Result<Matrix3<f64>, String> {
+    let length = span.norm();
+    if !length.is_finite() || length <= 1e-12 {
+        return Err("zero or invalid length".into());
+    }
+    let x = span / length;
+    let hint = frame.local_y.map(Vector3::from).unwrap_or_else(|| {
+        if x.x.hypot(x.z) > 1e-10 {
+            Vector3::y()
+        } else {
+            Vector3::new(-x.y.signum(), 0.0, 0.0)
+        }
+    });
+    let mut y = hint - x * x.dot(&hint);
+    if y.norm() < 1e-10 * hint.norm().max(1.0) {
+        return Err("local_y is parallel to the member or zero".into());
+    }
+    y.normalize_mut();
+    y = y * frame.roll.si().cos() + x.cross(&y) * frame.roll.si().sin();
+    Ok(rotation(x, y))
+}
+
+/// Carries a node's six DOFs to a point at `arm` from it on a rigid link:
+/// the point moves u + theta x arm and turns with the node.
+fn rigid_link(arm: Vector3<f64>) -> SMatrix<f64, 6, 6> {
+    let mut a = SMatrix::<f64, 6, 6>::identity();
+    let skew = arm.cross_matrix();
+    for i in 0..3 {
+        for j in 0..3 {
+            a[(i, 3 + j)] = -skew[(i, j)];
+        }
+    }
+    a
+}
+
 #[derive(Clone)]
 pub(crate) struct FrameElement {
     pub dofs: [usize; 12],
+    /// The whole member, end offsets included, from its moved end I to J.
+    /// Load positions and section stations run along this length.
     pub length: f64,
+    /// Where the flexible part starts and ends along `length`. The rest is
+    /// rigid end zone, rigid in bending and shear only: axial and torsional
+    /// deformation span the whole length, as in CSI's programs.
+    pub flexible: [f64; 2],
+    /// Start and end of the clear length along `length`, between the end
+    /// offsets: where section forces are reported.
+    pub clear: [f64; 2],
+    /// Global position of the member's moved end I, where `length` starts.
+    pub start: Vector3<f64>,
     pub r: Matrix3<f64>,
+    /// Global node DOFs to local DOFs at the ends of the flexible part:
+    /// rigid links through joint offsets and rigid zones, then rotation.
     pub t: M12,
     pub elastic: M12,
     pub geometric_unit: M12,
@@ -39,27 +113,35 @@ impl FrameElement {
         let frame = &model.frames[id];
         let m = &model.materials[frame.material.0];
         let s = &model.sections[frame.section.0];
-        let a = Vector3::from(model.nodes[frame.nodes[0].0].xyz());
-        let b = Vector3::from(model.nodes[frame.nodes[1].0].xyz());
-        let length = (b - a).norm();
-        let x = (b - a) / length;
-        let hint = frame.local_y.map(Vector3::from).unwrap_or_else(|| {
-            if x.x.hypot(x.z) > 1e-10 {
-                Vector3::y()
-            } else {
-                Vector3::new(-x.y.signum(), 0.0, 0.0)
-            }
-        });
-        let mut y = hint - x * x.dot(&hint);
-        if y.norm() < 1e-10 * hint.norm().max(1.0) {
+        frame
+            .offsets
+            .check()
+            .map_err(|e| Error::Model(format!("frame {id}: {e}")))?;
+        let FrameLine {
+            start,
+            length: total,
+            r,
+        } = FrameLine::new(model, id)?;
+        let [oi, oj] = frame.offsets.end.map(Length::si);
+        if oi + oj >= total * (1.0 - 1e-9) {
             return Err(Error::Model(format!(
-                "frame {id}: local_y is parallel to the member or zero"
+                "frame {id}: end offsets leave no clear length"
             )));
         }
-        y.normalize_mut();
-        y = y * frame.roll.si().cos() + x.cross(&y) * frame.roll.si().sin();
-        let r = rotation(x, y);
-        let t = block_rotation(&r);
+        let rigid = frame.offsets.rigid_zone;
+        // Spelled as the clear length's ends are, so a factor of 1 puts the
+        // flexible part's ends exactly on the faces.
+        let flexible = [rigid * oi, total - rigid * oj];
+        let length = flexible[1] - flexible[0];
+        let x = r.row(0).transpose();
+        let ends = flexible.map(|at| start + x * at);
+        let mut link = M12::zeros();
+        for (k, node) in frame.nodes.iter().enumerate() {
+            let arm = ends[k] - Vector3::from(model.nodes[node.0].xyz());
+            link.fixed_view_mut::<6, 6>(6 * k, 6 * k)
+                .copy_from(&rigid_link(arm));
+        }
+        let t = block_rotation::<12>(&r) * link;
         // Stiffness modifiers scale the stiffness only; mass and the
         // geometric stiffness's polar radius of gyration keep the section's
         // values, and mass and weight have modifiers of their own.
@@ -77,13 +159,17 @@ impl FrameElement {
             phi(ei_z, s.shear_y, md.shear_y),
             phi(ei_y, s.shear_z, md.shear_z),
         ];
+        // Rigid zones are rigid in bending and shear only. The links carry
+        // axial displacement and twist unchanged along the member's axis, so
+        // axial and torsional stiffness over the whole length between the
+        // flexible part's ends is the whole member's.
         let mut k = M12::zeros();
-        pair(&mut k, 0, 6, m.young.si() * s.area.si() * md.area / length);
+        pair(&mut k, 0, 6, m.young.si() * s.area.si() * md.area / total);
         pair(
             &mut k,
             3,
             9,
-            m.shear_modulus() * s.torsion.si() * md.torsion / length,
+            m.shear_modulus() * s.torsion.si() * md.torsion / total,
         );
         bending(&mut k, [1, 5, 7, 11], ei_z, length, 1.0, phi[0]);
         bending(&mut k, [2, 4, 8, 10], ei_y, length, -1.0, phi[1]);
@@ -95,18 +181,21 @@ impl FrameElement {
             &mut kg,
             3,
             9,
-            (s.iy.si() + s.iz.si()) / (s.area.si() * length),
+            (s.iy.si() + s.iz.si()) / (s.area.si() * total),
         );
         Ok(Self {
             dofs: std::array::from_fn(|i| frame.nodes[i / 6].0 * 6 + i % 6),
-            length,
+            length: total,
+            flexible,
+            clear: [oi, total - oj],
+            start,
             r,
             t,
             elastic: k,
             geometric_unit: kg,
             releases: frame.releases,
-            mass: m.density.si() * s.area.si() * length * md.mass,
-            weight_mass: m.density.si() * s.area.si() * length * md.weight,
+            mass: m.density.si() * s.area.si() * total * md.mass,
+            weight_mass: m.density.si() * s.area.si() * total * md.weight,
             phi,
         })
     }
@@ -136,7 +225,12 @@ impl FrameElement {
         let v = Vector3::from(v);
         if axes == Axes::Global { self.r * v } else { v }
     }
-    pub fn equivalent_load(&self, load: &MemberLoad) -> V12 {
+    /// The load's fixed-end forces on the flexible part, in local axes,
+    /// and the global nodal loads of what lands in the rigid zones. A load
+    /// on a rigid zone reaches its node without passing the member's
+    /// releases, so it never enters the condensed member load.
+    pub fn equivalent_load(&self, load: &MemberLoad) -> (V12, V12) {
+        let (mut p, mut rigid) = (V12::zeros(), V12::zeros());
         match load {
             MemberLoad::Point {
                 position,
@@ -147,7 +241,7 @@ impl FrameElement {
             } => {
                 let f = self.local_vector(*axes, force.map(|v| v.si()));
                 let m = self.local_vector(*axes, moment.map(|v| v.si()));
-                self.load_at(position.si(), f, m)
+                self.load_at(position.si(), f, m, &mut p, &mut rigid);
             }
             MemberLoad::Distributed {
                 start,
@@ -157,19 +251,26 @@ impl FrameElement {
                 axes,
                 ..
             } => {
-                let a = start.si();
-                let b = end.si();
+                let (a, b) = (start.si(), end.si());
                 let q0 = self.local_vector(*axes, start_load.map(|v| v.si()));
                 let q1 = self.local_vector(*axes, end_load.map(|v| v.si()));
-                let mut p = V12::zeros();
-                for (xi, w) in GAUSS3 {
-                    let t = (xi + 1.0) / 2.0;
-                    p += self.load_at(a + t * (b - a), q0 + (q1 - q0) * t, Vector3::zeros())
-                        * (w * (b - a) / 2.0);
+                // Integrate each zone on its own: the transfer through a
+                // rigid zone has a kink at the flexible part's end.
+                let mut cuts = vec![a, b];
+                cuts.extend(self.flexible.into_iter().filter(|c| *c > a && *c < b));
+                cuts.sort_by(f64::total_cmp);
+                for piece in cuts.windows(2) {
+                    let (c, d) = (piece[0], piece[1]);
+                    for (xi, w) in GAUSS3 {
+                        let x = c + (xi + 1.0) / 2.0 * (d - c);
+                        let q = q0 + (q1 - q0) * ((x - a) / (b - a));
+                        let w = w * (d - c) / 2.0;
+                        self.load_at(x, q * w, Vector3::zeros(), &mut p, &mut rigid);
+                    }
                 }
-                p
             }
         }
+        (p, self.t.transpose() * rigid)
     }
     /// The load's gravity (-Z) resultant split statically between the two
     /// ends, as a simply supported span would carry it. Moments carry none.
@@ -211,25 +312,48 @@ impl FrameElement {
             }
         }
     }
-    fn load_at(&self, x: f64, f: Vector3<f64>, m: Vector3<f64>) -> V12 {
-        let t = x / self.length;
-        let mut p = V12::zeros();
-        p[0] = (1.0 - t) * f.x;
-        p[6] = t * f.x;
-        p[3] = (1.0 - t) * m.x;
-        p[9] = t * m.x;
+    /// Adds a force and moment at `x` along the member. Axial force and
+    /// twist always go to `p` by the linear shape over the whole length,
+    /// which is flexible in both. The rest goes to `p` as fixed-end forces
+    /// when it acts on the flexible part, or to `rigid` at the end of the
+    /// flexible part, with the moment of its lever arm, when it acts on a
+    /// rigid zone.
+    fn load_at(&self, x: f64, f: Vector3<f64>, m: Vector3<f64>, p: &mut V12, rigid: &mut V12) {
+        let along = x / self.length;
+        p[0] += (1.0 - along) * f.x;
+        p[6] += along * f.x;
+        p[3] += (1.0 - along) * m.x;
+        p[9] += along * m.x;
+        let (f, m) = (Vector3::new(0.0, f.y, f.z), Vector3::new(0.0, m.y, m.z));
+        let [f0, f1] = self.flexible;
+        let arm = if x < f0 {
+            Some((0, x - f0))
+        } else if x > f1 {
+            Some((6, x - f1))
+        } else {
+            None
+        };
+        if let Some((end, arm)) = arm {
+            let m = m + Vector3::new(arm, 0.0, 0.0).cross(&f);
+            for i in 0..3 {
+                rigid[end + i] += f[i];
+                rigid[end + 3 + i] += m[i];
+            }
+            return;
+        }
+        let length = f1 - f0;
+        let t = (x - f0) / length;
         // A force works through the deflection, a moment through the section
         // rotation; with shear deformation the two differ.
-        let (h, rot) = shape(t, self.length, self.phi[0]);
+        let (h, rot) = shape(t, length, self.phi[0]);
         for (j, id) in [1, 5, 7, 11].into_iter().enumerate() {
             p[id] += h[j] * f.y + rot[j] * m.z;
         }
-        let (h, rot) = shape(t, self.length, self.phi[1]);
+        let (h, rot) = shape(t, length, self.phi[1]);
         for (j, id) in [2, 4, 8, 10].into_iter().enumerate() {
             let sign = if j % 2 == 0 { 1.0 } else { -1.0 };
             p[id] += sign * (h[j] * f.z - rot[j] * m.y);
         }
-        p
     }
     /// Stiffness at the given axial force, with released DOFs condensed out.
     /// Independent of loading, so linear analysis computes it once per member.
