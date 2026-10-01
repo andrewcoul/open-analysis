@@ -327,9 +327,12 @@ takes it out of every source in the same undo step.
   order, so a journal replay produces the same ids. The GUI splits on
   every draw: a placed or typed node splits the frames it lands on, and a
   drawn frame splits at the nodes it passes over and splits the frames its
-  ends land on, all in the drawing's undo step. Shell edges are not split,
-  and once end offsets land the first piece keeps the I offset and the last
-  the J offset.
+  ends land on, all in the drawing's undo step. Shell edges are not split.
+  End offsets stay at the member's ends, the I one on the first piece and
+  the J one on the last, and the rigid zone factor and cardinal point carry
+  to every piece. Joint offsets are interpolated to the new joints, in
+  global axes, so every piece lies on the original's moved line, and load
+  stations, which run along that line, are cut at the same fractions.
 
 ## Phases
 

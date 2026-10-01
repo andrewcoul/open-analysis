@@ -306,3 +306,85 @@ fn member_loads_follow_their_pieces_and_give_the_same_answer() {
     }
     assert!(split[&b.mid][2] < 0.0 && split[&b.third][2] < 0.0);
 }
+
+#[test]
+fn end_offsets_stay_at_the_ends_and_joint_offsets_are_interpolated() {
+    let mut b = beam();
+    let mut frame = b.editor.model.frames[&b.beam].clone();
+    frame.offsets.end = [Length::from_si(0.3), Length::from_si(0.2)];
+    frame.offsets.rigid_zone = 1.0;
+    let down = |z: f64| [Length::ZERO, Length::ZERO, Length::from_si(z)];
+    frame.offsets.joint = [down(-0.2), down(-0.4)];
+    b.editor
+        .apply(Command::UpdateFrame { id: b.beam, frame })
+        .unwrap();
+    // A full-length uniform load along the moved member, which is longer
+    // than the node-to-node span.
+    let moved = compile::frame_length(&b.editor.model, b.beam).unwrap();
+    assert!(moved > L);
+    let beam_id = b.beam;
+    set_loads(
+        &mut b,
+        vec![MemberLoad::Distributed {
+            member: beam_id,
+            start: Length::ZERO,
+            end: Length::from_si(moved),
+            start_load: line(-2_000.0),
+            end_load: line(-2_000.0),
+            axes: Axes::Global,
+        }],
+    );
+    // Only the midpoint is split here; the other loose node is held.
+    let mut held = b.editor.model.nodes[&b.third].clone();
+    held.restrained = [true; 6];
+    b.editor
+        .apply(Command::UpdateNode {
+            id: b.third,
+            node: held,
+        })
+        .unwrap();
+    let mut unsplit = b.editor.model.clone();
+    unsplit.nodes.get_mut(&b.mid).unwrap().restrained = [true; 6];
+    let reference = solve(&unsplit).unwrap();
+    b.editor
+        .apply(Command::SplitFrames {
+            frames: vec![b.beam],
+            nodes: vec![b.mid],
+        })
+        .unwrap();
+    let m = &b.editor.model;
+    let (first, second) = (
+        &m.frames[&b.beam],
+        &m.frames[&m.find::<Frame>("B1-2").unwrap()],
+    );
+    assert_eq!(first.offsets.end, [Length::from_si(0.3), Length::ZERO]);
+    assert_eq!(second.offsets.end, [Length::ZERO, Length::from_si(0.2)]);
+    assert_eq!(first.offsets.rigid_zone, 1.0);
+    // Halfway along, the joint offset is halfway between the two ends'.
+    assert!((first.offsets.joint[1][2].si() + 0.3).abs() < 1e-12);
+    assert!((second.offsets.joint[0][2].si() + 0.3).abs() < 1e-12);
+    assert!((second.offsets.joint[1][2].si() + 0.4).abs() < 1e-12);
+    // The pieces lie on the original's moved line, so their lengths add up
+    // to its length and the load is cut at the moved midpoint.
+    let lengths: f64 = [b.beam, m.find::<Frame>("B1-2").unwrap()]
+        .iter()
+        .map(|id| compile::frame_length(m, *id).unwrap())
+        .sum();
+    assert!((lengths - moved).abs() < 1e-12);
+    let MemberLoad::Distributed { end, .. } = &m.load_cases[&b.case].member[0] else {
+        panic!("expected a distributed load");
+    };
+    assert!((end.si() - moved / 2.0).abs() < 1e-12);
+    // The same beam under the same load: the supports turn alike.
+    let split = solve(m).unwrap();
+    for n in m.frames[&b.beam]
+        .nodes
+        .iter()
+        .take(1)
+        .chain(&second.nodes[1..])
+    {
+        let (a, r) = (split[n][4], reference[n][4]);
+        assert!(r.abs() > 1e-6);
+        assert!((a - r).abs() <= 1e-9 * r.abs(), "{a} vs {r}");
+    }
+}

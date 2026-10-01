@@ -119,11 +119,18 @@ pub fn plan_split_frames(
         }
         let original = &model.frames[&id];
         let length = stations_length(model, original);
-        // Piece k runs from stations[k] to stations[k + 1], between
-        // joints[k] and joints[k + 1].
-        let mut stations = vec![0.0];
-        stations.extend(stops.iter().map(|(_, s)| *s));
-        stations.push(length);
+        // Piece k runs between joints[k] and joints[k + 1], at fractions
+        // t[k] and t[k + 1] of the way from node I to node J.
+        let mut t = vec![0.0];
+        t.extend(stops.iter().map(|(_, s)| *s / length));
+        t.push(1.0);
+        // Member load positions run along the member between the ends its
+        // joint offsets and cardinal point move it to. Moving both ends
+        // keeps the moved line's points at the same fractions, so the
+        // stations scale with its length.
+        let moved = crate::compile::frame_length(model, id).unwrap_or(length);
+        let stations: Vec<f64> = t.iter().map(|t| t * moved).collect();
+        let joint = joint_offsets(model, original)?;
         let mut joints = vec![original.nodes[0]];
         joints.extend(stops.iter().map(|(n, _)| *n));
         joints.push(original.nodes[1]);
@@ -138,6 +145,8 @@ pub fn plan_split_frames(
             piece.nodes = [joints[k], joints[k + 1]];
             // The I end's releases stay at the I end, the J end's at the J
             // end; the new joints inside the span are continuous.
+            // So do the end offsets, the lengths inside the joints at the
+            // member's two ends.
             for r in 0..6 {
                 if k > 0 {
                     piece.releases[r] = false;
@@ -145,6 +154,19 @@ pub fn plan_split_frames(
                 if k + 1 < count {
                     piece.releases[6 + r] = false;
                 }
+            }
+            if k > 0 {
+                piece.offsets.end[0] = Length::ZERO;
+            }
+            if k + 1 < count {
+                piece.offsets.end[1] = Length::ZERO;
+            }
+            // Joint offsets are interpolated to the new joints, so every
+            // piece lies on the original's moved line.
+            if let Some([di, dj]) = joint {
+                piece.offsets.axes = Axes::Global;
+                piece.offsets.joint = [t[k], t[k + 1]]
+                    .map(|t| std::array::from_fn(|i| Length::from_si(di[i] + (dj[i] - di[i]) * t)));
             }
             if k == 0 {
                 frame_commands.push(Command::UpdateFrame { id, frame: piece });
@@ -193,6 +215,30 @@ pub fn plan_split_frames(
         load_case: cases.remove(&id).unwrap(),
     }));
     Ok(commands)
+}
+
+/// A frame's joint offsets in global axes, end I then J, in metres; None
+/// when it has none. The cardinal point is left out: every piece keeps it,
+/// and it shifts each one alike across the line they share.
+fn joint_offsets(model: &Model, f: &Frame) -> Result<Option<[[f64; 3]; 2]>> {
+    if f.offsets.joint_si().iter().flatten().all(|v| *v == 0.0) {
+        return Ok(None);
+    }
+    let mut plain = f.clone();
+    plain.cardinal_point = CardinalPoint::Centroid;
+    let nodes = f.nodes.map(|n| model.nodes[&n].position.map(|v| v.si()));
+    let ends = crate::compile::solver_frame(
+        model,
+        &plain,
+        [oa_core::NodeId(0), oa_core::NodeId(1)],
+        0,
+        0,
+    )
+    .and_then(|frame| frame.ends(nodes))
+    .map_err(|e| ModelError::Invalid(format!("cannot split frame {:?}: {e}", f.name)))?;
+    Ok(Some(std::array::from_fn(|k| {
+        std::array::from_fn(|i| ends[k][i] - nodes[k][i])
+    })))
 }
 
 fn stations_length(model: &Model, f: &Frame) -> f64 {
