@@ -511,3 +511,36 @@ fn mass_sources_turn_gravity_load_into_modal_mass() {
         assert!(err.contains(refusal), "{err}");
     }
 }
+
+#[test]
+fn split_frames_connects_a_node_on_a_span() {
+    let mut s = Session::default();
+    s.new_model("split").unwrap();
+    let steel = s.add_material_from_library("A992", "steel").unwrap();
+    let section = s.add_section_from_library("W12x26", "beam").unwrap();
+    let base = s.find(EntityKind::Level, "Base").unwrap();
+    let [a, b, mid, beam, dead] = <[_; 5]>::try_from(s.next_ids(5)).unwrap();
+    s.apply(vec![
+        cmd(json!({"command": "add_node", "id": a, "node": {"name": "A", "level": base, "position": [0, 0, 0]}})),
+        cmd(json!({"command": "add_node", "id": b, "node": {"name": "B", "level": base, "position": [20, 0, 0]}})),
+        cmd(json!({"command": "add_node", "id": mid, "node": {"name": "M", "level": base, "position": [8, 0, 0]}})),
+        cmd(json!({"command": "add_frame", "id": beam, "frame": {"name": "B1", "nodes": [a, b],
+            "material": steel, "section": section}})),
+        cmd(json!({"command": "add_load_case", "id": dead, "load_case": {"name": "D",
+            "member": [{"type": "distributed", "member": beam, "start": 0, "end": 20,
+                "start_load": [0, 0, -1], "end_load": [0, 0, -1], "axes": "global"}]}})),
+    ])
+    .unwrap();
+    s.apply(vec![cmd(json!({"command": "split_frames"}))]).unwrap();
+    assert_eq!(s.get(beam).unwrap()["entity"]["nodes"], json!([a, mid]));
+    let second = s.find(EntityKind::Frame, "B1-2").unwrap();
+    assert_eq!(s.get(second).unwrap()["entity"]["nodes"], json!([mid, b]));
+    let loads = s.get(dead).unwrap()["entity"]["member"].clone();
+    let loads = loads.as_array().unwrap();
+    assert_eq!(loads.len(), 2);
+    // Positions come back in ft, measured along each piece.
+    assert!((loads[0]["end"].as_f64().unwrap() - 8.0).abs() < 1e-9);
+    assert_eq!(loads[1]["member"], json!(second));
+    assert!((loads[1]["end"].as_f64().unwrap() - 12.0).abs() < 1e-9);
+    assert!((loads[1]["start_load"][2].as_f64().unwrap() + 1.0).abs() < 1e-9);
+}

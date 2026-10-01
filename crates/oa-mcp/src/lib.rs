@@ -1190,6 +1190,14 @@ add_frame     {"command":"add_frame","id":4,"frame":{"name":"C1","nodes":[1,5],"
               beams {"iy":0.35,"iz":0.35}, columns {"iy":0.7,"iz":0.7}. modifiers "mass" and "weight" (each 1
               unless given, 0 allowed) scale the member's own mass and its self-weight; 0 on both leaves out a
               member another one already carries, such as a beam under a slab modelled with the slab's weight
+split_frames  {"command":"split_frames","frames":[4],"nodes":[5]}
+              a frame only connects to the nodes at its two ends: a node placed on a span, or a beam drawn to land
+              on a girder's midspan, is not joined until the frame is split there. This splits the listed frames at
+              the listed nodes lying on their spans (within 0.1 mm, about 0.004 in, of the axis); either list empty or left out means
+              all of them, so {"command":"split_frames"} splits every frame at every node on it. The frame keeps
+              its id and name as the first piece; the others are new frames named "C1-2", "C1-3", ... with its
+              material, section, orientation and modifiers, its groups, and its share of every member load (point
+              loads by position, distributed loads cut and interpolated). End releases stay at the outer ends.
 add_shell     {"command":"add_shell","id":6,"shell":{"name":"S1","nodes":[1,2,3,4],"material":2,"thickness":8}}
               optional local_x [x,y,z]: reference for local x, projected into the shell's plane; by default local x
               runs from the first node to the second. Modifiers act, and stresses are reported, in these axes.

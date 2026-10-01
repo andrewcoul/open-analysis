@@ -109,6 +109,18 @@ pub enum Command {
     RemoveFrame {
         id: EntityId,
     },
+    /// Splits frames at the nodes lying on their spans, so those nodes
+    /// connect. `frames` lists the frames to split and `nodes` the nodes to
+    /// split at; either empty means all of them. Each frame keeps its id as
+    /// the first piece; the rest are new frames named after it, with its
+    /// properties, groups, and share of its member loads. End releases stay
+    /// at the ends. Applied as a batch, so undo restores the stored values.
+    SplitFrames {
+        #[serde(default)]
+        frames: Vec<EntityId>,
+        #[serde(default)]
+        nodes: Vec<EntityId>,
+    },
     AddShell {
         id: EntityId,
         shell: Shell,
@@ -563,6 +575,10 @@ impl Command {
                 let (entity, groups) = remove(model, id)?;
                 removal_inverse(AddFrame { id, frame: entity }, groups)
             }
+            SplitFrames { frames, nodes } => Batch {
+                commands: crate::split::plan_split_frames(model, &frames, &nodes)?,
+            }
+            .apply(model)?,
             AddShell { id, shell } => {
                 check_modifiers(&shell.modifiers.values())?;
                 check_mass_weight(shell.modifiers.mass, shell.modifiers.weight)?;

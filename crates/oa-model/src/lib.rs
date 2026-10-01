@@ -13,6 +13,7 @@ pub mod format;
 pub mod levels;
 pub mod library;
 pub mod model;
+pub mod split;
 #[cfg(feature = "store")]
 pub mod store;
 pub mod units;

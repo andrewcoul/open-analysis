@@ -317,12 +317,16 @@ pub fn add_node(
                     Length::from_si(datum.elevation.si() + v[2]),
                 ],
             );
-            let id = model.next_id;
+            let id = EntityId(model.next_id);
+            // A node typed onto a frame's span connects to it.
+            let split = Command::SplitFrames {
+                frames: vec![],
+                nodes: vec![id],
+            };
             apply(
                 &document,
-                Command::AddNode {
-                    id: EntityId(id),
-                    node,
+                Command::Batch {
+                    commands: vec![Command::AddNode { id, node }, split],
                 },
                 window,
                 cx,

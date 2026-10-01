@@ -296,6 +296,29 @@ blank for a case the source leaves out. The first source added becomes the
 default, removing the default clears it first, and removing a load case
 takes it out of every source in the same undo step.
 
+- **Splitting frames at nodes on their spans.** The solver joins elements
+  only through shared nodes, so a node lying on a beam does nothing until
+  the beam is split there. `SplitFrames { frames, nodes }` splits the listed
+  frames at the listed nodes, either list empty meaning all; a node lies on
+  a span when it is within `split::ON_SPAN_TOLERANCE` (0.1 mm) of the axis
+  and that far inside both ends. It plans a batch of plain commands, as
+  `SetLevelElevation` does, so undo restores exact values and no file
+  format change is needed. The frame keeps its id and name as the first
+  piece, so loads, groups and results that name it still do; the other
+  pieces are new frames named `B1-2`, `B1-3`, and so on, copying material,
+  section, orientation, behaviour and modifiers. I-end releases stay on
+  the first piece and J-end releases on the last; the new joints are
+  continuous. The frame's groups gain the new pieces, a point load moves
+  to the piece it falls on (the earlier one at a joint), and a distributed
+  load is cut at the joints with its intensity interpolated, so the loads
+  on the pieces sum to the original. New ids run from `next_id` in frame
+  order, so a journal replay produces the same ids. The GUI splits on
+  every draw: a placed or typed node splits the frames it lands on, and a
+  drawn frame splits at the nodes it passes over and splits the frames its
+  ends land on, all in the drawing's undo step. Shell edges are not split,
+  and once end offsets land the first piece keeps the I offset and the last
+  the J offset.
+
 ## Phases
 
 ### Phase M0: Entities and compilation
