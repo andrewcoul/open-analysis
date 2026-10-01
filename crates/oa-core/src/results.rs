@@ -11,8 +11,12 @@ use serde::{Deserialize, Serialize};
 pub struct FrameResult {
     pub active: bool,
     /// Forces applied to the element at its ends, in local axes (N and N m).
+    /// With rigid zones, shear and bending are at the ends of the flexible
+    /// part; axial force and torque, which span the whole member, are at its
+    /// ends. See `FrameOffsets`.
     pub local_end_forces: [f64; 12],
-    /// Includes recovered hinge rotations / released displacements.
+    /// Includes recovered hinge rotations / released displacements, at the
+    /// ends of the flexible part.
     pub local_displacements: [f64; 12],
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,18 +199,32 @@ fn section_forces(
     result: &FrameResult,
     x: f64,
 ) -> Result<SectionForces> {
-    if !x.is_finite() || x < 0.0 || x > e.length {
-        return Err(Error::Request("section position outside member".into()));
+    // Stations are computed from end offsets and so may land a rounding
+    // step outside the flexible part; they are moved onto it.
+    let [f0, f1] = e.flexible;
+    let tolerance = 1e-9 * e.length;
+    if !x.is_finite() || x < f0 - tolerance || x > f1 + tolerance {
+        return Err(Error::Request(
+            "section position outside the member's flexible length".into(),
+        ));
     }
+    let x = x.clamp(f0, f1);
     if !result.active {
         return Ok(SectionForces {
             x,
             values: [0.0; 6],
         });
     }
+    // Bending and shear are cut from the start of the flexible part, where
+    // the end forces act; loads on the rigid zones went straight to the
+    // nodes, so only loads on the flexible part enter. Axial force and twist
+    // span the whole member, so they are cut from its start and every load
+    // enters.
+    let axial = |v: Vector3<f64>| Vector3::new(v.x, 0.0, 0.0);
+    let transverse = |v: Vector3<f64>| Vector3::new(0.0, v.y, v.z);
     let f = result.local_end_forces;
     let mut force = Vector3::new(f[0], f[1], f[2]);
-    let mut moment = Vector3::new(f[3], f[4], f[5]) + Vector3::new(-x, 0.0, 0.0).cross(&force);
+    let mut moment = Vector3::new(f[3], f[4], f[5]) + Vector3::new(f0 - x, 0.0, 0.0).cross(&force);
     for (factor, load) in &loads.0 {
         let factor = *factor;
         match load {
@@ -218,9 +236,14 @@ fn section_forces(
                 ..
             } if position.si() <= x => {
                 let f = e.local_vector(*axes, f.map(|v| v.si())) * factor;
-                force += f;
-                moment += e.local_vector(*axes, m.map(|v| v.si())) * factor
-                    + Vector3::new(position.si() - x, 0.0, 0.0).cross(&f);
+                let m = e.local_vector(*axes, m.map(|v| v.si())) * factor;
+                if position.si() >= f0 {
+                    force += f;
+                    moment += m + Vector3::new(position.si() - x, 0.0, 0.0).cross(&f);
+                } else {
+                    force += axial(f);
+                    moment += axial(m);
+                }
             }
             MemberLoad::Distributed {
                 start,
@@ -230,17 +253,28 @@ fn section_forces(
                 axes,
                 ..
             } if start.si() < x => {
-                let a = start.si();
-                let b = end.si().min(x);
-                let span = end.si() - a;
+                let span = end.si() - start.si();
                 let q0 = e.local_vector(*axes, start_load.map(|v| v.si())) * factor;
-                let slope =
-                    (e.local_vector(*axes, end_load.map(|v| v.si())) * factor - q0) / span;
-                let h = b - a;
-                let f = q0 * h + slope * (h * h / 2.0);
-                let first = q0 * (h * h / 2.0) + slope * (h * h * h / 3.0) + f * (a - x);
-                force += f;
-                moment += Vector3::x().cross(&first);
+                let slope = (e.local_vector(*axes, end_load.map(|v| v.si())) * factor - q0) / span;
+                // The resultant of the load over [a, b] and its first moment
+                // about the cut.
+                let piece = |a: f64, b: f64| {
+                    let qa = q0 + slope * (a - start.si());
+                    let h = b - a;
+                    let f = qa * h + slope * (h * h / 2.0);
+                    (
+                        f,
+                        qa * (h * h / 2.0) + slope * (h * h * h / 3.0) + f * (a - x),
+                    )
+                };
+                let b = end.si().min(x);
+                force += axial(piece(start.si(), b).0);
+                let a = start.si().max(f0);
+                if a < b {
+                    let (f, first) = piece(a, b);
+                    force += transverse(f);
+                    moment += Vector3::x().cross(&transverse(first));
+                }
             }
             _ => {}
         }
@@ -259,9 +293,13 @@ fn section_forces(
 pub struct FrameDiagram {
     /// Local axes as unit vectors in global coordinates: x from I to J, then y and z.
     pub axes: [[f64; 3]; 3],
-    /// Member length, metres.
+    /// Global position of end I after its joint offset, metres: where the
+    /// member and its stations start. Node I itself without one.
+    pub origin: [f64; 3],
+    /// Member length from end I to end J after joint offsets, metres.
     pub length: f64,
-    /// Distance from end I of each station, metres, from 0 to the length.
+    /// Distance from end I of each station, metres: evenly over the clear
+    /// length between the end offsets, so from 0 to the length without them.
     pub stations: Vec<f64>,
     /// N, Vy, Vz, T, My, Mz at each station, as `frame_section_forces` reports them.
     pub forces: Vec<[f64; 6]>,
@@ -323,10 +361,11 @@ pub fn frame_diagrams(
         .collect()
 }
 
-/// Positions where the section forces stop being smooth: the ends, and
-/// wherever a point load acts or a distributed load starts or stops.
-fn breakpoints(loads: &MemberLoads, length: f64) -> Vec<f64> {
-    let mut xs = vec![0.0, length];
+/// Positions in `[from, to]` where the section forces stop being smooth:
+/// the two bounds, and wherever a point load acts or a distributed load
+/// starts or stops.
+fn breakpoints(loads: &MemberLoads, from: f64, to: f64) -> Vec<f64> {
+    let mut xs = vec![from, to];
     for (_, load) in &loads.0 {
         match load {
             MemberLoad::Point { position, .. } => xs.push(position.si()),
@@ -336,7 +375,7 @@ fn breakpoints(loads: &MemberLoads, length: f64) -> Vec<f64> {
             }
         }
     }
-    xs.retain(|x| (0.0..=length).contains(x));
+    xs.retain(|x| (from..=to).contains(x));
     xs.sort_by(f64::total_cmp);
     xs.dedup();
     xs
@@ -373,12 +412,13 @@ fn diagram(
         flexibility(section.shear_z, md.shear_z),
     );
     let last = stations - 1;
+    let [from, to] = e.clear;
     let xs: Vec<f64> = (0..stations)
         .map(|k| {
             if k == last {
-                e.length
+                to
             } else {
-                e.length * (k as f64 / last as f64)
+                from + (to - from) * (k as f64 / last as f64)
             }
         })
         .collect();
@@ -395,7 +435,9 @@ fn diagram(
     // breakpoint, so a point moment's jump is respected. The end rotations
     // are section rotations; shear strain adds Vy / (G Asy) to v' and
     // Vz / (G Asz) to w', integrated the same way.
-    let mut cuts = breakpoints(loads, e.length);
+    // Integration starts where the end displacements are known: the start
+    // of the flexible part, at or before the clear length's.
+    let mut cuts = breakpoints(loads, e.flexible[0], to);
     cuts.extend(xs.iter().copied());
     cuts.sort_by(f64::total_cmp);
     cuts.dedup();
@@ -429,6 +471,7 @@ fn diagram(
         .collect();
     Ok(FrameDiagram {
         axes: std::array::from_fn(|i| [e.r[(i, 0)], e.r[(i, 1)], e.r[(i, 2)]]),
+        origin: e.start.into(),
         length: e.length,
         stations: xs,
         forces,

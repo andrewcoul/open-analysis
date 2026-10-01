@@ -245,8 +245,20 @@ Decisions made during implementation:
   solver's own validation, such as a zero-length frame, are passed through
   as a single problem with no entity. Structured errors from the solver
   would fix that and are a possible later change to `oa-core`.
-- **Rigid end offsets and cardinal points** were deferred, as the open
-  question allowed.
+- **Frames carry offsets and a cardinal point.** `offsets` is the solver's
+  (see its plan): joint offsets, end length offsets and the rigid-zone
+  factor, edited in inches in US units. `cardinal_point` is ETABS's
+  insertion point 1 to 10, the point of the section on the line between the
+  nodes, seen from end I with local y up. With joint offsets it sits on the
+  line between the moved ends, in that line's axes. Compilation resolves the
+  joint offsets in global axes and adds the cardinal point's shift, the
+  same at both ends, so the member keeps that line's direction and axes. The
+  shift comes from the section's steel shape: its depth along y and width
+  along z, with a channel's centroid x-bar from its web at the left and a
+  tee's y-bar below its flange at the top. A section without a shape can only be
+  placed at its centroid; any other point is a problem on the frame. The
+  file format went to version 9; a version 8 frame runs node to node at its
+  centroid. The GUI edits both per frame.
 - **Stiffness modifiers belong to members, not sections.** A frame or a
   shell carries `modifiers` (see the solver plan), as ETABS assignments do,
   because cracking follows a member's role: one W or rectangular section
@@ -359,9 +371,9 @@ takes it out of every source in the same undo step.
 - **Automatic diaphragm masters.** Resolved in M0: a diaphragm may omit its
   master, and compilation creates one at the mass-weighted centroid of the
   slaves. It is recorded in `Mapping::synthetic_masters` and has no entity id.
-- **Section orientation and offsets.** Deferred. The solver has roll and
-  local-y hints but no cardinal points or rigid end offsets. End offsets
-  likely need solver support and should be designed there first.
+- **Section orientation and offsets.** Resolved: the solver takes joint
+  and end offsets with a rigid-zone factor, and the model layer turns
+  cardinal points into joint offsets (see Decisions).
 - **Result storage.** Resolved: Parquet files queried through DuckDB, owned by
   the solver crate as Phase 8. The model layer keys them by content hash and
   maps rows back to entity ids.

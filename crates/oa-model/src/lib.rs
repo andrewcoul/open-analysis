@@ -18,7 +18,7 @@ pub mod store;
 pub mod units;
 
 pub use command::{Command, ModelError};
-pub use compile::{Compiled, GroupIndices, Mapping, Problem, compile};
+pub use compile::{Compiled, GroupIndices, Mapping, Problem, compile, frame_length};
 pub use editor::Editor;
 pub use entity::*;
 pub use format::{FORMAT_VERSION, from_json, save_json, to_json};

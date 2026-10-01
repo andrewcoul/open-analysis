@@ -15,8 +15,8 @@ use oa_core::units::Length;
 use oa_core::units::*;
 use oa_model::asce7::{Edition, Method};
 use oa_model::{
-    Axes, Command, EntityId, EntityKind, Frame, Library, LoadCase, LoadType, Material, MemberLoad,
-    Model, NodalLoad, Node, Role, Section, Underlay,
+    Axes, Command, EntityId, EntityKind, Library, LoadCase, LoadType, Material, MemberLoad, Model,
+    NodalLoad, Node, Role, Section, Underlay,
 };
 
 type Choice = Entity<SelectState<SearchableVec<SharedString>>>;
@@ -944,8 +944,13 @@ pub fn add_distributed_load(document: Entity<Document>, window: &mut Window, cx:
             let model = document.read(cx).model();
             let mut load_case: LoadCase = model.load_cases[&case].clone();
             for frame in &frames {
-                let Some(length) = frame_length(model, &model.frames[frame]) else {
-                    continue;
+                let length = match oa_model::frame_length(model, *frame) {
+                    Ok(length) => length,
+                    Err(e) => {
+                        let message = format!("{}: {e}", model.describe(*frame));
+                        notify_error(window, cx, message);
+                        return false;
+                    }
                 };
                 load_case.member.push(MemberLoad::Distributed {
                     member: *frame,
@@ -967,17 +972,6 @@ pub fn add_distributed_load(document: Entity<Document>, window: &mut Window, cx:
             )
         },
     );
-}
-
-fn frame_length(model: &Model, frame: &Frame) -> Option<f64> {
-    let a = model.nodes.get(&frame.nodes[0])?.position;
-    let b = model.nodes.get(&frame.nodes[1])?.position;
-    Some(
-        (0..3)
-            .map(|i| (b[i].si() - a[i].si()).powi(2))
-            .sum::<f64>()
-            .sqrt(),
-    )
 }
 
 #[cfg(test)]
