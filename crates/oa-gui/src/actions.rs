@@ -19,6 +19,7 @@ actions!(
         SelectAll,
         DeselectAll,
         DeleteSelected,
+        ReplicateSelected,
         AddNode,
         AddFrameBetweenSelected,
         AddShellFromSelected,

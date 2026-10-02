@@ -202,6 +202,8 @@ impl Workspace {
                     MenuItem::separator(),
                     MenuItem::action("Delete selected", DeleteSelected)
                         .disabled(document.selection().is_empty()),
+                    MenuItem::action("Replicate…", ReplicateSelected)
+                        .disabled(!can_replicate(document)),
                     MenuItem::separator(),
                     MenuItem::action("Properties…", ShowProperties)
                         .disabled(document.selection().is_empty()),
@@ -578,6 +580,25 @@ impl Workspace {
         if let Err(e) = self.document.update(cx, |document, cx| document.redo(cx)) {
             self.error(e.to_string(), window, cx);
         }
+    }
+    /// Copies the selected nodes, frames and shells, and selects the copies.
+    pub fn replicate_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let entities = replicable(self.document.read(cx));
+        if entities.is_empty() {
+            return self.info("Select nodes, frames or shells to replicate", window, cx);
+        }
+        let workspace = cx.entity().downgrade();
+        crate::dialogs::replicate(
+            self.document.clone(),
+            entities,
+            move |created, cx| {
+                workspace
+                    .update(cx, |workspace, cx| workspace.select(created, cx))
+                    .ok();
+            },
+            window,
+            cx,
+        );
     }
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
         let ids = self
@@ -1119,6 +1140,11 @@ impl Workspace {
                         "Delete selected",
                         Box::new(DeleteSelected),
                         document.selection().is_empty().then_some("select something first"),
+                    ),
+                    item(
+                        "Replicate…",
+                        Box::new(ReplicateSelected),
+                        (!can_replicate(document)).then_some("select nodes, frames or shells first"),
                     ),
                     item(
                         "Properties…",
@@ -1663,6 +1689,17 @@ impl Render for Workspace {
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
     }
+}
+
+/// The selected nodes, frames and shells: what Replicate copies.
+fn replicable(document: &Document) -> Vec<EntityId> {
+    [EntityKind::Node, EntityKind::Frame, EntityKind::Shell]
+        .into_iter()
+        .flat_map(|kind| document.selected_of(kind))
+        .collect()
+}
+fn can_replicate(document: &Document) -> bool {
+    !replicable(document).is_empty()
 }
 
 /// Splits every frame that one of `nodes` lands on, there.

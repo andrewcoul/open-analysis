@@ -130,6 +130,11 @@ Actions are routed to `Workspace` methods in `main.rs`.
   passes over, in the same undo step. Draw > Split frames at nodes splits
   the selected frames, or every frame, at the nodes already on their spans,
   for models drawn before this or imported.
+- Edit > Replicate… copies the selected nodes, frames and shells as a linear
+  array, a radial array, a mirror image, or onto every level from one up to
+  another, with or without their loads. The copies are connected as drawn
+  ones are, selected afterwards, and undo in one step. The form shows every
+  kind's fields and reads only the chosen kind's.
 - Multi-selection: assign a section or material to all selected frames, set
   restraints on all selected nodes, delete.
 - Levels (Define > Levels, Ctrl+K "Levels"): a table of named datums at

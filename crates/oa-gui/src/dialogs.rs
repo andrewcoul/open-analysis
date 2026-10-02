@@ -14,6 +14,8 @@ use gpui_kit::*;
 use oa_core::units::Length;
 use oa_core::units::*;
 use oa_model::asce7::{Edition, Method};
+use oa_model::replicate::{MAX_COPIES, Replication};
+use std::collections::BTreeSet;
 use oa_model::{
     Axes, Command, EntityId, EntityKind, Library, LoadCase, LoadType, Material, MemberLoad, Model,
     NodalLoad, Node, Role, Section, Underlay,
@@ -397,6 +399,181 @@ pub fn add_grid(
                         on_added(cx);
                     }
                     added
+                }
+                Err(e) => {
+                    notify_error(window, cx, e);
+                    false
+                }
+            }
+        },
+    );
+}
+
+/// Copies `entities` (nodes, frames and shells) in a line, around a
+/// vertical axis, mirrored, or onto the levels above, as one undo step that
+/// also connects the copies where they land on spans. Only the fields of the
+/// chosen kind are read. `on_done` gets the new entities.
+pub fn replicate(
+    document: Entity<Document>,
+    entities: Vec<EntityId>,
+    on_done: impl Fn(Vec<EntityId>, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    const KINDS: [&str; 4] = ["Linear array", "Radial array", "Mirror", "Onto levels above"];
+    let levels: Vec<(EntityId, SharedString)> = {
+        let model = document.read(cx).model();
+        model
+            .levels_by_elevation()
+            .into_iter()
+            .map(|id| {
+                let l = &model.levels[&id];
+                let elevation = crate::text::fmt_q(Role::Length, l.elevation.si());
+                let unit = crate::text::UNITS.symbol(Role::Length);
+                (id, format!("{} ({elevation} {unit})", l.name).into())
+            })
+            .collect()
+    };
+    // The levels default to the lowest one a selected node is bound to,
+    // up to the top level.
+    let from = {
+        let model = document.read(cx).model();
+        let bound: BTreeSet<EntityId> = entities
+            .iter()
+            .flat_map(|id| {
+                let mut nodes = vec![*id];
+                if let Some(f) = model.frames.get(id) {
+                    nodes.extend(f.nodes);
+                }
+                if let Some(s) = model.shells.get(id) {
+                    nodes.extend(s.nodes);
+                }
+                nodes
+            })
+            .filter_map(|n| model.nodes.get(&n).map(|n| n.level))
+            .collect();
+        levels.iter().position(|(id, _)| bound.contains(id))
+    };
+    let [dx, dy, dz, cx_, cy_, x1, y1, x2, y2] = [
+        "ΔX", "ΔY", "ΔZ", "Center X", "Center Y", "Line X1", "Line Y1", "Line X2", "Line Y2",
+    ]
+    .map(|name| label(name, Role::Length));
+    let angle = label("Angle", Role::Angle);
+    let level_names: Vec<SharedString> = levels.iter().map(|(_, l)| l.clone()).collect();
+    let inputs = Inputs::default()
+        .with_choice(
+            "Replicate",
+            KINDS.iter().map(|k| SharedString::from(*k)).collect(),
+            Some(0),
+            Width::Half,
+            window,
+            cx,
+        )
+        .with_text("Copies", "1", Width::Half, window, cx)
+        .with_text(&dx, "0", Width::Third, window, cx)
+        .with_text(&dy, "0", Width::Third, window, cx)
+        .with_text(&dz, "0", Width::Third, window, cx)
+        .with_text(&cx_, "0", Width::Third, window, cx)
+        .with_text(&cy_, "0", Width::Third, window, cx)
+        .with_text(&angle, "90", Width::Third, window, cx)
+        .with_text(&x1, "0", Width::Half, window, cx)
+        .with_text(&y1, "0", Width::Half, window, cx)
+        .with_text(&x2, "0", Width::Half, window, cx)
+        .with_text(&y2, "10", Width::Half, window, cx)
+        .with_choice("From level", level_names.clone(), from, Width::Half, window, cx)
+        .with_choice(
+            "Up to level",
+            level_names,
+            levels.len().checked_sub(1),
+            Width::Half,
+            window,
+            cx,
+        )
+        .with_choice(
+            "Loads",
+            vec!["Copy loads".into(), "Leave loads".into()],
+            Some(0),
+            Width::Full,
+            window,
+            cx,
+        );
+    open(
+        "Replicate",
+        "Replicate",
+        inputs,
+        window,
+        cx,
+        move |inputs, window, cx| {
+            let read = || -> Result<Replication, String> {
+                let len = |field: &str| inputs.qty(field, Role::Length, cx).map(Length::from_si);
+                let count = || -> Result<u32, String> {
+                    let n = inputs.num("Copies", cx)?;
+                    if n.fract() != 0.0 || !(1.0..=MAX_COPIES as f64).contains(&n) {
+                        return Err(format!("Copies: a whole number from 1 to {MAX_COPIES}"));
+                    }
+                    Ok(n as u32)
+                };
+                Ok(match inputs.choice("Replicate", cx) {
+                    Some(0) => Replication::Linear {
+                        offset: [len(&dx)?, len(&dy)?, len(&dz)?],
+                        count: count()?,
+                    },
+                    Some(1) => Replication::Radial {
+                        center: [len(&cx_)?, len(&cy_)?],
+                        angle: Angle::from_si(inputs.qty(&angle, Role::Angle, cx)?),
+                        count: count()?,
+                    },
+                    Some(2) => Replication::Mirror {
+                        start: [len(&x1)?, len(&y1)?],
+                        end: [len(&x2)?, len(&y2)?],
+                    },
+                    _ => {
+                        let pick = |field: &str| {
+                            inputs
+                                .choice(field, cx)
+                                .ok_or_else(|| format!("Choose a level for {field}"))
+                        };
+                        let (from, to) = (pick("From level")?, pick("Up to level")?);
+                        if to <= from {
+                            return Err("Choose a level above the one copied from".into());
+                        }
+                        Replication::Levels {
+                            from: levels[from].0,
+                            to: levels[from + 1..=to].iter().map(|(id, _)| *id).collect(),
+                        }
+                    }
+                })
+            };
+            let loads = inputs.choice("Loads", cx) != Some(1);
+            let planned = read().and_then(|replication| {
+                oa_model::replicate::replicate_and_connect(
+                    document.read(cx).model(),
+                    &entities,
+                    &replication,
+                    loads,
+                )
+                .map_err(|e| e.to_string())
+            });
+            match planned {
+                Ok((_, plan)) if plan.created().is_empty() => {
+                    notify_error(window, cx, "Every copy lands on what is already there");
+                    false
+                }
+                Ok((command, plan)) => {
+                    let done = apply(&document, command, window, cx);
+                    if done {
+                        if plan.skipped > 0 {
+                            window.push_notification(
+                                Notification::info(format!(
+                                    "Left out {} copies that would double a frame or shell already there",
+                                    plan.skipped
+                                )),
+                                cx,
+                            );
+                        }
+                        on_done(plan.created(), cx);
+                    }
+                    done
                 }
                 Err(e) => {
                     notify_error(window, cx, e);

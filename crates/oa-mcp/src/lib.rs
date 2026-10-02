@@ -1221,6 +1221,21 @@ split_frames  {"command":"split_frames","frames":[4],"nodes":[5]}
               material, section, orientation and modifiers, its groups, and its share of every member load (point
               loads by position, distributed loads cut and interpolated). End releases and end offsets stay at the
               outer ends; joint offsets are interpolated to the new joints so the pieces stay on the moved line.
+replicate     {"command":"replicate","entities":[4,9],"replication":{"type":"linear","offset":[30,0,0],"count":3}}
+              copies nodes, frames and shells as ETABS's Replicate does; a frame or shell brings its nodes. replication
+              is one of: {"type":"linear","offset":[x,y,z],"count":n} (copy k moved k times offset, ft; count default 1),
+              {"type":"radial","center":[x,y],"angle":90,"count":n} (copy k turned k times angle, deg, counterclockwise
+              seen from above, about the vertical axis through center), {"type":"mirror","start":[x,y],"end":[x,y]} (one
+              copy reflected in the vertical plane through that plan line), or {"type":"levels","from":2,"to":[3,4]} (one
+              copy per level in to, moved up by its elevation less from's; copied nodes bind to the matching level). A copied
+              node landing within 0.1 mm of a node already there, or of one an earlier copy made, is that node, so arrays
+              share their columns; a copied frame or shell whose nodes another already joins is left out. Copies take the
+              next free names after the originals' ("B1" copies to "B2", ...) and keep every property: restraints, springs
+              and masses as they are; frame local axes, joint offsets and cardinal points turned or mirrored with the copy;
+              shell corners reordered in a mirror so the normal and pressures keep their side. loads (default true) copies
+              the loads on what is copied into every load case: global vectors turn with the copy, local ones keep their
+              components (a mirror flips local z forces and local x and y moments). Groups and diaphragms are not copied,
+              and nothing is split: follow with split_frames if copies land on spans. One undo step.
 add_shell     {"command":"add_shell","id":6,"shell":{"name":"S1","nodes":[1,2,3,4],"material":2,"thickness":8}}
               optional local_x [x,y,z]: reference for local x, projected into the shell's plane; by default local x
               runs from the first node to the second. Modifiers act, and stresses are reported, in these axes.

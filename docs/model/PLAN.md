@@ -349,6 +349,39 @@ takes it out of every source in the same undo step.
   global axes, so every piece lies on the original's moved line, and load
   stations, which run along that line, are cut at the same fractions.
 
+- **Replicating: copy, array, mirror, onto levels.** `Replicate { entities,
+  replication, loads }` copies nodes, frames and shells as ETABS's
+  Replicate does. `replicate::Replication` is `Linear { offset, count }`,
+  `Radial { center, angle, count }` about a vertical axis, `Mirror { start,
+  end }` in the vertical plane through a plan line, or `Levels { from, to }`,
+  one copy per listed level moved up by the difference in elevation. A frame
+  or shell brings its nodes. A copied node within `ON_SPAN_TOLERANCE` of a
+  node already there, or of one an earlier copy made, is that node, so a bay
+  arrayed along a line shares its columns and a radial array closes on the
+  original; a frame or shell whose node set is already taken is left out
+  and counted. Like `SplitFrames` it plans a batch of plain `Add*` and
+  `UpdateLoadCase` commands, so there is no format change and undo removes
+  everything. Copies keep every property and take the next free names after
+  the originals' (`B1` copies to `B2`). A node binds to the level its own
+  level moves to, or else the highest level at or below it. Restraints,
+  springs, masses and prescribed displacements are copied as they are. When
+  the copy turns or reflects, a frame's local y is stored explicitly as the
+  turned local y of the original (roll folded in), its joint offsets are
+  resolved to global axes and turned, and in a mirror its cardinal point
+  trades left for right, because the copy's local z points the other way
+  across the mirrored section. A mirrored shell's corners are reordered
+  (1, 4, 3, 2) so its normal, and its pressures, keep their side, and its
+  local x is set to the mirror of the original's. Loads on what is copied
+  are copied into every case: global forces turn with the copy and moments
+  turn as axial vectors (flipped in a mirror); member loads in local axes
+  keep their components, except that a mirror flips the local z force and
+  the local x and y moments. Tests check that a turned or mirrored copy of a
+  skewed cantilever with offsets, a cardinal point, a rolled local y and
+  loads of every kind deflects exactly as the original turned or mirrored.
+  `replicate_and_connect` adds the splits drawing makes, so copies that land
+  on spans connect; the GUI uses it, and the agent command leaves splitting
+  to `split_frames`. Groups and diaphragms are not copied.
+
 ## Phases
 
 ### Phase M0: Entities and compilation

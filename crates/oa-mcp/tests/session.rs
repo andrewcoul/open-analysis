@@ -631,3 +631,42 @@ fn frames_carry_offsets_and_cardinal_points() {
         .to_string();
     assert!(err.contains("rigid zone factor"), "{err}");
 }
+
+#[test]
+fn replicate_copies_in_display_units_and_undoes() {
+    let mut s = Session::default();
+    s.new_model("replicate").unwrap();
+    let steel = s.add_material_from_library("A992", "steel").unwrap();
+    let section = s.add_section_from_library("W12x26", "beam").unwrap();
+    let base = s.find(EntityKind::Level, "Base").unwrap();
+    let [a, b, beam, dead] = <[_; 4]>::try_from(s.next_ids(4)).unwrap();
+    s.apply(vec![
+        cmd(json!({"command": "add_node", "id": a, "node": {"name": "N1", "level": base, "position": [0, 0, 0]}})),
+        cmd(json!({"command": "add_node", "id": b, "node": {"name": "N2", "level": base, "position": [20, 0, 0]}})),
+        cmd(json!({"command": "add_frame", "id": beam, "frame": {"name": "B1", "nodes": [a, b],
+            "material": steel, "section": section}})),
+        cmd(json!({"command": "add_load_case", "id": dead, "load_case": {"name": "D",
+            "nodal": [{"node": b, "force": [2, 0, -1]}]}})),
+    ])
+    .unwrap();
+    // Two 20 ft bays to the right of the first, sharing their ends.
+    s.apply(vec![cmd(json!({"command": "replicate", "entities": [beam],
+        "replication": {"type": "linear", "offset": [20, 0, 0], "count": 2}}))])
+    .unwrap();
+    let last = s.find(EntityKind::Frame, "B3").unwrap();
+    let end = s.get(last).unwrap()["entity"]["nodes"][1].as_u64().unwrap();
+    let position = s.get(oa_model::EntityId(end)).unwrap()["entity"]["position"].clone();
+    assert!((position[0].as_f64().unwrap() - 60.0).abs() < 1e-9, "{position}");
+    let loads = s.get(dead).unwrap()["entity"]["nodal"].clone();
+    assert_eq!(loads.as_array().unwrap().len(), 3);
+    // A quarter turn about the origin, in degrees: the load turns with it.
+    s.apply(vec![cmd(json!({"command": "replicate", "entities": [b], "replication":
+        {"type": "radial", "center": [0, 0], "angle": 90}}))])
+    .unwrap();
+    let loads = s.get(dead).unwrap()["entity"]["nodal"].clone();
+    let turned = &loads.as_array().unwrap()[3]["force"];
+    assert!(turned[0].as_f64().unwrap().abs() < 1e-9 && (turned[1].as_f64().unwrap() - 2.0).abs() < 1e-9, "{turned}");
+    assert!(s.undo().unwrap());
+    assert!(s.undo().unwrap());
+    assert!(s.find(EntityKind::Frame, "B2").is_none());
+}

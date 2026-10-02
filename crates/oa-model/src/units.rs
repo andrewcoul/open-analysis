@@ -360,6 +360,30 @@ impl MapQuantities for LoadCase {
         }
     }
 }
+impl MapQuantities for crate::replicate::Replication {
+    fn map_quantities(&mut self, f: &mut dyn FnMut(Role, f64) -> f64) {
+        use crate::replicate::Replication;
+        match self {
+            Replication::Linear { offset, .. } => {
+                for v in offset.iter_mut() {
+                    remap!(f, Role::Length, *v, Length);
+                }
+            }
+            Replication::Radial { center, angle, .. } => {
+                for v in center.iter_mut() {
+                    remap!(f, Role::Length, *v, Length);
+                }
+                remap!(f, Role::Angle, *angle, Angle);
+            }
+            Replication::Mirror { start, end } => {
+                for v in start.iter_mut().chain(end.iter_mut()) {
+                    remap!(f, Role::Length, *v, Length);
+                }
+            }
+            Replication::Levels { .. } => {}
+        }
+    }
+}
 impl MapQuantities for Command {
     fn map_quantities(&mut self, f: &mut dyn FnMut(Role, f64) -> f64) {
         match self {
@@ -393,6 +417,7 @@ impl MapQuantities for Command {
             Command::AddGridLine { grid_line, .. } | Command::UpdateGridLine { grid_line, .. } => {
                 grid_line.map_quantities(f)
             }
+            Command::Replicate { replication, .. } => replication.map_quantities(f),
             Command::SetGravity { gravity } => {
                 remap!(f, Role::Acceleration, *gravity, Acceleration);
             }
