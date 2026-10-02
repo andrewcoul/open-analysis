@@ -139,7 +139,10 @@ mod tests {
         let m = window();
         assert!(m.takes_segment((20.0, 20.0), (40.0, 30.0)));
         assert!(!m.takes_segment((20.0, 20.0), (80.0, 30.0)), "one end out");
-        assert!(!m.takes_segment((0.0, 25.0), (80.0, 25.0)), "passes through");
+        assert!(
+            !m.takes_segment((0.0, 25.0), (80.0, 25.0)),
+            "passes through"
+        );
     }
 
     #[test]
@@ -148,7 +151,10 @@ mod tests {
         assert!(m.takes_segment((20.0, 20.0), (40.0, 30.0)), "wholly inside");
         assert!(m.takes_segment((20.0, 20.0), (80.0, 30.0)), "one end in");
         assert!(m.takes_segment((0.0, 25.0), (80.0, 25.0)), "passes through");
-        assert!(m.takes_segment((30.0, 0.0), (30.0, 60.0)), "vertical through");
+        assert!(
+            m.takes_segment((30.0, 0.0), (30.0, 60.0)),
+            "vertical through"
+        );
         assert!(!m.takes_segment((0.0, 0.0), (80.0, 5.0)), "passes above");
         assert!(!m.takes_segment((60.0, 0.0), (60.0, 60.0)), "beside it");
         // The diagonal misses the corner of the box.
