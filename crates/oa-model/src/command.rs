@@ -38,6 +38,10 @@ pub enum ModelError {
 }
 pub type Result<T> = std::result::Result<T, ModelError>;
 
+fn yes() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
@@ -120,6 +124,20 @@ pub enum Command {
         frames: Vec<EntityId>,
         #[serde(default)]
         nodes: Vec<EntityId>,
+    },
+    /// Copies nodes, frames and shells in a line, around a vertical axis,
+    /// mirrored in a vertical plane, or onto other levels, as ETABS's
+    /// Replicate does. A frame or shell brings its nodes; a copied node
+    /// landing on a node already there is that node, and a copied frame or
+    /// shell that would sit on the nodes of one already there is left out.
+    /// Copies keep every property, turned with the copy, and with `loads`
+    /// their share of every load case. Applied as a batch, so undo removes
+    /// them. See `replicate::plan_replicate`.
+    Replicate {
+        entities: Vec<EntityId>,
+        replication: crate::replicate::Replication,
+        #[serde(default = "yes")]
+        loads: bool,
     },
     AddShell {
         id: EntityId,
@@ -608,6 +626,15 @@ impl Command {
             }
             SplitFrames { frames, nodes } => Batch {
                 commands: crate::split::plan_split_frames(model, &frames, &nodes)?,
+            }
+            .apply(model)?,
+            Replicate {
+                entities,
+                replication,
+                loads,
+            } => Batch {
+                commands: crate::replicate::plan_replicate(model, &entities, &replication, loads)?
+                    .commands,
             }
             .apply(model)?,
             AddShell { id, shell } => {

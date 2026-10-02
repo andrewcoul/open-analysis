@@ -194,6 +194,8 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
     on!(Redo, |ws, _, window, cx| ws.redo(window, cx));
     on!(SelectAll, |ws, _, _, cx| ws.select_all(cx));
     on!(DeselectAll, |ws, _, _, cx| ws.deselect_all(cx));
+    on!(ReplicateSelected, |ws, _, window, cx| ws
+        .replicate_selected(window, cx));
     on!(DeleteSelected, |ws, _, window, cx| ws
         .delete_selected(window, cx));
     on!(AddNode, |ws, _, window, cx| {
