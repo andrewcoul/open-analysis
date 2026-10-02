@@ -1212,6 +1212,15 @@ add_frame     {"command":"add_frame","id":4,"frame":{"name":"C1","nodes":[1,5],"
               from end I with local y up: top is +y, right is +z. A beam with local_y [0,0,1] whose nodes sit at
               the slab top takes "top_center" and hangs below them. It needs a section from the shape library,
               whose depth and width it measures; compile reports it on a section without a shape
+split_frames  {"command":"split_frames","frames":[4],"nodes":[5]}
+              a frame only connects to the nodes at its two ends: a node placed on a span, or a beam drawn to land
+              on a girder's midspan, is not joined until the frame is split there. This splits the listed frames at
+              the listed nodes lying on their spans (within 0.1 mm, about 0.004 in, of the axis); either list empty or left out means
+              all of them, so {"command":"split_frames"} splits every frame at every node on it. The frame keeps
+              its id and name as the first piece; the others are new frames named "C1-2", "C1-3", ... with its
+              material, section, orientation and modifiers, its groups, and its share of every member load (point
+              loads by position, distributed loads cut and interpolated). End releases and end offsets stay at the
+              outer ends; joint offsets are interpolated to the new joints so the pieces stay on the moved line.
 add_shell     {"command":"add_shell","id":6,"shell":{"name":"S1","nodes":[1,2,3,4],"material":2,"thickness":8}}
               optional local_x [x,y,z]: reference for local x, projected into the shell's plane; by default local x
               runs from the first node to the second. Modifiers act, and stresses are reported, in these axes.

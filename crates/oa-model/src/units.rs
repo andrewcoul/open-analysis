@@ -417,6 +417,7 @@ impl MapQuantities for Command {
             | Command::RemoveMaterial { .. }
             | Command::RemoveSection { .. }
             | Command::RemoveFrame { .. }
+            | Command::SplitFrames { .. }
             | Command::RemoveShell { .. }
             | Command::RemoveDiaphragm { .. }
             | Command::RemoveLoadCase { .. }

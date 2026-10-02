@@ -22,6 +22,7 @@ actions!(
         AddNode,
         AddFrameBetweenSelected,
         AddShellFromSelected,
+        SplitFramesAtNodes,
         AddMaterialFromLibrary,
         AddCustomMaterial,
         AddSectionFromLibrary,

@@ -216,6 +216,8 @@ fn route_all(cx: &mut App, window: WindowHandle<Root>, workspace: Entity<Workspa
         .add_frame_between_selected(window, cx));
     on!(AddShellFromSelected, |ws, _, window, cx| ws
         .add_shell_from_selected(window, cx));
+    on!(SplitFramesAtNodes, |ws, _, window, cx| ws
+        .split_frames_at_nodes(window, cx));
     on!(AddMaterialFromLibrary, |ws, _, window, cx| {
         dialogs::add_material_from_library(ws.document().clone(), window, cx)
     });

@@ -124,6 +124,12 @@ Actions are routed to `Workspace` methods in `main.rs`.
   and each combination term puts its case beside its factor. Text fields
   commit on Enter or blur; choices and checkboxes commit at once. Every
   commit is an undoable command. Delete in the editor closes it.
+- Drawing connects what it lands on: a node placed or typed on a frame's
+  span splits the frame there, and a drawn frame or shell splits the frames
+  its corners land on, and a drawn frame splits itself at the nodes it
+  passes over, in the same undo step. Draw > Split frames at nodes splits
+  the selected frames, or every frame, at the nodes already on their spans,
+  for models drawn before this or imported.
 - Multi-selection: assign a section or material to all selected frames, set
   restraints on all selected nodes, delete.
 - Levels (Define > Levels, Ctrl+K "Levels"): a table of named datums at

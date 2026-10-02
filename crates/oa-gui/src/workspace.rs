@@ -310,6 +310,7 @@ impl Workspace {
                         .disabled(gates.frame.is_some()),
                     MenuItem::action("Shell from four selected nodes", AddShellFromSelected)
                         .disabled(gates.shell.is_some()),
+                    MenuItem::action("Split frames at nodes", SplitFramesAtNodes),
                     MenuItem::separator(),
                     MenuItem::submenu(Menu {
                         name: "Snap".into(),
@@ -774,7 +775,8 @@ impl Workspace {
         });
         (nodes, commands, next)
     }
-    /// One undo step for a drawn shape and the nodes made for it.
+    /// One undo step for a drawn shape, the nodes made for it, and the
+    /// splits that connect it.
     fn apply_drawn(&mut self, mut commands: Vec<Command>, shape: Command, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         let command = if commands.is_empty() {
             shape
@@ -795,11 +797,18 @@ impl Workspace {
             Ok(x) => x,
             Err(e) => return self.error(e, window, cx),
         };
-        let (nodes, commands, next) = self.corner_nodes(corners, cx);
+        let (nodes, mut commands, next) = self.corner_nodes(corners, cx);
         let model = self.document.read(cx).model();
         let frame = Frame::new(unused_name::<Frame>(model, "F"), nodes, material, section);
         let id = EntityId(next);
-        self.apply_drawn(commands, Command::AddFrame { id, frame }, id, window, cx);
+        commands.push(Command::AddFrame { id, frame });
+        // The new frame connects to the nodes it passes over, and the
+        // frames its ends land on connect to it.
+        commands.push(Command::SplitFrames {
+            frames: vec![id],
+            nodes: vec![],
+        });
+        self.apply_drawn(commands, split_at(nodes.to_vec()), id, window, cx);
     }
     /// An 8 in shell on four nodes with the first material.
     fn add_shell(&mut self, nodes: [EntityId; 4], window: &mut Window, cx: &mut Context<Self>) {
@@ -810,7 +819,7 @@ impl Workspace {
             Ok((material, _)) => material,
             Err(e) => return self.error(e, window, cx),
         };
-        let (nodes, commands, next) = self.corner_nodes(corners, cx);
+        let (nodes, mut commands, next) = self.corner_nodes(corners, cx);
         let model = self.document.read(cx).model();
         let shell = Shell {
             name: unused_name::<Shell>(model, "SH"),
@@ -823,7 +832,8 @@ impl Workspace {
             modifiers: Default::default(),
         };
         let id = EntityId(next);
-        self.apply_drawn(commands, Command::AddShell { id, shell }, id, window, cx);
+        commands.push(Command::AddShell { id, shell });
+        self.apply_drawn(commands, split_at(nodes.to_vec()), id, window, cx);
     }
     /// A node at a point the Node tool clicked, on the active level.
     fn place_node(
@@ -840,8 +850,26 @@ impl Workspace {
             position.map(Length::from_metres),
         );
         let id = EntityId(model.next_id);
-        if self.apply(Command::AddNode { id, node }, window, cx) {
+        let command = Command::Batch {
+            commands: vec![Command::AddNode { id, node }, split_at(vec![id])],
+        };
+        if self.apply(command, window, cx) {
             self.select(vec![id], cx);
+        }
+    }
+    /// Splits the selected frames, or every frame when none is selected, at
+    /// the nodes lying on their spans.
+    pub fn split_frames_at_nodes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let frames = self.document.read(cx).selected_of(EntityKind::Frame);
+        let model = self.document.read(cx).model();
+        match oa_model::split::plan_split_frames(model, &frames, &[]) {
+            Ok(plan) if plan.is_empty() => {
+                self.info("No node lies on the span of a frame", window, cx)
+            }
+            Ok(_) => {
+                self.apply(Command::SplitFrames { frames, nodes: vec![] }, window, cx);
+            }
+            Err(e) => self.error(e.to_string(), window, cx),
         }
     }
 
@@ -1117,6 +1145,7 @@ impl Workspace {
                         Box::new(AddShellFromSelected),
                         gates.shell,
                     ),
+                    item("Split frames at nodes", Box::new(SplitFramesAtNodes), None),
                 ]
                 .into_iter()
                 .chain(snap::Kind::ALL.iter().map(|&kind| {
@@ -1633,5 +1662,13 @@ impl Render for Workspace {
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
+    }
+}
+
+/// Splits every frame that one of `nodes` lands on, there.
+fn split_at(nodes: Vec<EntityId>) -> Command {
+    Command::SplitFrames {
+        frames: vec![],
+        nodes,
     }
 }
