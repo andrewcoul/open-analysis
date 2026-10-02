@@ -30,6 +30,7 @@ crates/oa-gui/src/
   camera.rs      orthographic orbit camera, pure arithmetic with tests
   viewport.rs    3D canvas: nodes, frames, shells, labels, deformed shape, picking,
                  the draw tools, the view controls overlay, and the start card
+  marquee.rs     box selection rules (window and crossing), pure arithmetic with tests
   explorer.rs    model tree by entity kind, click to select, double-click to edit;
                  opens as a dialog from View > Model browser
   properties.rs  property editor: fields per kind, commit through Update commands;
@@ -113,7 +114,12 @@ Actions are routed to `Workspace` methods in `main.rs`.
   axis triad, and restraint markers. Frames and shells are painted as paths
   on a GPUI canvas; picking uses the last frame's screen positions.
 - Selection shared between the view, the model tree, and the property
-  panel. Click, shift+click, select all, deselect.
+  panel. Click, shift+click, select all, deselect. Box selection with the
+  Select tool (`marquee.rs`): a left-drag to the right is a window that takes
+  what lies wholly inside, to the left a crossing that takes anything it
+  touches, drawn solid and dashed. Shift adds to the selection, Esc drops the
+  box, and only what the view shows is taken, so a level view never reaches
+  a hidden storey.
 - Property editing for every entity kind: nodes (position, restraints,
   springs, mass), frames (end nodes, material, section, releases, roll,
   axial behaviour), shells, materials, sections, load cases (self weight

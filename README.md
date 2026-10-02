@@ -98,7 +98,8 @@ cargo run -p oa-gui
 
 In the 3D view, right-drag orbits, shift+right-drag or middle-drag pans, the
 wheel zooms about the cursor, click selects, and shift+click extends the
-selection. The property panel edits the selected entity through model
+selection. Left-dragging a box selects too: dragged left to right it takes
+what lies wholly inside, right to left anything it touches, as in ETABS. The property panel edits the selected entity through model
 commands, so every change can be undone. Analyze > Run static analysis solves
 every combination and draws the deformed shape. The design and the list of
 what is and is not implemented are in [docs/gui/PLAN.md](docs/gui/PLAN.md).

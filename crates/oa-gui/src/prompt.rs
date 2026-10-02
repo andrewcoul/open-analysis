@@ -148,7 +148,7 @@ fn prompt(state: &PromptState) -> Prompt {
         },
         Tool::Select if !state.has_selection => Prompt {
             title: "Select".into(),
-            text: "Click a node, frame, or shell. Shift+click adds to the selection; double-click opens its properties.".into(),
+            text: "Click a node, frame, or shell, or drag a box: left to right takes what is wholly inside, right to left anything it touches. Shift adds to the selection; double-click opens properties.".into(),
             aside: state.analysis.as_ref().and_then(|analysis| {
                 (state.options.deformed && !analysis.combinations.is_empty()).then(|| {
                     let shown = analysis.shown.min(analysis.combinations.len() - 1);
