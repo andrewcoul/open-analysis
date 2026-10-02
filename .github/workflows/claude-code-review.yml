@@ -1,6 +1,6 @@
 name: Claude Code Review
 
-# Reviews every pull request with the code-review plugin on Sonnet 5 at max effort
+# Reviews every pull request with the code-review plugin on Sonnet 5.5 at max effort
 # and posts findings as inline PR comments. Authenticates with the Claude subscription
 # token in the CLAUDE_CODE_OAUTH_TOKEN secret (generate one with `claude setup-token`).
 on:
@@ -42,6 +42,6 @@ jobs:
           prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
           # The action only starts the inline-comment MCP server when --allowedTools names it.
           claude_args: |
-            --model claude-sonnet-5
+            --model claude-sonnet-5-5
             --effort max
             --allowedTools "mcp__github_inline_comment__create_inline_comment"
