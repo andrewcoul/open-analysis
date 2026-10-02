@@ -12,6 +12,7 @@ mod document;
 mod explorer;
 mod levels;
 mod loads;
+mod marquee;
 mod properties;
 mod prompt;
 mod results;

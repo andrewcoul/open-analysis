@@ -1418,6 +1418,7 @@ impl Workspace {
                         .child("Units are US customary: coordinates in feet, section properties and shell thickness in inches, forces in kips, moments in kip·ft, line loads in kip/ft, pressures in psf, stresses and E in ksi, density in pcf. Files are stored in SI and converted on the way in and out.")
                         .child(heading("Mouse"))
                         .child(row("Click", "Select; shift+click adds; double-click edits"))
+                        .child(row("Left-drag", "Box select: rightward wholly inside, leftward touching; shift adds"))
                         .child(row("Right-drag", "Orbit"))
                         .child(row("Middle-drag", "Pan (or shift + right-drag)"))
                         .child(row("Wheel", "Zoom about the pointer"))

@@ -1,5 +1,6 @@
 //! The 3D model view: an orthographic wireframe of nodes, frames, and
-//! shells painted on a canvas, with orbit, pan, zoom, and click selection.
+//! shells painted on a canvas, with orbit, pan, zoom, and click and box
+//! selection (see [`crate::marquee`]).
 //! The draw tools live here too: Node places a node on the active level
 //! where you click, Frame joins two clicked nodes, Shell four. All three
 //! snap to the frames, shell edges, and underlay lines in view (see
@@ -13,6 +14,7 @@
 use crate::actions::*;
 use crate::camera::{Camera, UpAxis, ViewPreset};
 use crate::document::Document;
+use crate::marquee::{Marquee, Mode};
 use crate::results::{Diagram, labelled_stations, peak};
 use crate::snap;
 use crate::text::{UNITS, fmt_q};
@@ -128,10 +130,15 @@ struct Aim {
 
 struct Drag {
     button: MouseButton,
+    start: Point<Pixels>,
     last: Point<Pixels>,
     moved: bool,
     shift: bool,
 }
+
+/// How far a left-drag with Select must go before it draws a box rather
+/// than counting as a click, in pixels.
+const MARQUEE_MIN: f64 = 4.0;
 
 pub struct Viewport {
     document: Entity<Document>,
@@ -153,6 +160,8 @@ pub struct Viewport {
     focus_handle: FocusHandle,
     snapshot: Rc<RefCell<Snapshot>>,
     drag: Option<Drag>,
+    /// The selection box while a left-drag with Select is running.
+    marquee: Option<Marquee>,
     fit_on_next_paint: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -182,6 +191,7 @@ impl Viewport {
             focus_handle: cx.focus_handle(),
             snapshot: Rc::new(RefCell::new(Snapshot::default())),
             drag: None,
+            marquee: None,
             fit_on_next_paint: true,
             _subscriptions: vec![subscription],
         }
@@ -226,9 +236,15 @@ impl Viewport {
             cx.notify();
         }
     }
-    /// Escape: drops the nodes picked so far, or else returns to Select.
+    /// Escape: drops a selection box being dragged or the nodes picked so
+    /// far, or else returns to Select.
     /// False when there was nothing to cancel.
     pub fn cancel(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.marquee.take().is_some() {
+            self.drag = None;
+            cx.notify();
+            return true;
+        }
         if !self.picked.is_empty() {
             self.picked.clear();
             cx.notify();
@@ -393,6 +409,7 @@ impl Viewport {
         window.focus(&self.focus_handle, cx);
         self.drag = Some(Drag {
             button: event.button,
+            start: event.position,
             last: event.position,
             moved: false,
             shift: event.modifiers.shift,
@@ -420,6 +437,16 @@ impl Viewport {
             drag.moved = true;
         }
         match drag.button {
+            MouseButton::Left if self.tool == Tool::Select => {
+                let marquee = Marquee {
+                    start: to_f64(drag.start),
+                    end: to_f64(event.position),
+                };
+                if self.marquee.is_none() && distance(marquee.start, marquee.end) < MARQUEE_MIN {
+                    return;
+                }
+                self.marquee = Some(marquee);
+            }
             MouseButton::Right if !drag.shift => {
                 self.camera.orbit(dx, dy);
                 self.preset = None;
@@ -433,12 +460,19 @@ impl Viewport {
         let Some(drag) = self.drag.take() else {
             return;
         };
-        if drag.button == MouseButton::Left && !drag.moved {
+        if let Some(marquee) = self.marquee.take() {
+            self.select_box(marquee, drag.shift || event.modifiers.shift, cx);
+        } else if drag.button == MouseButton::Left && !drag.moved {
             self.click(event.position, event.modifiers.shift, event.click_count, cx);
         }
     }
-    fn on_mouse_up_out(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
-        self.drag = None;
+    /// A box dragged past the edge of the view still selects: what lies
+    /// beyond the edge is not drawn, so it is not in the snapshot.
+    fn on_mouse_up_out(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let drag = self.drag.take();
+        if let (Some(drag), Some(marquee)) = (drag, self.marquee.take()) {
+            self.select_box(marquee, drag.shift || event.modifiers.shift, cx);
+        }
     }
     fn on_scroll_wheel(
         &mut self,
@@ -600,6 +634,40 @@ impl Viewport {
             .map(|(id, _)| id)
     }
 
+    /// Selects what a box takes among what the view shows, replacing the
+    /// selection, or adding to it with Shift.
+    fn select_box(&mut self, marquee: Marquee, extend: bool, cx: &mut Context<Self>) {
+        let taken: Vec<EntityId> = {
+            let snapshot = self.snapshot.borrow();
+            let nodes = snapshot
+                .nodes
+                .iter()
+                .filter(|(_, p)| marquee.takes_point(to_f64(*p)))
+                .map(|(id, _)| *id);
+            let frames = snapshot
+                .frames
+                .iter()
+                .filter(|(_, a, b)| marquee.takes_segment(to_f64(*a), to_f64(*b)))
+                .map(|(id, ..)| *id);
+            let shells = snapshot
+                .shells
+                .iter()
+                .filter(|(_, pts)| marquee.takes_polygon(&pts.map(to_f64)))
+                .map(|(id, _)| *id);
+            nodes.chain(frames).chain(shells).collect()
+        };
+        self.document.update(cx, |document, cx| {
+            if extend {
+                let mut ids = document.selection().to_vec();
+                ids.extend(taken.into_iter().filter(|id| !document.is_selected(*id)));
+                document.set_selection(ids, cx);
+            } else {
+                document.set_selection(taken, cx);
+            }
+        });
+        cx.notify();
+    }
+
     /// Selects the entity under the pointer: nodes first, then frames, then shells.
     fn pick(&mut self, position: Point<Pixels>, extend: bool, cx: &mut Context<Self>) {
         let hit = self.node_at(position).or_else(|| {
@@ -647,7 +715,7 @@ fn segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
     };
     distance(p, (a.0 + t * dx, a.1 + t * dy))
 }
-fn point_in_polygon(p: (f64, f64), poly: &[(f64, f64)]) -> bool {
+pub(crate) fn point_in_polygon(p: (f64, f64), poly: &[(f64, f64)]) -> bool {
     let mut inside = false;
     let n = poly.len();
     let mut j = n - 1;
@@ -812,6 +880,8 @@ struct Scene {
     ghost: Option<Point<Pixels>>,
     /// The object snap in reach, marked on the geometry it belongs to.
     snap_mark: Option<(snap::Kind, Point<Pixels>)>,
+    /// The selection box being dragged and what it will take.
+    marquee: Option<(Bounds<Pixels>, Mode)>,
 }
 
 fn to_point(x: f64, y: f64) -> Point<Pixels> {
@@ -1259,6 +1329,11 @@ impl Viewport {
             _ => None,
         };
 
+        let marquee = self.marquee.map(|m| {
+            let (l, t, r, b) = m.rect();
+            (Bounds::from_corners(to_point(l, t), to_point(r, b)), m.mode())
+        });
+
         let axes_origin = point(bounds.left() + px(42.), bounds.bottom() - px(42.));
         let axis_end = |d: [f64; 3]| {
             let (x, y) = self.camera.project_direction(d);
@@ -1296,6 +1371,7 @@ impl Viewport {
             rubber,
             ghost,
             snap_mark,
+            marquee,
         }
     }
 }
@@ -1609,6 +1685,21 @@ fn paint_scene(
             if let Some(p) = scene.ghost {
                 let bounds = Bounds::centered_at(p, size(px(7.), px(7.)));
                 window.paint_quad(fill(bounds, palette.selected.opacity(0.6)));
+            }
+            // A window is drawn solid and a crossing dashed, as in ETABS.
+            if let Some((bounds, mode)) = scene.marquee {
+                let border = match mode {
+                    Mode::Window => BorderStyle::Solid,
+                    Mode::Crossing => BorderStyle::Dashed,
+                };
+                window.paint_quad(quad(
+                    bounds,
+                    Corners::default(),
+                    palette.selected.opacity(0.08),
+                    Edges::all(px(1.)),
+                    palette.selected,
+                    border,
+                ));
             }
             if let Some((kind, p)) = scene.snap_mark {
                 stroke_segments(snap_glyph(kind, p).into_iter(), px(2.), palette.snap, window);
